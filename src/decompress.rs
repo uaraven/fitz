@@ -7,7 +7,7 @@ use fitskit::{FitsFile, HduData};
 use crate::options::Options;
 
 pub fn decompress_file(input: &Path, opts: &Options) -> Result<()> {
-    if input.extension().map(|e| e != "fz").unwrap_or(true) {
+    if let Some(ext) = input.extension() && ext != "fz" {
         bail!("not a .fz file");
     }
 
