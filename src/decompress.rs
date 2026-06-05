@@ -1,25 +1,30 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use fitskit::{FitsFile, HduData};
 
-pub fn decompress_file(input: &Path, keep: bool, force: bool, verbose: bool) -> Result<()> {
+use crate::options::Options;
+
+pub fn decompress_file(input: &Path, opts: &Options) -> Result<()> {
     if input.extension().map(|e| e != "fz").unwrap_or(true) {
         bail!("not a .fz file");
     }
 
     // Remove .fz suffix: "image.fits.fz" -> "image.fits"
-    let output = input.with_extension("");
+    let output: PathBuf = match opts.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => input.with_extension(""),
+    };
 
-    if output.exists() && !force {
+    if output.exists() && !opts.force {
         bail!(
             "{} already exists — use -f to overwrite",
             output.display()
         );
     }
 
-    if verbose {
+    if opts.verbose {
         println!("{} -> {}", input.display(), output.display());
     }
 
@@ -61,7 +66,7 @@ pub fn decompress_file(input: &Path, keep: bool, force: bool, verbose: bool) -> 
         .to_file(&output)
         .with_context(|| format!("cannot write {}", output.display()))?;
 
-    if !keep {
+    if !opts.keep {
         fs::remove_file(input)
             .with_context(|| format!("cannot remove {}", input.display()))?;
     }
@@ -72,6 +77,7 @@ pub fn decompress_file(input: &Path, keep: bool, force: bool, verbose: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::Options;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -91,7 +97,7 @@ mod tests {
     fn decompress_produces_fits_file() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
-        decompress_file(&input, true, false, false).unwrap();
+        decompress_file(&input, &Options { keep: true, ..Options::default() }).unwrap();
         assert!(tmp.path().join("compressed.fits").exists());
     }
 
@@ -99,7 +105,7 @@ mod tests {
     fn decompress_removes_input_by_default() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
-        decompress_file(&input, false, false, false).unwrap();
+        decompress_file(&input, &Options::default()).unwrap();
         assert!(!input.exists());
     }
 
@@ -107,7 +113,7 @@ mod tests {
     fn decompress_keeps_input_with_keep_flag() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
-        decompress_file(&input, true, false, false).unwrap();
+        decompress_file(&input, &Options { keep: true, ..Options::default() }).unwrap();
         assert!(input.exists());
     }
 
@@ -116,7 +122,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         std::fs::write(tmp.path().join("compressed.fits"), b"dummy").unwrap();
-        let err = decompress_file(&input, true, false, false).unwrap_err();
+        let err = decompress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
@@ -126,7 +132,7 @@ mod tests {
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let output = tmp.path().join("compressed.fits");
         std::fs::write(&output, b"dummy").unwrap();
-        decompress_file(&input, true, true, false).unwrap();
+        decompress_file(&input, &Options { keep: true, force: true, ..Options::default() }).unwrap();
         assert!(output.metadata().unwrap().len() > 5);
     }
 
@@ -134,7 +140,7 @@ mod tests {
     fn decompress_rejects_non_fz_input() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        let err = decompress_file(&input, true, false, false).unwrap_err();
+        let err = decompress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
         assert!(err.to_string().contains("not a .fz file"));
     }
 }
