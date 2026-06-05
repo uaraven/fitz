@@ -141,11 +141,9 @@ mod tests {
         assert!(err.to_string().contains(".fz extension"));
     }
 
-    #[test]
-    fn round_trip_preserves_pixel_data() {
+    fn round_trip_for(algorithm: fitskit::CompressionType) {
         let tmp = TempDir::new().unwrap();
 
-        // Capture original axes and pixel bytes before any transformation.
         let orig = FitsFile::from_file(&test_data("uncompressed.fit")).unwrap();
         let orig_images: Vec<_> = orig
             .hdus
@@ -166,8 +164,7 @@ mod tests {
             s
         });
 
-        // Compress (removes input), then decompress (removes .fz, recreates input).
-        compress_file(&input, &Options::default()).unwrap();
+        compress_file(&input, &Options { algorithm, ..Options::default() }).unwrap();
         crate::decompress::decompress_file(&fz_path, &Options::default()).unwrap();
 
         let result = FitsFile::from_file(&input).unwrap();
@@ -188,5 +185,34 @@ mod tests {
             assert_eq!(result_img.0, orig_img.0, "axes mismatch");
             assert_eq!(result_img.1, orig_img.1, "pixel data mismatch");
         }
+    }
+
+    #[test]
+    fn round_trip_preserves_pixel_data() {
+        round_trip_for(fitskit::CompressionType::Rice1);
+    }
+
+    #[test]
+    fn gzip1_round_trip_preserves_pixel_data() {
+        round_trip_for(fitskit::CompressionType::Gzip1);
+    }
+
+    #[test]
+    fn gzip2_round_trip_preserves_pixel_data() {
+        round_trip_for(fitskit::CompressionType::Gzip2);
+    }
+
+    #[test]
+    fn compress_with_custom_output_path() {
+        let tmp = TempDir::new().unwrap();
+        let input = copy_to_temp("uncompressed.fit", &tmp);
+        let custom_out = tmp.path().join("custom.fz");
+        compress_file(&input, &Options {
+            keep: true,
+            output: Some(custom_out.clone()),
+            ..Options::default()
+        }).unwrap();
+        assert!(custom_out.exists());
+        assert!(!tmp.path().join("uncompressed.fit.fz").exists());
     }
 }

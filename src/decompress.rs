@@ -143,4 +143,18 @@ mod tests {
         let err = decompress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
         assert!(err.to_string().contains("not a .fz file"));
     }
+
+    #[test]
+    fn decompress_with_custom_output_path() {
+        let tmp = TempDir::new().unwrap();
+        let input = copy_to_temp("compressed.fits.fz", &tmp);
+        let custom_out = tmp.path().join("custom.fits");
+        decompress_file(&input, &Options {
+            keep: true,
+            output: Some(custom_out.clone()),
+            ..Options::default()
+        }).unwrap();
+        assert!(custom_out.exists());
+        assert!(!tmp.path().join("compressed.fits").exists());
+    }
 }
