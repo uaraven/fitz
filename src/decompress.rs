@@ -7,17 +7,19 @@ use fitskit::{FitsFile, HduData};
 use crate::options::Options;
 
 pub fn decompress_file(input: &Path, opts: &Options) -> Result<()> {
-    if let Some(ext) = input.extension() && ext != "fz" {
-        bail!("not a .fz file");
-    }
-
-    // Remove .fz suffix: "image.fits.fz" -> "image.fits"
     let output: PathBuf = match opts.output.as_deref() {
         Some(p) => p.to_path_buf(),
-        None => input.with_extension(""),
+        None => {
+            if input.extension().map(|e| e == "fz").unwrap_or(false) {
+                input.with_extension("")
+            } else {
+                input.to_path_buf()
+            }
+        }
     };
 
-    if output.exists() && !opts.force {
+    // Skip the exists check when decompressing in-place (output == input).
+    if output != input && output.exists() && !opts.force {
         bail!(
             "{} already exists — use -f to overwrite",
             output.display()
@@ -66,7 +68,7 @@ pub fn decompress_file(input: &Path, opts: &Options) -> Result<()> {
         .to_file(&output)
         .with_context(|| format!("cannot write {}", output.display()))?;
 
-    if !opts.keep {
+    if !opts.keep && output != input {
         fs::remove_file(input)
             .with_context(|| format!("cannot remove {}", input.display()))?;
     }
@@ -137,11 +139,14 @@ mod tests {
     }
 
     #[test]
-    fn decompress_rejects_non_fz_input() {
+    fn decompress_without_fz_extension_replaces_file_in_place() {
         let tmp = TempDir::new().unwrap();
-        let input = copy_to_temp("uncompressed.fit", &tmp);
-        let err = decompress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
-        assert!(err.to_string().contains("not a .fz file"));
+        // Copy the compressed file under a name that has no .fz extension.
+        let input = tmp.path().join("compressed.fits");
+        std::fs::copy(test_data("compressed.fits.fz"), &input).unwrap();
+        decompress_file(&input, &Options::default()).unwrap();
+        // Output == input, so the file is replaced in-place rather than deleted.
+        assert!(input.exists());
     }
 
     #[test]

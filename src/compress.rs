@@ -8,10 +8,6 @@ use fitskit::{CompressOptions, FitsFile, HduData};
 use crate::options::Options;
 
 pub fn compress_file(input: &Path, opts: &Options) -> Result<()> {
-    if input.extension().map(|e| e == "fz").unwrap_or(false) {
-        bail!("already has .fz extension — skipping (use -d to decompress)");
-    }
-
     let output: PathBuf = match opts.output.as_deref() {
         Some(p) => p.to_path_buf(),
         None => {
@@ -131,14 +127,6 @@ mod tests {
         std::fs::write(&output, b"dummy").unwrap();
         compress_file(&input, &Options { keep: true, force: true, ..Options::default() }).unwrap();
         assert!(output.metadata().unwrap().len() > 5);
-    }
-
-    #[test]
-    fn compress_rejects_fz_input() {
-        let tmp = TempDir::new().unwrap();
-        let input = copy_to_temp("compressed.fits.fz", &tmp);
-        let err = compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
-        assert!(err.to_string().contains(".fz extension"));
     }
 
     #[test]
