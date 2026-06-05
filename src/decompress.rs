@@ -68,7 +68,7 @@ pub fn decompress_file(input: &Path, opts: &Options) -> Result<()> {
         .to_file(&output)
         .with_context(|| format!("cannot write {}", output.display()))?;
 
-    if !opts.keep && output != input {
+    if !opts.keep && opts.output.is_none() && output != input {
         fs::remove_file(input)
             .with_context(|| format!("cannot remove {}", input.display()))?;
     }
@@ -146,6 +146,17 @@ mod tests {
         std::fs::copy(test_data("compressed.fits.fz"), &input).unwrap();
         decompress_file(&input, &Options::default()).unwrap();
         // Output == input, so the file is replaced in-place rather than deleted.
+        assert!(input.exists());
+    }
+
+    #[test]
+    fn decompress_keeps_input_when_output_path_given() {
+        let tmp = TempDir::new().unwrap();
+        let input = copy_to_temp("compressed.fits.fz", &tmp);
+        decompress_file(&input, &Options {
+            output: Some(tmp.path().join("out.fits")),
+            ..Options::default()
+        }).unwrap();
         assert!(input.exists());
     }
 

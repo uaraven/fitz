@@ -58,7 +58,7 @@ pub fn compress_file(input: &Path, opts: &Options) -> Result<()> {
         .to_file(&output)
         .with_context(|| format!("cannot write {}", output.display()))?;
 
-    if !opts.keep {
+    if !opts.keep && opts.output.is_none() {
         fs::remove_file(input)
             .with_context(|| format!("cannot remove {}", input.display()))?;
     }
@@ -127,6 +127,17 @@ mod tests {
         std::fs::write(&output, b"dummy").unwrap();
         compress_file(&input, &Options { keep: true, force: true, ..Options::default() }).unwrap();
         assert!(output.metadata().unwrap().len() > 5);
+    }
+
+    #[test]
+    fn compress_keeps_input_when_output_path_given() {
+        let tmp = TempDir::new().unwrap();
+        let input = copy_to_temp("uncompressed.fit", &tmp);
+        compress_file(&input, &Options {
+            output: Some(tmp.path().join("out.fz")),
+            ..Options::default()
+        }).unwrap();
+        assert!(input.exists());
     }
 
     #[test]
