@@ -3,33 +3,40 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use fitskit::{CompressOptions, CompressionType, FitsFile, HduData};
+use fitskit::{CompressOptions, FitsFile, HduData};
 
-pub fn compress_file(input: &Path, keep: bool, force: bool, verbose: bool) -> Result<()> {
+use crate::options::Options;
+
+pub fn compress_file(input: &Path, opts: &Options) -> Result<()> {
     if input.extension().map(|e| e == "fz").unwrap_or(false) {
         bail!("already has .fz extension — skipping (use -d to decompress)");
     }
 
-    let mut out_os: OsString = input.as_os_str().to_owned();
-    out_os.push(".fz");
-    let output = PathBuf::from(out_os);
+    let output: PathBuf = match opts.output.as_deref() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let mut out_os: OsString = input.as_os_str().to_owned();
+            out_os.push(".fz");
+            PathBuf::from(out_os)
+        }
+    };
 
-    if output.exists() && !force {
+    if output.exists() && !opts.force {
         bail!(
             "{} already exists — use -f to overwrite",
             output.display()
         );
     }
 
-    if verbose {
+    if opts.verbose {
         println!("{} -> {}", input.display(), output.display());
     }
 
     let fits = FitsFile::from_file(input)
         .with_context(|| format!("cannot read {}", input.display()))?;
 
-    let opts = CompressOptions {
-        algorithm: CompressionType::Rice1,
+    let compress_opts = CompressOptions {
+        algorithm: opts.algorithm,
         ..CompressOptions::default()
     };
 
@@ -39,8 +46,8 @@ pub fn compress_file(input: &Path, keep: bool, force: bool, verbose: bool) -> Re
         match &hdu.data {
             HduData::Image(img) => {
                 let compressed = img
-                    .compress(&opts)
-                    .with_context(|| "RICE_1 compression failed")?;
+                    .compress(&compress_opts)
+                    .with_context(|| "compression failed")?;
                 out_fits.push_extension(compressed);
             }
             HduData::Empty => {} // primary empty HDU is already covered by with_empty_primary()
@@ -55,7 +62,7 @@ pub fn compress_file(input: &Path, keep: bool, force: bool, verbose: bool) -> Re
         .to_file(&output)
         .with_context(|| format!("cannot write {}", output.display()))?;
 
-    if !keep {
+    if !opts.keep {
         fs::remove_file(input)
             .with_context(|| format!("cannot remove {}", input.display()))?;
     }
@@ -66,6 +73,7 @@ pub fn compress_file(input: &Path, keep: bool, force: bool, verbose: bool) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::Options;
     use fitskit::{FitsFile, HduData};
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -86,7 +94,7 @@ mod tests {
     fn compress_produces_fz_file() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        compress_file(&input, true, false, false).unwrap();
+        compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap();
         assert!(tmp.path().join("uncompressed.fit.fz").exists());
     }
 
@@ -94,7 +102,7 @@ mod tests {
     fn compress_removes_input_by_default() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        compress_file(&input, false, false, false).unwrap();
+        compress_file(&input, &Options::default()).unwrap();
         assert!(!input.exists());
     }
 
@@ -102,7 +110,7 @@ mod tests {
     fn compress_keeps_input_with_keep_flag() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        compress_file(&input, true, false, false).unwrap();
+        compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap();
         assert!(input.exists());
     }
 
@@ -111,7 +119,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
         std::fs::write(tmp.path().join("uncompressed.fit.fz"), b"dummy").unwrap();
-        let err = compress_file(&input, true, false, false).unwrap_err();
+        let err = compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
@@ -121,7 +129,7 @@ mod tests {
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let output = tmp.path().join("uncompressed.fit.fz");
         std::fs::write(&output, b"dummy").unwrap();
-        compress_file(&input, true, true, false).unwrap();
+        compress_file(&input, &Options { keep: true, force: true, ..Options::default() }).unwrap();
         assert!(output.metadata().unwrap().len() > 5);
     }
 
@@ -129,7 +137,7 @@ mod tests {
     fn compress_rejects_fz_input() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
-        let err = compress_file(&input, true, false, false).unwrap_err();
+        let err = compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
         assert!(err.to_string().contains(".fz extension"));
     }
 
@@ -159,8 +167,8 @@ mod tests {
         });
 
         // Compress (removes input), then decompress (removes .fz, recreates input).
-        compress_file(&input, false, false, false).unwrap();
-        crate::decompress::decompress_file(&fz_path, false, false, false).unwrap();
+        compress_file(&input, &Options::default()).unwrap();
+        crate::decompress::decompress_file(&fz_path, &Options::default()).unwrap();
 
         let result = FitsFile::from_file(&input).unwrap();
         let result_images: Vec<_> = result
