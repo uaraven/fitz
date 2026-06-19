@@ -8,6 +8,7 @@ pub struct Options {
     pub verbose: bool,
     pub output: Option<PathBuf>,
     pub algorithm: CompressionType,
+    pub multi_file: bool,
 }
 
 impl Default for Options {
@@ -18,6 +19,7 @@ impl Default for Options {
             verbose: false,
             output: None,
             algorithm: CompressionType::Rice1,
+            multi_file: false,
         }
     }
 }
