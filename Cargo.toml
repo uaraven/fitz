@@ -10,3 +10,10 @@ anyhow = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+opt-level = 'z'       # Optimize for binary size (use 's' if 'z' hurts performance too much)
+lto = true            # Enable Link-Time Optimization for cross-crate dead code elimination
+codegen-units = 1     # Slower compilation, but allows for much better optimization
+panic = 'abort'       # Removes panic-unwinding tables and exception handling code
+strip = true    

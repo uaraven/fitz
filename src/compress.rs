@@ -1,22 +1,12 @@
-use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use fitskit::{CompressOptions, FitsFile, HduData};
 
 use crate::options::Options;
 
-pub fn compress_file(input: &Path, opts: &Options) -> Result<()> {
-    let output: PathBuf = match opts.output.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            let mut out_os: OsString = input.as_os_str().to_owned();
-            out_os.push(".fz");
-            PathBuf::from(out_os)
-        }
-    };
-
+pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
     if output.exists() && !opts.force {
         bail!(
             "{} already exists — use -f to overwrite",
@@ -46,16 +36,15 @@ pub fn compress_file(input: &Path, opts: &Options) -> Result<()> {
                     .with_context(|| "compression failed")?;
                 out_fits.push_extension(compressed);
             }
-            HduData::Empty => {} // primary empty HDU is already covered by with_empty_primary()
+            HduData::Empty => {}
             _ => {
-                // Preserve non-image HDUs (ASCII/BINTABLE) unchanged
                 out_fits.push_extension(hdu.clone());
             }
         }
     }
 
     out_fits
-        .to_file(&output)
+        .to_file(output)
         .with_context(|| format!("cannot write {}", output.display()))?;
 
     if !opts.keep && opts.output.is_none() {
@@ -71,7 +60,8 @@ mod tests {
     use super::*;
     use crate::options::Options;
     use fitskit::{FitsFile, HduData};
-    use std::path::PathBuf;
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     fn test_data(filename: &str) -> PathBuf {
@@ -86,19 +76,27 @@ mod tests {
         dst
     }
 
+    fn with_fz(p: &Path) -> PathBuf {
+        let mut s: OsString = p.as_os_str().to_owned();
+        s.push(".fz");
+        PathBuf::from(s)
+    }
+
     #[test]
     fn compress_produces_fz_file() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap();
-        assert!(tmp.path().join("uncompressed.fit.fz").exists());
+        let output = with_fz(&input);
+        compress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap();
+        assert!(output.exists());
     }
 
     #[test]
     fn compress_removes_input_by_default() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        compress_file(&input, &Options::default()).unwrap();
+        let output = with_fz(&input);
+        compress_file(&input, &output, &Options::default()).unwrap();
         assert!(!input.exists());
     }
 
@@ -106,7 +104,8 @@ mod tests {
     fn compress_keeps_input_with_keep_flag() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap();
+        let output = with_fz(&input);
+        compress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap();
         assert!(input.exists());
     }
 
@@ -114,8 +113,9 @@ mod tests {
     fn compress_errors_if_output_exists_without_force() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        std::fs::write(tmp.path().join("uncompressed.fit.fz"), b"dummy").unwrap();
-        let err = compress_file(&input, &Options { keep: true, ..Options::default() }).unwrap_err();
+        let output = with_fz(&input);
+        std::fs::write(&output, b"dummy").unwrap();
+        let err = compress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
@@ -123,9 +123,9 @@ mod tests {
     fn compress_force_overwrites_existing_output() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        let output = tmp.path().join("uncompressed.fit.fz");
+        let output = with_fz(&input);
         std::fs::write(&output, b"dummy").unwrap();
-        compress_file(&input, &Options { keep: true, force: true, ..Options::default() }).unwrap();
+        compress_file(&input, &output, &Options { keep: true, force: true, ..Options::default() }).unwrap();
         assert!(output.metadata().unwrap().len() > 5);
     }
 
@@ -133,8 +133,9 @@ mod tests {
     fn compress_keeps_input_when_output_path_given() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        compress_file(&input, &Options {
-            output: Some(tmp.path().join("out.fz")),
+        let out = tmp.path().join("out.fz");
+        compress_file(&input, &out, &Options {
+            output: Some(out.clone()),
             ..Options::default()
         }).unwrap();
         assert!(input.exists());
@@ -144,7 +145,6 @@ mod tests {
     fn round_trip_preserves_pixel_data() {
         let tmp = TempDir::new().unwrap();
 
-        // Capture original axes and pixel bytes before any transformation.
         let orig = FitsFile::from_file(&test_data("uncompressed.fit")).unwrap();
         let orig_images: Vec<_> = orig
             .hdus
@@ -159,15 +159,10 @@ mod tests {
             .collect();
 
         let input = copy_to_temp("uncompressed.fit", &tmp);
-        let fz_path = PathBuf::from({
-            let mut s = input.as_os_str().to_owned();
-            s.push(".fz");
-            s
-        });
+        let fz = with_fz(&input);
 
-        // Compress (removes input), then decompress (removes .fz, recreates input).
-        compress_file(&input, &Options::default()).unwrap();
-        crate::decompress::decompress_file(&fz_path, &Options::default()).unwrap();
+        compress_file(&input, &fz, &Options::default()).unwrap();
+        crate::decompress::decompress_file(&fz, &input, &Options::default()).unwrap();
 
         let result = FitsFile::from_file(&input).unwrap();
         let result_images: Vec<_> = result
