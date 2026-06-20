@@ -60,6 +60,38 @@ impl Default for DebayerOptions {
     }
 }
 
+pub struct StretchOptions {
+    pub force: bool,
+    pub verbose: bool,
+    /// Apply one shared set of stretch parameters to all channels instead of
+    /// stretching each channel independently.
+    pub linked: bool,
+    /// Bayer pattern override; takes precedence over the FITS header's
+    /// BAYERPAT keyword. Falls back to BAYERPAT when not given.
+    pub pattern: Option<CFA>,
+    /// Always demosaic, even if the input looks like an already-debayered
+    /// RGB cube (no BAYERPAT header, 3-plane image). See `DebayerOptions::force_demosaic`.
+    pub force_demosaic: bool,
+    pub format: OutputFormat,
+    pub output: Option<PathBuf>,
+    pub multi_file: bool,
+}
+
+impl Default for StretchOptions {
+    fn default() -> Self {
+        StretchOptions {
+            force: false,
+            verbose: false,
+            linked: false,
+            pattern: None,
+            force_demosaic: false,
+            format: OutputFormat::Fits,
+            output: None,
+            multi_file: false,
+        }
+    }
+}
+
 pub struct SplitChannelOptions {
     pub force: bool,
     pub verbose: bool,

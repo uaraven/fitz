@@ -1,11 +1,12 @@
 # fitz
 
-FITS file utility.
+Fitz is an Linux/MacOS CLI utility for working with FITS (astronomic images) files. 
 
-Supports following operations on FITS files:
+Fitz supports following operations on FITS files:
  - compression using RICE_1 and GZIP algorithms
  - decompression using the same algorithms
  - debayering a mosaic image and saving it as a FITS  or TIFF file
+ - auto-stretching an image (debayering it first if needed) and saving it as a FITS or TIFF file
  - Split FITS file into separate per-channel R,G,B files, debayering if needed. 
 
 ## Usage
@@ -21,6 +22,7 @@ fitz [options] COMMAND [command-options]
  - `compress` to compress the FITS file. Use `fitz compress --help` to see more options
  - `decompress` to decompress the compressed FITS file. Use `fitz decompress --help` to see more options
  - `debayer` to debayer a FITS mosaic image and save it as a FITS or TIFF file. Use `fitz debayer --help` to see more options
+ - `stretch` to auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file. Use `fitz stretch --help` to see more options
  - `split` to debayer a FITS mosaic image (or split an already-debayered RGB cube) and save each color channel as a separate FITS file. Use `fitz split --help` to see more options
 
 ### compress
@@ -81,6 +83,31 @@ Options:
   -h, --help               Print help
 ```
 
+### stretch
+
+Applies an automatic screen-transfer-function (STF/MTF) stretch to a FITS image and saves the 16-bit result as a FITS (3-plane RGB cube) or TIFF file. The input is debayered first if needed, following the same rules as `debayer`: the Bayer pattern comes from `--pattern` when given and otherwise from the FITS `BAYERPAT` header, and an input that is already a 3-plane RGB cube (`NAXIS3=3`) with no `BAYERPAT` header is treated as already-debayered (use `--force-demosaic`, with `--pattern`, to demosaic it anyway).
+
+The stretch derives its shadows clip and midtones balance from each image's own statistics (median and median absolute deviation), pulling the background up to a consistent target brightness. By default each color channel is stretched independently, which also neutralizes the background color cast. Pass `--linked-channel` to apply one shared stretch to all channels instead, preserving the original color balance.
+
+When `-o`/`--output` is not given, the output file is named `{input-stem}_stretch.{ext}` next to the input, where `ext` is `fits` or `tiff` depending on `--format`.
+
+```
+Usage: fitz stretch [OPTIONS] [FILES]...
+
+Arguments:
+  [FILES]...  FITS files to stretch
+
+Options:
+  -f, --force              Overwrite output file if it already exists
+      --linked-channel     Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
+      --pattern <PATTERN>  Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
+      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB cube
+      --format <FORMAT>    Output file format [default: fits] (TIFF or FITS)
+  -o, --output <OUTPUT>    Write output to this file, or to this folder if processing multiple files
+  -v, --verbose            Print each file being processed
+  -h, --help               Print help
+```
+
 ### split
 
 Debayers a FITS mosaic image and saves each color channel as a separate FITS file. If the input has no `BAYERPAT` header, it's assumed to already be a 3-plane RGB cube (`NAXIS3=3`) and the debayer step is skipped. Pass `--force-demosaic` (with `--pattern`, since there's no header to read it from) if an input is actually a raw mosaic that happens to have 3 planes for some other reason.
@@ -108,6 +135,8 @@ Options:
   -h, --help                 Print help
 ```
 
-## Warning
+## AI Warning
 
-This tool was mostly vibe-coded. I reviewed the code and made some changes, but still most of the authorship goes to those anonymous heroes who write the code, on which anthropic trains their models.
+I needed a quick and dirty tool to compress and uncompress fits files. Researching libraries, understanding FITS format and writing it myself would take time and I needed it now. The result is this tool is mostly vibe-coded with Claude Code. I review the code to make sure I understand what it does and I make changes where neccessary, but still most of the authorship goes to those anonymous heroes who write the code, on which Anthropic trains their models.
+
+I understand the feelings a lot of people harbor towards AI-written code. I share a lot of these feelings, but, honestly, for a low-effort, low-impact and low-risk utility it kinda makes sense. I would spend at least a couple of weeks writing this or I could have what I need in two days. 

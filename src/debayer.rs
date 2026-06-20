@@ -1,13 +1,13 @@
 use std::fs::File;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use fitskit::{Bitpix, FitsFile, Header, ImageData, PixelData};
 use tiff::encoder::{colortype, TiffEncoder};
 
 use crate::fits_image::{
-    bscale_bzero, demosaic_to_rgb, ensure_can_write, find_image_hdu, get_bayerpat, print_progress,
-    resolve_cfa, round_to_u16, scaled_pixels, write_pixel_fits, RgbBuffer,
+    bscale_bzero, deinterleave_to_planes, ensure_can_write, find_image_hdu, load_rgb,
+    print_progress, print_step, write_pixel_fits, RgbBuffer,
 };
 use crate::options::DebayerOptions;
 
@@ -64,6 +64,7 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
     ensure_can_write(output, opts.force)?;
     print_progress(opts.verbose, input, output);
 
+    print_step(opts.verbose, "reading");
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
@@ -71,36 +72,10 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
 
     let source = SourceFormat::from_image(header, img);
 
-    let already_debayered = !opts.force_demosaic
-        && get_bayerpat(header).is_none()
-        && img.axes.len() == 3
-        && img.axes[2] == 3;
+    let (width, height, rgb) =
+        load_rgb(header, img, input, opts.pattern, opts.force_demosaic, opts.verbose)?;
 
-    let (width, height, rgb) = if already_debayered {
-        println!(
-            "{}: already debayered (no BAYERPAT header, found a 3-plane RGB cube) — skipping debayer step",
-            input.display()
-        );
-        let width = img.axes[0];
-        let height = img.axes[1];
-        let rgb = rgb_from_cube(header, img, width, height);
-        (width, height, rgb)
-    } else {
-        if img.axes.len() != 2 {
-            bail!(
-                "{}: expected a 2D mosaic image, found {} axes",
-                input.display(),
-                img.axes.len()
-            );
-        }
-
-        let cfa = resolve_cfa(header, opts.pattern)
-            .with_context(|| format!("{}: cannot determine Bayer pattern", input.display()))?;
-
-        demosaic_to_rgb(header, img, cfa)
-            .with_context(|| format!("{}: debayering failed", input.display()))?
-    };
-
+    print_step(opts.verbose, "writing");
     match opts.format {
         OutputFormat::Tiff => {
             let samples = to_output_samples(rgb, opts.bpp);
@@ -110,32 +85,6 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
     }
 
     Ok(())
-}
-
-/// Interleave an already-debayered 3-plane RGB cube into an `RgbBuffer`,
-/// without running it through the demosaic algorithm.
-fn rgb_from_cube(header: &Header, img: &ImageData, width: usize, height: usize) -> RgbBuffer {
-    let plane_len = width * height;
-
-    if let PixelData::U8(v) = &img.pixels {
-        let mut out = vec![0u8; plane_len * 3];
-        for i in 0..plane_len {
-            out[i * 3] = v[i];
-            out[i * 3 + 1] = v[plane_len + i];
-            out[i * 3 + 2] = v[2 * plane_len + i];
-        }
-        return RgbBuffer::U8(out);
-    }
-
-    let scaled = scaled_pixels(header, img);
-
-    let mut out = vec![0u16; plane_len * 3];
-    for i in 0..plane_len {
-        out[i * 3] = round_to_u16(scaled[i]);
-        out[i * 3 + 1] = round_to_u16(scaled[plane_len + i]);
-        out[i * 3 + 2] = round_to_u16(scaled[2 * plane_len + i]);
-    }
-    RgbBuffer::U16(out)
 }
 
 /// Scale a demosaiced RGB buffer to the requested output bit depth by bit
@@ -178,23 +127,6 @@ fn write_tiff(output: &Path, width: usize, height: usize, samples: OutputSamples
     result.with_context(|| format!("cannot write {}", output.display()))?;
 
     Ok(())
-}
-
-/// Split an interleaved RGB sample buffer into concatenated R, G, B planes
-/// (the same plane order [`rgb_from_cube`] expects when reading one back).
-fn deinterleave_to_planes<T: Copy>(v: &[T]) -> Vec<T> {
-    let n = v.len() / 3;
-    let mut out = Vec::with_capacity(v.len());
-    for i in 0..n {
-        out.push(v[i * 3]);
-    }
-    for i in 0..n {
-        out.push(v[i * 3 + 1]);
-    }
-    for i in 0..n {
-        out.push(v[i * 3 + 2]);
-    }
-    out
 }
 
 /// Write the debayered RGB cube as FITS using the same pixel format
