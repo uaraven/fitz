@@ -1,17 +1,26 @@
 mod compress;
+mod debayer;
 mod decompress;
+mod fits_image;
 mod options;
+mod split_channel;
+#[cfg(test)]
+mod test_support;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, ValueEnum};
+use anyhow::{anyhow, Result};
+use bayer::CFA;
+use clap::{Parser, Subcommand, ValueEnum};
 use fitskit::CompressionType;
 
 use compress::compress_file;
+use debayer::{debayer_file, parse_output_format, OutputFormat};
 use decompress::decompress_file;
-use options::Options;
+use options::{DebayerOptions, Options, SplitChannelOptions};
+use split_channel::{parse_channel_format, split_channel_file, ChannelFormat};
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Algorithm {
@@ -33,21 +42,69 @@ impl From<Algorithm> for CompressionType {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum BayerPattern {
+    #[value(name = "RGGB")]
+    Rggb,
+    #[value(name = "GBRG")]
+    Gbrg,
+    #[value(name = "BGGR")]
+    Bggr,
+    #[value(name = "GRBG")]
+    Grbg,
+}
+
+impl From<BayerPattern> for CFA {
+    fn from(p: BayerPattern) -> Self {
+        match p {
+            BayerPattern::Rggb => CFA::RGGB,
+            BayerPattern::Gbrg => CFA::GBRG,
+            BayerPattern::Bggr => CFA::BGGR,
+            BayerPattern::Grbg => CFA::GRBG,
+        }
+    }
+}
+
+fn parse_bpp(s: &str) -> Result<u32, String> {
+    match s.parse::<u32>() {
+        Ok(v) if v == 8 || v == 16 || v == 32 => Ok(v),
+        _ => Err("bpp must be one of: 8, 16, 32".to_string()),
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "fitz",
     about = "Compress/decompress FITS files using tile compression",
     long_about = "Compress FITS files to .fz (tile-compressed) or decompress .fz back to FITS.\n\
-                  Similar to gzip: compresses by default, -d to decompress.\n\
                   Output file replaces the input unless -k is given.\n\
                   Supported algorithms: rice1 (default), gzip1, gzip2."
 )]
-struct Args {
-    /// Decompress (auto-detected when input ends with .fz)
-    #[arg(short = 'd', long)]
-    decompress: bool,
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
 
-    /// Keep original file after compression/decompression
+    /// Print each file being processed
+    #[arg(short = 'v', long, global = true)]
+    verbose: bool,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Compress FITS files
+    Compress(CompressArgs),
+    /// Decompress FITS files
+    Decompress(DecompressArgs),
+    /// Debayer a FITS mosaic image and save it as a FITS or TIFF file
+    Debayer(DebayerArgs),
+    /// Debayer a FITS mosaic image and save each color channel as a separate FITS file
+    #[command(name = "split")]
+    SplitChannel(SplitChannelArgs),
+}
+
+#[derive(clap::Args)]
+struct CompressArgs {
+    /// Keep original file after compression
     #[arg(short = 'k', long)]
     keep: bool,
 
@@ -55,11 +112,7 @@ struct Args {
     #[arg(short = 'f', long)]
     force: bool,
 
-    /// Print each file being processed
-    #[arg(short = 'v', long)]
-    verbose: bool,
-
-    /// Compression algorithm (ignored when decompressing)
+    /// Compression algorithm
     #[arg(short = 'a', long, default_value = "rice1")]
     algorithm: Algorithm,
 
@@ -67,8 +120,141 @@ struct Args {
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
 
-    /// FITS files to process
+    /// FITS files to compress
     files: Vec<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct DecompressArgs {
+    /// Keep original file after decompression
+    #[arg(short = 'k', long)]
+    keep: bool,
+
+    /// Overwrite output file if it already exists
+    #[arg(short = 'f', long)]
+    force: bool,
+
+    /// Write output to this file (only valid with a single input file)
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+
+    /// FITS files to decompress
+    files: Vec<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct DebayerArgs {
+    /// Overwrite output file if it already exists
+    #[arg(short = 'f', long)]
+    force: bool,
+
+    /// Bits per pixel in the output image (TIFF only; FITS output keeps the
+    /// source image's pixel format)
+    #[arg(long, default_value = "16", value_parser = parse_bpp)]
+    bpp: u32,
+
+    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    #[arg(long)]
+    pattern: Option<BayerPattern>,
+
+    /// Always demosaic, even if the input has no BAYERPAT header but looks
+    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
+    /// raw mosaic that happens to have 3 planes for some other reason.
+    #[arg(long)]
+    force_demosaic: bool,
+
+    /// Output file format
+    #[arg(long, default_value = "fits", value_parser = parse_output_format)]
+    format: OutputFormat,
+
+    /// Write output to this file, or to this folder if processing multiple files
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+
+    /// FITS files to debayer
+    files: Vec<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct SplitChannelArgs {
+    /// Overwrite output files if they already exist
+    #[arg(short = 'f', long)]
+    force: bool,
+
+    /// Per-channel pixel format of the resulting FITS files
+    #[arg(long, default_value = "i16", value_parser = parse_channel_format)]
+    format: ChannelFormat,
+
+    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    #[arg(long)]
+    pattern: Option<BayerPattern>,
+
+    /// Always demosaic, even if the input has no BAYERPAT header but looks
+    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
+    /// raw mosaic that happens to have 3 planes for some other reason
+    /// (requires --pattern if there's no BAYERPAT header).
+    #[arg(long)]
+    force_demosaic: bool,
+
+    /// Prefix for the red channel file: {prefix}-{original-file-name}
+    #[arg(long, conflicts_with = "r_dir")]
+    r_prefix: Option<String>,
+    /// Directory to save the red channel file into (original filename kept)
+    #[arg(long)]
+    r_dir: Option<PathBuf>,
+
+    /// Prefix for the green channel file: {prefix}-{original-file-name}
+    #[arg(long, conflicts_with = "g_dir")]
+    g_prefix: Option<String>,
+    /// Directory to save the green channel file into (original filename kept)
+    #[arg(long)]
+    g_dir: Option<PathBuf>,
+
+    /// Prefix for the blue channel file: {prefix}-{original-file-name}
+    #[arg(long, conflicts_with = "b_dir")]
+    b_prefix: Option<String>,
+    /// Directory to save the blue channel file into (original filename kept)
+    #[arg(long)]
+    b_dir: Option<PathBuf>,
+
+    /// FITS files to split into channels
+    files: Vec<PathBuf>,
+}
+
+fn debayer_output_path(input: &Path, opts: &DebayerOptions) -> Result<PathBuf> {
+    let ext = opts.format.extension();
+
+    let path = match opts.output.as_deref() {
+        Some(dir) if opts.multi_file => {
+            let stem = file_stem(input)?;
+            let mut name: OsString = stem.to_owned();
+            name.push(format!(".{ext}"));
+            PathBuf::from(dir).join(name)
+        }
+        Some(p) => p.to_path_buf(),
+        None => {
+            let stem = file_stem(input)?;
+            let mut name: OsString = stem.to_owned();
+            name.push(format!("_debayer.{ext}"));
+            place_beside(input, name)
+        }
+    };
+    Ok(path)
+}
+
+fn file_stem(input: &Path) -> Result<&std::ffi::OsStr> {
+    input
+        .file_stem()
+        .ok_or_else(|| anyhow!("{}: path has no file name", input.display()))
+}
+
+/// Place `name` in the same directory as `input`, falling back to a bare
+/// relative path when `input` has no parent directory.
+pub(crate) fn place_beside(input: &Path, name: OsString) -> PathBuf {
+    match input.parent() {
+        Some(parent) => parent.join(name),
+        None => PathBuf::from(name),
+    }
 }
 
 fn output_path(input: &Path, opts: &Options, is_decompress: bool) -> PathBuf {
@@ -106,41 +292,127 @@ fn output_path(input: &Path, opts: &Options, is_decompress: bool) -> PathBuf {
 }
 
 fn main() -> ExitCode {
-    let Args { decompress, keep, force, verbose, algorithm, output, files } = Args::parse();
+    let Cli { command, verbose } = Cli::parse();
 
+    match command {
+        Command::Compress(a) => run_compress_decompress(
+            false,
+            a.keep,
+            a.force,
+            a.algorithm.into(),
+            a.output,
+            a.files,
+            verbose,
+        ),
+        Command::Decompress(a) => run_compress_decompress(
+            true,
+            a.keep,
+            a.force,
+            CompressionType::Rice1,
+            a.output,
+            a.files,
+            verbose,
+        ),
+        Command::Debayer(a) => run_debayer(a, verbose),
+        Command::SplitChannel(a) => run_split_channel(a, verbose),
+    }
+}
+
+/// Run `process` over every input file, printing per-file errors and mapping
+/// the overall outcome to an exit code. Errors don't abort the batch.
+fn process_files(files: &[PathBuf], mut process: impl FnMut(&Path) -> Result<()>) -> ExitCode {
     if files.is_empty() {
         eprintln!("fitz: no files given");
         return ExitCode::FAILURE;
     }
 
-    if output.is_some() && files.len() != 1 {
-        eprintln!("fitz: -o requires exactly one input file");
-        return ExitCode::FAILURE;
-    }
-
-    let opts = Options { keep, force, verbose, output, 
-        algorithm: algorithm.into(),
-    multi_file: files.len() > 1 };
-
     let mut had_error = false;
-
-    for path in &files {
-        let do_decompress = decompress || path.extension().map(|e| e == "fz").unwrap_or(false);
-        let output = output_path(path, &opts, do_decompress);
-
-        let result = if do_decompress {
-            decompress_file(path, &output, &opts)
-        } else {
-            compress_file(path, &output, &opts)
-        };
-
-        if let Err(e) = result {
+    for path in files {
+        if let Err(e) = process(path) {
             eprintln!("fitz: {}: {e:#}", path.display());
             had_error = true;
         }
     }
 
     if had_error { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+}
+
+fn run_compress_decompress(
+    is_decompress: bool,
+    keep: bool,
+    force: bool,
+    algorithm: CompressionType,
+    output: Option<PathBuf>,
+    files: Vec<PathBuf>,
+    verbose: bool,
+) -> ExitCode {
+    if !files.is_empty() && output.is_some() && files.len() != 1 {
+        eprintln!("fitz: -o requires exactly one input file");
+        return ExitCode::FAILURE;
+    }
+
+    let opts = Options { keep, force, verbose, output, algorithm, multi_file: files.len() > 1 };
+
+    process_files(&files, |path| {
+        let output = output_path(path, &opts, is_decompress);
+        if is_decompress {
+            decompress_file(path, &output, &opts)
+        } else {
+            compress_file(path, &output, &opts)
+        }
+    })
+}
+
+fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
+    let DebayerArgs { force, bpp, pattern, force_demosaic, format, output, files } = args;
+
+    let opts = DebayerOptions {
+        force,
+        verbose,
+        bpp,
+        pattern: pattern.map(Into::into),
+        force_demosaic,
+        format,
+        output,
+        multi_file: files.len() > 1,
+    };
+
+    process_files(&files, |path| {
+        let output = debayer_output_path(path, &opts)?;
+        debayer_file(path, &output, &opts)
+    })
+}
+
+fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
+    let SplitChannelArgs {
+        force,
+        format,
+        pattern,
+        force_demosaic,
+        r_prefix,
+        r_dir,
+        g_prefix,
+        g_dir,
+        b_prefix,
+        b_dir,
+        files,
+    } = args;
+
+    let opts = SplitChannelOptions {
+        force,
+        verbose,
+        format,
+        pattern: pattern.map(Into::into),
+        force_demosaic,
+        r_prefix,
+        r_dir,
+        g_prefix,
+        g_dir,
+        b_prefix,
+        b_dir,
+    };
+
+    process_files(&files, |path| split_channel_file(path, &opts))
 }
 
 #[cfg(test)]
@@ -201,5 +473,64 @@ mod tests {
     fn decompress_multi_file_no_fz_ext_keeps_filename() {
         let p = output_path(Path::new("/data/image.fits"), &opts(Some("/out"), true), true);
         assert_eq!(p, PathBuf::from("/out/image.fits"));
+    }
+
+    fn debayer_opts(format: OutputFormat, output: Option<&str>, multi_file: bool) -> DebayerOptions {
+        DebayerOptions {
+            format,
+            output: output.map(PathBuf::from),
+            multi_file,
+            ..DebayerOptions::default()
+        }
+    }
+
+    #[test]
+    fn debayer_default_appends_debayer_suffix_with_fits_extension() {
+        let p = debayer_output_path(
+            Path::new("/data/image.fit"),
+            &debayer_opts(OutputFormat::Fits, None, false),
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("/data/image_debayer.fits"));
+    }
+
+    #[test]
+    fn debayer_default_appends_debayer_suffix_with_tiff_extension() {
+        let p = debayer_output_path(
+            Path::new("/data/image.fit"),
+            &debayer_opts(OutputFormat::Tiff, None, false),
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("/data/image_debayer.tiff"));
+    }
+
+    #[test]
+    fn debayer_explicit_output_used_as_is() {
+        let p = debayer_output_path(
+            Path::new("/data/image.fit"),
+            &debayer_opts(OutputFormat::Fits, Some("/out/result.fits"), false),
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("/out/result.fits"));
+    }
+
+    #[test]
+    fn debayer_multi_file_joins_stem_with_format_extension_into_dir() {
+        let p = debayer_output_path(
+            Path::new("/data/image.fit"),
+            &debayer_opts(OutputFormat::Fits, Some("/out"), true),
+        )
+        .unwrap();
+        assert_eq!(p, PathBuf::from("/out/image.fits"));
+    }
+
+    #[test]
+    fn debayer_output_path_errors_when_input_has_no_filename() {
+        let err = debayer_output_path(
+            Path::new("/"),
+            &debayer_opts(OutputFormat::Fits, None, false),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no file name"));
     }
 }

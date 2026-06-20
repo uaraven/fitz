@@ -1,0 +1,51 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "'fitz' split",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=fitz",
+                    "--",
+                    "split",
+                    "/Users/ovoronin/tmp/starless_rgb_test.fit"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "'fitz' debayer",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=fitz",
+                    "--",
+                    "debayer",
+                    "--format",
+                    "tiff",
+                    "test-data/uncompressed.fit"
+                ]
+            },
+            "args": []
+        },
+        {
+            "name": "Debug unit tests in executable 'fitz'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=fitz"
+                ]
+            }
+        }
+    ]
+}
