@@ -1,22 +1,15 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use fitskit::{CompressOptions, FitsFile, HduData};
 
+use crate::fits_image::{ensure_can_write, print_progress};
 use crate::options::Options;
 
 pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
-    if output.exists() && !opts.force {
-        bail!(
-            "{} already exists — use -f to overwrite",
-            output.display()
-        );
-    }
-
-    if opts.verbose {
-        println!("{} -> {}", input.display(), output.display());
-    }
+    ensure_can_write(output, opts.force)?;
+    print_progress(opts.verbose, input, output);
 
     let fits = FitsFile::from_file(input)
         .with_context(|| format!("cannot read {}", input.display()))?;
@@ -59,22 +52,11 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
 mod tests {
     use super::*;
     use crate::options::Options;
+    use crate::test_support::{copy_to_temp, test_data};
     use fitskit::{FitsFile, HduData};
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
-
-    fn test_data(filename: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("test-data")
-            .join(filename)
-    }
-
-    fn copy_to_temp(filename: &str, tmp: &TempDir) -> PathBuf {
-        let dst = tmp.path().join(filename);
-        std::fs::copy(test_data(filename), &dst).unwrap();
-        dst
-    }
 
     fn with_fz(p: &Path) -> PathBuf {
         let mut s: OsString = p.as_os_str().to_owned();
@@ -145,7 +127,7 @@ mod tests {
     fn round_trip_preserves_pixel_data() {
         let tmp = TempDir::new().unwrap();
 
-        let orig = FitsFile::from_file(&test_data("uncompressed.fit")).unwrap();
+        let orig = FitsFile::from_file(test_data("uncompressed.fit")).unwrap();
         let orig_images: Vec<_> = orig
             .hdus
             .iter()

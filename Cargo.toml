@@ -7,13 +7,16 @@ edition = "2024"
 fitskit = { version = "0.2.0", features = ["gzip"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+bayer = "0.1.5"
+tiff = "0.11"
 
 [dev-dependencies]
 tempfile = "3"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 'z'       # Optimize for binary size (use 's' if 'z' hurts performance too much)
 lto = true            # Enable Link-Time Optimization for cross-crate dead code elimination
 codegen-units = 1     # Slower compilation, but allows for much better optimization
-panic = 'abort'       # Removes panic-unwinding tables and exception handling code
-strip = true    
+strip = true          # NB: panic = 'abort' is incompatible with the `bayer` dep, which
+                      # is published with a `dylib` crate-type that requires unwinding.    

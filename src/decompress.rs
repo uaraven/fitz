@@ -4,19 +4,16 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use fitskit::{FitsFile, HduData};
 
+use crate::fits_image::{ensure_can_write, print_progress};
 use crate::options::Options;
 
 pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
-    if output != input && output.exists() && !opts.force {
-        bail!(
-            "{} already exists — use -f to overwrite",
-            output.display()
-        );
+    // Decompressing in place (output == input) is allowed and must not trip
+    // the "already exists" guard.
+    if output != input {
+        ensure_can_write(output, opts.force)?;
     }
-
-    if opts.verbose {
-        println!("{} -> {}", input.display(), output.display());
-    }
+    print_progress(opts.verbose, input, output);
 
     let fits = FitsFile::from_file(input)
         .with_context(|| format!("cannot read {}", input.display()))?;
@@ -67,20 +64,8 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
 mod tests {
     use super::*;
     use crate::options::Options;
-    use std::path::PathBuf;
+    use crate::test_support::{copy_to_temp, test_data};
     use tempfile::TempDir;
-
-    fn test_data(filename: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("test-data")
-            .join(filename)
-    }
-
-    fn copy_to_temp(filename: &str, tmp: &TempDir) -> PathBuf {
-        let dst = tmp.path().join(filename);
-        std::fs::copy(test_data(filename), &dst).unwrap();
-        dst
-    }
 
     #[test]
     fn decompress_produces_fits_file() {
