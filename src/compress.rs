@@ -4,13 +4,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use fitskit::{CompressOptions, FitsFile, HduData};
 
-use crate::fits_image::{ensure_can_write, print_progress};
+use crate::fits_image::{ensure_can_write, print_progress, print_step};
 use crate::options::Options;
 
 pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
     ensure_can_write(output, opts.force)?;
     print_progress(opts.verbose, input, output);
 
+    print_step(opts.verbose, "reading");
     let fits = FitsFile::from_file(input)
         .with_context(|| format!("cannot read {}", input.display()))?;
 
@@ -21,6 +22,7 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
 
     let mut out_fits = FitsFile::with_empty_primary();
 
+    print_step(opts.verbose, "compressing");
     for hdu in &fits.hdus {
         match &hdu.data {
             HduData::Image(img) => {
@@ -36,6 +38,7 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
         }
     }
 
+    print_step(opts.verbose, "writing");
     out_fits
         .to_file(output)
         .with_context(|| format!("cannot write {}", output.display()))?;

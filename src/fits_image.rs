@@ -2,12 +2,14 @@
 //! the image HDU, resolving the Bayer pattern, demosaicing a mosaic into an
 //! interleaved RGB buffer, and writing pixel data back out as FITS.
 
+use std::fs::File;
 use std::io::Cursor;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 use bayer::{run_demosaic, BayerDepth, RasterDepth, RasterMut, CFA};
 use fitskit::{FitsFile, HduData, Header, HeaderValue, ImageData, PixelData};
+use tiff::encoder::{colortype, TiffEncoder};
 
 /// FITS header keywords used across the debayer/split commands.
 pub(crate) const BAYERPAT: &str = "BAYERPAT";
@@ -140,6 +142,125 @@ pub(crate) fn demosaic_to_rgb(
     Ok((width, height, rgb))
 }
 
+/// Load an image as an interleaved RGB buffer: demosaic a 2D Bayer mosaic, or
+/// reinterleave an already-debayered 3-plane RGB cube as-is. Detection mirrors
+/// the `debayer` command: a 3-plane image with no BAYERPAT header is treated as
+/// already debayered unless `force_demosaic` is set.
+pub(crate) fn load_rgb(
+    header: &Header,
+    img: &ImageData,
+    input: &Path,
+    pattern: Option<CFA>,
+    force_demosaic: bool,
+    verbose: bool,
+) -> Result<(usize, usize, RgbBuffer)> {
+    let already_debayered = !force_demosaic
+        && get_bayerpat(header).is_none()
+        && img.axes.len() == 3
+        && img.axes[2] == 3;
+
+    if already_debayered {
+        println!(
+            "{}: already debayered (no BAYERPAT header, found a 3-plane RGB cube) — skipping debayer step",
+            input.display()
+        );
+        let width = img.axes[0];
+        let height = img.axes[1];
+        let rgb = rgb_from_cube(header, img, width, height);
+        return Ok((width, height, rgb));
+    }
+
+    if img.axes.len() != 2 {
+        bail!(
+            "{}: expected a 2D mosaic image, found {} axes",
+            input.display(),
+            img.axes.len()
+        );
+    }
+
+    let cfa = resolve_cfa(header, pattern)
+        .with_context(|| format!("{}: cannot determine Bayer pattern", input.display()))?;
+
+    print_step(verbose, "debayering");
+    demosaic_to_rgb(header, img, cfa)
+        .with_context(|| format!("{}: debayering failed", input.display()))
+}
+
+/// Interleave an already-debayered 3-plane RGB cube into an `RgbBuffer`,
+/// without running it through the demosaic algorithm.
+fn rgb_from_cube(header: &Header, img: &ImageData, width: usize, height: usize) -> RgbBuffer {
+    let plane_len = width * height;
+
+    if let PixelData::U8(v) = &img.pixels {
+        let mut out = vec![0u8; plane_len * 3];
+        for i in 0..plane_len {
+            out[i * 3] = v[i];
+            out[i * 3 + 1] = v[plane_len + i];
+            out[i * 3 + 2] = v[2 * plane_len + i];
+        }
+        return RgbBuffer::U8(out);
+    }
+
+    let scaled = scaled_pixels(header, img);
+
+    let mut out = vec![0u16; plane_len * 3];
+    for i in 0..plane_len {
+        out[i * 3] = round_to_u16(scaled[i]);
+        out[i * 3 + 1] = round_to_u16(scaled[plane_len + i]);
+        out[i * 3 + 2] = round_to_u16(scaled[2 * plane_len + i]);
+    }
+    RgbBuffer::U16(out)
+}
+
+/// Split an interleaved RGB sample buffer into concatenated R, G, B planes
+/// (the same plane order [`rgb_from_cube`] expects when reading one back).
+pub(crate) fn deinterleave_to_planes<T: Copy>(v: &[T]) -> Vec<T> {
+    let n = v.len() / 3;
+    let mut out = Vec::with_capacity(v.len());
+    for i in 0..n {
+        out.push(v[i * 3]);
+    }
+    for i in 0..n {
+        out.push(v[i * 3 + 1]);
+    }
+    for i in 0..n {
+        out.push(v[i * 3 + 2]);
+    }
+    out
+}
+
+/// Write an interleaved 16-bit RGB image as an RGB16 TIFF.
+pub(crate) fn write_rgb16_tiff(
+    output: &Path,
+    width: usize,
+    height: usize,
+    interleaved: &[u16],
+) -> Result<()> {
+    let file =
+        File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
+    let mut enc = TiffEncoder::new(file)
+        .with_context(|| format!("cannot create TIFF encoder for {}", output.display()))?;
+
+    enc.write_image::<colortype::RGB16>(width as u32, height as u32, interleaved)
+        .with_context(|| format!("cannot write {}", output.display()))?;
+
+    Ok(())
+}
+
+/// Write an interleaved 16-bit RGB image as a 3-plane FITS cube, using the FITS
+/// unsigned-16 convention (BITPIX 16 with BZERO 32768) so values in 0..=65535
+/// round-trip.
+pub(crate) fn write_rgb16_fits(
+    output: &Path,
+    width: usize,
+    height: usize,
+    interleaved: &[u16],
+) -> Result<()> {
+    let planes = deinterleave_to_planes(interleaved);
+    let pixels = PixelData::I16(planes.iter().map(|&p| (p as i32 - 32768) as i16).collect());
+    write_pixel_fits(output, vec![width, height, 3], pixels, 1.0, 32768.0)
+}
+
 /// Write a FITS file with the given pixel data, recording `bscale`/`bzero` in
 /// the BSCALE/BZERO header keywords so readers can recover the original
 /// (potentially unsigned or wider-range) physical values.
@@ -181,6 +302,14 @@ pub(crate) fn ensure_can_write(output: &Path, force: bool) -> Result<()> {
 pub(crate) fn print_progress(verbose: bool, input: &Path, output: &Path) {
     if verbose {
         println!("{} -> {}", input.display(), output.display());
+    }
+}
+
+/// Print the name of an operation (reading, debayering, …) when verbose mode is
+/// enabled.
+pub(crate) fn print_step(verbose: bool, step: &str) {
+    if verbose {
+        println!("  {step}");
     }
 }
 

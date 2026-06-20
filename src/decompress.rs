@@ -4,7 +4,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use fitskit::{FitsFile, HduData};
 
-use crate::fits_image::{ensure_can_write, print_progress};
+use crate::fits_image::{ensure_can_write, print_progress, print_step};
 use crate::options::Options;
 
 pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
@@ -15,12 +15,14 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
     }
     print_progress(opts.verbose, input, output);
 
+    print_step(opts.verbose, "reading");
     let fits = FitsFile::from_file(input)
         .with_context(|| format!("cannot read {}", input.display()))?;
 
     let mut first_image: Option<fitskit::ImageData> = None;
     let mut extra_hdus: Vec<fitskit::Hdu> = Vec::new();
 
+    print_step(opts.verbose, "decompressing");
     for hdu in &fits.hdus {
         if let Some(cimg) = hdu.as_compressed_image() {
             let img = cimg
@@ -48,6 +50,7 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
         out_fits.push_extension(hdu);
     }
 
+    print_step(opts.verbose, "writing");
     out_fits
         .to_file(output)
         .with_context(|| format!("cannot write {}", output.display()))?;

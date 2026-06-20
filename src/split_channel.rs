@@ -5,8 +5,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use fitskit::{FitsFile, PixelData};
 
 use crate::fits_image::{
-    demosaic_to_rgb, ensure_can_write, find_image_hdu, get_bayerpat, print_progress, resolve_cfa,
-    scaled_pixels, write_pixel_fits, RgbBuffer,
+    demosaic_to_rgb, ensure_can_write, find_image_hdu, get_bayerpat, print_progress, print_step,
+    resolve_cfa, scaled_pixels, write_pixel_fits, RgbBuffer,
 };
 use crate::options::SplitChannelOptions;
 
@@ -31,6 +31,7 @@ pub fn parse_channel_format(s: &str) -> Result<ChannelFormat, String> {
 }
 
 pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()> {
+    print_step(opts.verbose, "reading");
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
@@ -50,9 +51,11 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
         let cfa = resolve_cfa(header, opts.pattern)
             .with_context(|| format!("{}: cannot determine Bayer pattern", input.display()))?;
 
+        print_step(opts.verbose, "debayering");
         let (width, height, rgb) = demosaic_to_rgb(header, img, cfa)
             .with_context(|| format!("{}: debayering failed", input.display()))?;
 
+        print_step(opts.verbose, "splitting channels");
         let (r, g, b) = deinterleave(rgb);
         (width, height, r, g, b)
     } else {
@@ -63,6 +66,7 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
             );
         }
 
+        print_step(opts.verbose, "splitting channels");
         let width = img.axes[0];
         let height = img.axes[1];
         let scaled = scaled_pixels(header, img);
@@ -104,6 +108,7 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
 
     for (output, values) in outputs {
         print_progress(opts.verbose, input, &output);
+        print_step(opts.verbose, "writing");
         write_channel_fits(&output, width, height, values, opts.format)?;
     }
 

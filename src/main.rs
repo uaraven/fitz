@@ -4,6 +4,7 @@ mod decompress;
 mod fits_image;
 mod options;
 mod split_channel;
+mod stretch;
 #[cfg(test)]
 mod test_support;
 
@@ -19,8 +20,9 @@ use fitskit::CompressionType;
 use compress::compress_file;
 use debayer::{debayer_file, parse_output_format, OutputFormat};
 use decompress::decompress_file;
-use options::{DebayerOptions, Options, SplitChannelOptions};
+use options::{DebayerOptions, Options, SplitChannelOptions, StretchOptions};
 use split_channel::{parse_channel_format, split_channel_file, ChannelFormat};
+use stretch::stretch_file;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum Algorithm {
@@ -97,6 +99,8 @@ enum Command {
     Decompress(DecompressArgs),
     /// Debayer a FITS mosaic image and save it as a FITS or TIFF file
     Debayer(DebayerArgs),
+    /// Auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file
+    Stretch(StretchArgs),
     /// Debayer a FITS mosaic image and save each color channel as a separate FITS file
     #[command(name = "split")]
     SplitChannel(SplitChannelArgs),
@@ -176,6 +180,39 @@ struct DebayerArgs {
 }
 
 #[derive(clap::Args)]
+struct StretchArgs {
+    /// Overwrite output file if it already exists
+    #[arg(short = 'f', long)]
+    force: bool,
+
+    /// Apply one shared stretch to all channels instead of stretching each
+    /// channel independently (which also neutralizes the background)
+    #[arg(long)]
+    linked_channel: bool,
+
+    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    #[arg(long)]
+    pattern: Option<BayerPattern>,
+
+    /// Always demosaic, even if the input has no BAYERPAT header but looks
+    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
+    /// raw mosaic that happens to have 3 planes for some other reason.
+    #[arg(long)]
+    force_demosaic: bool,
+
+    /// Output file format
+    #[arg(long, default_value = "fits", value_parser = parse_output_format)]
+    format: OutputFormat,
+
+    /// Write output to this file, or to this folder if processing multiple files
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+
+    /// FITS files to stretch
+    files: Vec<PathBuf>,
+}
+
+#[derive(clap::Args)]
 struct SplitChannelArgs {
     /// Overwrite output files if they already exist
     #[arg(short = 'f', long)]
@@ -221,11 +258,18 @@ struct SplitChannelArgs {
     files: Vec<PathBuf>,
 }
 
-fn debayer_output_path(input: &Path, opts: &DebayerOptions) -> Result<PathBuf> {
-    let ext = opts.format.extension();
-
-    let path = match opts.output.as_deref() {
-        Some(dir) if opts.multi_file => {
+/// Derive an output path: explicit `--output` is used as-is (or joined with the
+/// input's stem when batching into a directory); otherwise the input's stem gets
+/// `suffix` and `.ext` appended, placed beside the input.
+fn derive_output_path(
+    input: &Path,
+    output: Option<&Path>,
+    multi_file: bool,
+    ext: &str,
+    suffix: &str,
+) -> Result<PathBuf> {
+    let path = match output {
+        Some(dir) if multi_file => {
             let stem = file_stem(input)?;
             let mut name: OsString = stem.to_owned();
             name.push(format!(".{ext}"));
@@ -235,11 +279,31 @@ fn debayer_output_path(input: &Path, opts: &DebayerOptions) -> Result<PathBuf> {
         None => {
             let stem = file_stem(input)?;
             let mut name: OsString = stem.to_owned();
-            name.push(format!("_debayer.{ext}"));
+            name.push(format!("{suffix}.{ext}"));
             place_beside(input, name)
         }
     };
     Ok(path)
+}
+
+fn debayer_output_path(input: &Path, opts: &DebayerOptions) -> Result<PathBuf> {
+    derive_output_path(
+        input,
+        opts.output.as_deref(),
+        opts.multi_file,
+        opts.format.extension(),
+        "_debayer",
+    )
+}
+
+fn stretch_output_path(input: &Path, opts: &StretchOptions) -> Result<PathBuf> {
+    derive_output_path(
+        input,
+        opts.output.as_deref(),
+        opts.multi_file,
+        opts.format.extension(),
+        "_stretch",
+    )
 }
 
 fn file_stem(input: &Path) -> Result<&std::ffi::OsStr> {
@@ -314,6 +378,7 @@ fn main() -> ExitCode {
             verbose,
         ),
         Command::Debayer(a) => run_debayer(a, verbose),
+        Command::Stretch(a) => run_stretch(a, verbose),
         Command::SplitChannel(a) => run_split_channel(a, verbose),
     }
 }
@@ -380,6 +445,26 @@ fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
     process_files(&files, |path| {
         let output = debayer_output_path(path, &opts)?;
         debayer_file(path, &output, &opts)
+    })
+}
+
+fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
+    let StretchArgs { force, linked_channel, pattern, force_demosaic, format, output, files } = args;
+
+    let opts = StretchOptions {
+        force,
+        verbose,
+        linked: linked_channel,
+        pattern: pattern.map(Into::into),
+        force_demosaic,
+        format,
+        output,
+        multi_file: files.len() > 1,
+    };
+
+    process_files(&files, |path| {
+        let output = stretch_output_path(path, &opts)?;
+        stretch_file(path, &output, &opts)
     })
 }
 
