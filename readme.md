@@ -1,6 +1,6 @@
 # fitz
 
-Fitz is an Linux/MacOS CLI utility for working with FITS (astronomic images) files. 
+Fitz is a utility for working with FITS (astronomic images) files. 
 
 Fitz supports following operations on FITS files:
  - compression using RICE_1 and GZIP algorithms
@@ -8,6 +8,7 @@ Fitz supports following operations on FITS files:
  - debayering a mosaic image and saving it as a FITS  or TIFF file
  - auto-stretching an image (debayering it first if needed) and saving it as a FITS or TIFF file
  - Split FITS file into separate per-channel R,G,B files, debayering if needed. 
+ - Preview fits file in terminal window
 
 ## Usage
 
@@ -25,6 +26,7 @@ fitz [options] COMMAND [command-options]
  - `stretch` to auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file. Use `fitz stretch --help` to see more options
  - `split` to debayer a FITS mosaic image (or split an already-debayered RGB cube) and save each color channel as a separate FITS file. Use `fitz split --help` to see more options
  - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics). Use `fitz info --help` to see more options
+ - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using maximal available quality mode. See [Preview section](#preview) for more details.
 
 ### compress
 
@@ -158,6 +160,54 @@ Options:
   -v, --verbose  Print each file being processed
   -h, --help     Print help
 ```
+
+### preview
+
+Renders a FITS image directly in the terminal instead of writing a file. The image is loaded, debayered if needed, auto-stretched, downscaled to fit the terminal, and printed as colored text — a quick way to eyeball a frame over SSH or without opening a viewer.
+
+The image goes through the same pipeline as `stretch`: the Bayer pattern comes from `--pattern` when given and otherwise from the FITS `BAYERPAT` header, an input that is already a 3-plane RGB cube (`NAXIS3=3`) with no `BAYERPAT` header is treated as already-debayered (use `--force-demosaic`, with `--pattern`, to demosaic it anyway), and `--linked-channel` applies one shared stretch to all channels instead of stretching each independently.
+
+Unlike the other commands, `preview` accepts exactly one file.
+
+
+`preview` requires terminal to support at least 216-color mode or better. If terminal is unable to render more than 16 colors, the preview will not work.
+
+For terminals that support true-color mode the preview will use it
+![](docs/ascii-preview.png)
+
+If true-color mode is not supported, then the preview will fall back to 216-color mode. The quality is not good, but might be enough to have a quick preview.
+![](docs/ascii-preview-216c.png)
+
+If terminal supports Kitty graphics protocol, the preview will be shown as a picture
+![](docs/graphics-preview.png)
+
+By default `preview` auto-detects the best available mode: it probes for the Kitty graphics protocol and uses it when supported, otherwise it falls back to true-color and then 216-color ANSI text. Two flags override this detection:
+
+ - `--graphics` forces the Kitty graphics protocol even if detection is skipped or inconclusive (useful when your terminal supports it but doesn't answer the capability query).
+ - `--truecolor` forces true-color ANSI half-block rendering instead of the Kitty graphics protocol.
+
+These two flags are mutually exclusive.
+
+
+```
+Usage: fitz preview [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  FITS file to preview (only a single file is accepted)
+
+Options:
+      --linked-channel     Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
+      --pattern <PATTERN>  Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
+      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB cube
+      --graphics           Force kitty graphics protocol rendering, skipping auto-detection
+      --truecolor          Force true-color ANSI half-block rendering, skipping auto-detection
+  -v, --verbose            Print each file being processed
+  -h, --help               Print help
+```
+
+## Note
+
+This is a small personal project and as such it is not thouroughly tested and not optimized in any way. Use at your own risk.
 
 ## AI Warning
 
