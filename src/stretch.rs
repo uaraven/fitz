@@ -35,7 +35,8 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input)?;
+    let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
+    let img = img.as_ref();
 
     let (width, height, rgb) =
         load_rgb(header, img, input, opts.pattern, opts.force_demosaic, opts.verbose)?;
@@ -392,6 +393,26 @@ mod tests {
         let output = tmp.path().join("out.fits");
         let err = stretch_file(&input, &output, &StretchOptions::default()).unwrap_err();
         assert!(err.to_string().contains("Bayer pattern"));
+    }
+
+    #[test]
+    fn stretch_handles_tile_compressed_input() {
+        // A compressed .fz input must be decompressed and stretched into a
+        // 3-plane cube just like its uncompressed equivalent.
+        let tmp = TempDir::new().unwrap();
+        let output = tmp.path().join("out.fits");
+        stretch_file(
+            &test_data("compressed.fits.fz"),
+            &output,
+            &StretchOptions::default(),
+        )
+        .unwrap();
+
+        let fits = FitsFile::from_file(&output).unwrap();
+        match &fits.primary().data {
+            HduData::Image(img) => assert_eq!(img.axes, vec![3008, 3008, 3]),
+            _ => panic!("expected image data"),
+        }
     }
 
     fn assert_stretch_matches_known_hash(format: OutputFormat, hash_file: &str) {

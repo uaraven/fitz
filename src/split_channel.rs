@@ -35,7 +35,8 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input)?;
+    let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
+    let img = img.as_ref();
 
     let try_demosaic = opts.force_demosaic || get_bayerpat(header).is_some();
 
@@ -205,7 +206,7 @@ fn write_channel_fits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
+    use crate::test_support::{copy_to_temp, test_data, write_mosaic_fits, write_rgb_cube_fits};
     use fitskit::HduData;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
@@ -311,6 +312,20 @@ mod tests {
 
         let err = split_channel_file(&input, &SplitChannelOptions::default()).unwrap_err();
         assert!(err.to_string().contains("3-plane RGB cube"));
+    }
+
+    #[test]
+    fn split_channel_handles_tile_compressed_input() {
+        // A compressed .fz input must be decompressed before debayering and
+        // splitting into the three per-channel files.
+        let tmp = TempDir::new().unwrap();
+        let input = copy_to_temp("compressed.fits.fz", &tmp);
+
+        split_channel_file(&input, &SplitChannelOptions::default()).unwrap();
+
+        assert!(tmp.path().join("R-compressed.fits.fz").exists());
+        assert!(tmp.path().join("G-compressed.fits.fz").exists());
+        assert!(tmp.path().join("B-compressed.fits.fz").exists());
     }
 
     fn assert_split_channel_matches_known_hashes(format: ChannelFormat, suffix: &str) {

@@ -43,7 +43,8 @@ Thin CLI over the **`fitskit`** crate (FITS read/write/tile-compression). Other 
   image HDU, resolve the Bayer pattern, demosaic into an interleaved RGB buffer, and write
   results back as FITS or TIFF.
 - **Per-command modules** — `compress.rs`, `decompress.rs`, `debayer.rs`, `stretch.rs`,
-  `split_channel.rs`. Each exposes a `*_file(input, output, opts)` function.
+  `split_channel.rs`, `info.rs`. Each exposes a `*_file(input, …, opts)` function (`info`
+  only reads and prints, so it takes no output path).
 - **`test_support.rs`** (test-only) — fixtures: locate bundled `test-data/`, copy into a
   temp dir, synthesize small FITS images.
 
@@ -52,6 +53,12 @@ Thin CLI over the **`fitskit`** crate (FITS read/write/tile-compression). Other 
 - **Batch processing, per-file errors:** `process_files` runs the command over every input
   path; a failure on one file prints `fitz: <path>: <err>` to stderr and is recorded, but
   does not abort the batch. The process exit code is FAILURE if any file failed.
+- **Transparent decompression on read:** `find_image_hdu` in `fits_image.rs` is the single
+  entry point the `debayer`/`stretch`/`split`/`info` commands use to get an image. It
+  borrows a plain image HDU but decompresses a tile-compressed (`ZIMAGE`) HDU into an owned
+  `ImageData`, returning a `Cow<ImageData>`, so every read-side command works on `.fz` inputs
+  with no separate decompress step. The compressed HDU's header carries the original
+  keywords (BAYERPAT, BSCALE/BZERO, RA/DEC, …), so downstream logic is unchanged.
 - **Shared "already debayered" detection:** `load_rgb` in `fits_image.rs` is the single
   source of truth for debayer/stretch/split. A 2D image is demosaiced; a 3-plane image
   (`NAXIS3=3`) with **no** `BAYERPAT` header is treated as an already-debayered RGB cube and

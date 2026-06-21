@@ -68,7 +68,8 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input)?;
+    let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
+    let img = img.as_ref();
 
     let source = SourceFormat::from_image(header, img);
 
@@ -435,6 +436,26 @@ mod tests {
         let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn debayer_handles_tile_compressed_input() {
+        // The bundled .fz holds a GRBG mosaic in a compressed extension HDU;
+        // debayer must decompress it transparently and produce a 3-plane cube.
+        let tmp = TempDir::new().unwrap();
+        let output = tmp.path().join("out.fits");
+        debayer_file(
+            &test_data("compressed.fits.fz"),
+            &output,
+            &DebayerOptions::default(),
+        )
+        .unwrap();
+
+        let fits = FitsFile::from_file(&output).unwrap();
+        match &fits.primary().data {
+            HduData::Image(img) => assert_eq!(img.axes, vec![3008, 3008, 3]),
+            _ => panic!("expected image data"),
+        }
     }
 
     #[test]

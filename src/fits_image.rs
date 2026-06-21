@@ -2,6 +2,7 @@
 //! the image HDU, resolving the Bayer pattern, demosaicing a mosaic into an
 //! interleaved RGB buffer, and writing pixel data back out as FITS.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Cursor;
 use std::path::Path;
@@ -28,21 +29,32 @@ pub(crate) enum RgbBuffer {
     U16(Vec<u16>),
 }
 
-/// Find the first image HDU in a FITS file, returning its header and pixels.
+/// Find the first image in a FITS file, returning its header and pixels.
+///
+/// A plain image HDU is borrowed directly; a tile-compressed image HDU
+/// (`ZIMAGE`) is transparently decompressed into an owned [`ImageData`], so
+/// every command works on both raw and `.fz`-compressed inputs. For a
+/// compressed image the returned header is the compressed HDU's own header,
+/// which carries the original keywords (BAYERPAT, BSCALE/BZERO, RA/DEC, …)
+/// alongside the `Z*` compression keywords.
 pub(crate) fn find_image_hdu<'a>(
     fits: &'a FitsFile,
     input: &Path,
-) -> Result<(&'a Header, &'a ImageData)> {
-    let hdu = fits
-        .hdus
-        .iter()
-        .find(|h| matches!(h.data, HduData::Image(_)))
-        .ok_or_else(|| anyhow!("no image data found in {}", input.display()))?;
-
-    match &hdu.data {
-        HduData::Image(img) => Ok((&hdu.header, img)),
-        _ => unreachable!(),
+    verbose: bool,
+) -> Result<(&'a Header, Cow<'a, ImageData>)> {
+    for hdu in &fits.hdus {
+        if let HduData::Image(img) = &hdu.data {
+            return Ok((&hdu.header, Cow::Borrowed(img)));
+        }
+        if let Some(cimg) = hdu.as_compressed_image() {
+            print_step(verbose, "decompressing");
+            let img = cimg
+                .decompress()
+                .with_context(|| format!("{}: decompression failed", input.display()))?;
+            return Ok((&hdu.header, Cow::Owned(img)));
+        }
     }
+    Err(anyhow!("no image data found in {}", input.display()))
 }
 
 pub(crate) fn resolve_cfa(header: &Header, cli_pattern: Option<CFA>) -> Result<CFA> {
