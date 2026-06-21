@@ -3,9 +3,13 @@ mod debayer;
 mod decompress;
 mod fits_image;
 mod info;
+mod kitty;
 mod options;
+mod preview;
 mod split_channel;
 mod stretch;
+mod terminal;
+
 #[cfg(test)]
 mod test_support;
 
@@ -13,17 +17,20 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use bayer::CFA;
 use clap::{Parser, Subcommand, ValueEnum};
 use fitskit::CompressionType;
 
 use compress::compress_file;
-use debayer::{debayer_file, parse_output_format, OutputFormat};
+use debayer::{OutputFormat, debayer_file, parse_output_format};
 use decompress::decompress_file;
 use info::info_file;
-use options::{DebayerOptions, InfoOptions, Options, SplitChannelOptions, StretchOptions};
-use split_channel::{parse_channel_format, split_channel_file, ChannelFormat};
+use options::{
+    DebayerOptions, InfoOptions, Options, PreviewOptions, SplitChannelOptions, StretchOptions,
+};
+use preview::preview_file;
+use split_channel::{ChannelFormat, parse_channel_format, split_channel_file};
 use stretch::stretch_file;
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -108,6 +115,8 @@ enum Command {
     SplitChannel(SplitChannelArgs),
     /// Print information about FITS files (resolution, bit depth, channels, coordinates, pixel stats)
     Info(InfoArgs),
+    /// Render a FITS image to the terminal as colored ANSI text (auto-stretched, debayered if needed)
+    Preview(PreviewArgs),
 }
 
 #[derive(clap::Args)]
@@ -268,6 +277,35 @@ struct InfoArgs {
     files: Vec<PathBuf>,
 }
 
+#[derive(clap::Args)]
+struct PreviewArgs {
+    /// Apply one shared stretch to all channels instead of stretching each
+    /// channel independently (which also neutralizes the background)
+    #[arg(long)]
+    linked_channel: bool,
+
+    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    #[arg(long)]
+    pattern: Option<BayerPattern>,
+
+    /// Always demosaic, even if the input has no BAYERPAT header but looks
+    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
+    /// raw mosaic that happens to have 3 planes for some other reason.
+    #[arg(long)]
+    force_demosaic: bool,
+
+    /// Force kitty graphics protocol rendering, skipping auto-detection
+    #[arg(long, conflicts_with = "truecolor")]
+    graphics: bool,
+
+    /// Force true-color ANSI half-block rendering, skipping auto-detection
+    #[arg(long)]
+    truecolor: bool,
+
+    /// FITS file to preview (only a single file is accepted)
+    file: PathBuf,
+}
+
 /// Derive an output path: explicit `--output` is used as-is (or joined with the
 /// input's stem when batching into a directory); otherwise the input's stem gets
 /// `suffix` and `.ext` appended, placed beside the input.
@@ -391,6 +429,7 @@ fn main() -> ExitCode {
         Command::Stretch(a) => run_stretch(a, verbose),
         Command::SplitChannel(a) => run_split_channel(a, verbose),
         Command::Info(a) => run_info(a, verbose),
+        Command::Preview(a) => run_preview(a, verbose),
     }
 }
 
@@ -410,7 +449,11 @@ fn process_files(files: &[PathBuf], mut process: impl FnMut(&Path) -> Result<()>
         }
     }
 
-    if had_error { ExitCode::FAILURE } else { ExitCode::SUCCESS }
+    if had_error {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn run_compress_decompress(
@@ -427,7 +470,14 @@ fn run_compress_decompress(
         return ExitCode::FAILURE;
     }
 
-    let opts = Options { keep, force, verbose, output, algorithm, multi_file: files.len() > 1 };
+    let opts = Options {
+        keep,
+        force,
+        verbose,
+        output,
+        algorithm,
+        multi_file: files.len() > 1,
+    };
 
     process_files(&files, |path| {
         let output = output_path(path, &opts, is_decompress);
@@ -440,7 +490,15 @@ fn run_compress_decompress(
 }
 
 fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
-    let DebayerArgs { force, bpp, pattern, force_demosaic, format, output, files } = args;
+    let DebayerArgs {
+        force,
+        bpp,
+        pattern,
+        force_demosaic,
+        format,
+        output,
+        files,
+    } = args;
 
     let opts = DebayerOptions {
         force,
@@ -460,7 +518,15 @@ fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
 }
 
 fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
-    let StretchArgs { force, linked_channel, pattern, force_demosaic, format, output, files } = args;
+    let StretchArgs {
+        force,
+        linked_channel,
+        pattern,
+        force_demosaic,
+        format,
+        output,
+        files,
+    } = args;
 
     let opts = StretchOptions {
         force,
@@ -517,6 +583,34 @@ fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
     process_files(&files, |path| info_file(path, &opts))
 }
 
+/// Unlike the other commands, `preview` renders to the terminal and so accepts
+/// exactly one file (enforced by clap's single `PathBuf` argument).
+fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
+    let PreviewArgs {
+        linked_channel,
+        pattern,
+        force_demosaic,
+        graphics,
+        truecolor,
+        file,
+    } = args;
+
+    let opts = PreviewOptions {
+        verbose,
+        linked: linked_channel,
+        pattern: pattern.map(Into::into),
+        force_demosaic,
+        force_kitty: graphics,
+        force_truecolor: truecolor,
+    };
+
+    if let Err(e) = preview_file(&file, &opts) {
+        eprintln!("fitz: {}: {e:#}", file.display());
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,13 +631,21 @@ mod tests {
 
     #[test]
     fn compress_explicit_output_used_as_is() {
-        let p = output_path(Path::new("/data/image.fit"), &opts(Some("/out/result.fz"), false), false);
+        let p = output_path(
+            Path::new("/data/image.fit"),
+            &opts(Some("/out/result.fz"), false),
+            false,
+        );
         assert_eq!(p, PathBuf::from("/out/result.fz"));
     }
 
     #[test]
     fn compress_multi_file_joins_filename_into_dir() {
-        let p = output_path(Path::new("/data/image.fit"), &opts(Some("/out"), true), false);
+        let p = output_path(
+            Path::new("/data/image.fit"),
+            &opts(Some("/out"), true),
+            false,
+        );
         assert_eq!(p, PathBuf::from("/out/image.fit.fz"));
     }
 
@@ -561,23 +663,39 @@ mod tests {
 
     #[test]
     fn decompress_explicit_output_used_as_is() {
-        let p = output_path(Path::new("/data/image.fits.fz"), &opts(Some("/out/result.fits"), false), true);
+        let p = output_path(
+            Path::new("/data/image.fits.fz"),
+            &opts(Some("/out/result.fits"), false),
+            true,
+        );
         assert_eq!(p, PathBuf::from("/out/result.fits"));
     }
 
     #[test]
     fn decompress_multi_file_strips_fz_into_dir() {
-        let p = output_path(Path::new("/data/image.fits.fz"), &opts(Some("/out"), true), true);
+        let p = output_path(
+            Path::new("/data/image.fits.fz"),
+            &opts(Some("/out"), true),
+            true,
+        );
         assert_eq!(p, PathBuf::from("/out/image.fits"));
     }
 
     #[test]
     fn decompress_multi_file_no_fz_ext_keeps_filename() {
-        let p = output_path(Path::new("/data/image.fits"), &opts(Some("/out"), true), true);
+        let p = output_path(
+            Path::new("/data/image.fits"),
+            &opts(Some("/out"), true),
+            true,
+        );
         assert_eq!(p, PathBuf::from("/out/image.fits"));
     }
 
-    fn debayer_opts(format: OutputFormat, output: Option<&str>, multi_file: bool) -> DebayerOptions {
+    fn debayer_opts(
+        format: OutputFormat,
+        output: Option<&str>,
+        multi_file: bool,
+    ) -> DebayerOptions {
         DebayerOptions {
             format,
             output: output.map(PathBuf::from),

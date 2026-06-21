@@ -37,13 +37,17 @@
             "args": []
         },
         {
-            "name": "Debug unit tests in executable 'fitz'",
+            "name": "fitz preview",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
-                    "test",
-                    "--bin=fitz"
+                    "run",
+                    "--bin=fitz",
+                    "--",
+                    "preview",
+                    "test-data/uncompressed.fit"
+                
                 ]
             }
         }

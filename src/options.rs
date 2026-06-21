@@ -97,6 +97,24 @@ pub struct InfoOptions {
     pub verbose: bool,
 }
 
+#[derive(Default)]
+pub struct PreviewOptions {
+    pub verbose: bool,
+    /// Apply one shared set of stretch parameters to all channels instead of
+    /// stretching each channel independently.
+    pub linked: bool,
+    /// Bayer pattern override; takes precedence over the FITS header's
+    /// BAYERPAT keyword. Falls back to BAYERPAT when not given.
+    pub pattern: Option<CFA>,
+    /// Always demosaic, even if the input looks like an already-debayered
+    /// RGB cube (no BAYERPAT header, 3-plane image). See `DebayerOptions::force_demosaic`.
+    pub force_demosaic: bool,
+    /// Force kitty graphics protocol rendering, bypassing auto-detection.
+    pub force_kitty: bool,
+    /// Force true-color ANSI half-block rendering, bypassing auto-detection.
+    pub force_truecolor: bool,
+}
+
 pub struct SplitChannelOptions {
     pub force: bool,
     pub verbose: bool,
