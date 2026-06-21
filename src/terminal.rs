@@ -30,7 +30,10 @@ fn dimensions_or_fallback(size: Option<(Width, Height)>) -> (u16, u16) {
 /// The pixel size of a single character cell, `(width, height)`, or `None` when
 /// the terminal doesn't report it (or on unsupported platforms). Used to size a
 /// kitty-graphics image to the terminal's actual pixel canvas.
-#[cfg(target_os = "linux")]
+///
+/// The `TIOCGWINSZ` ioctl and its pixel fields are POSIX/BSD, so the same code
+/// serves Linux and macOS; only Windows falls back to the `None` stub below.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn terminal_cell_pixels() -> Option<(u16, u16)> {
     // SAFETY: a zeroed `winsize` is a valid value, and `TIOCGWINSZ` only writes
     // into it. We ignore the call on any error or non-positive field.
@@ -47,7 +50,7 @@ pub fn terminal_cell_pixels() -> Option<(u16, u16)> {
     Some((ws.ws_xpixel / ws.ws_col, ws.ws_ypixel / ws.ws_row))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn terminal_cell_pixels() -> Option<(u16, u16)> {
     None
 }
@@ -56,9 +59,11 @@ pub fn terminal_cell_pixels() -> Option<(u16, u16)> {
 /// a graphics query (`a=q`) plus a primary device-attributes request and seeing
 /// whether a graphics response (`_G…OK`) comes back before the DA reply.
 ///
-/// Only meaningful on Linux with a TTY on both stdin and stdout; otherwise
-/// (non-TTY, or unsupported platform) returns `false`.
-#[cfg(target_os = "linux")]
+/// Only meaningful on Linux or macOS with a TTY on both stdin and stdout;
+/// otherwise (non-TTY, or unsupported platform) returns `false`. The raw-mode
+/// query uses only POSIX/BSD `termios`/`poll` primitives, so one implementation
+/// covers both platforms.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn supports_kitty_graphics() -> bool {
     use std::io::Write;
     use std::os::fd::AsRawFd;
@@ -120,14 +125,14 @@ pub fn supports_kitty_graphics() -> bool {
     contains_graphics_ok(&buf)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn supports_kitty_graphics() -> bool {
     false
 }
 
 /// True if `buf` contains a kitty graphics response acknowledging support: an
 /// APC graphics frame (`\x1b_G`) carrying `OK`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn contains_graphics_ok(buf: &[u8]) -> bool {
     let Some(start) = buf.windows(2).position(|w| w == b"\x1b_") else {
         return false;
@@ -138,7 +143,7 @@ fn contains_graphics_ok(buf: &[u8]) -> bool {
 
 /// Block until `fd` is readable or `timeout_ms` elapses; returns whether data is
 /// ready. Used to bound the wait for a terminal query response.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn wait_readable(fd: i32, timeout_ms: i32) -> bool {
     let mut pfd = libc::pollfd {
         fd,
@@ -152,13 +157,13 @@ fn wait_readable(fd: i32, timeout_ms: i32) -> bool {
 
 /// RAII guard that puts a terminal fd into raw mode and restores the original
 /// `termios` attributes when dropped.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct RawMode {
     fd: i32,
     original: libc::termios,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl RawMode {
     fn enable(fd: i32) -> Option<Self> {
         // SAFETY: `tcgetattr` only writes a valid `termios` into the zeroed value.
@@ -181,7 +186,7 @@ impl RawMode {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for RawMode {
     fn drop(&mut self) {
         // SAFETY: restoring the previously-captured, valid attributes.
@@ -226,7 +231,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn graphics_ok_detected_only_with_apc_frame() {
         // A real kitty reply: graphics frame with OK, then the DA response.

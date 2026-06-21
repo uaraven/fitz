@@ -188,6 +188,8 @@ Unlike the other commands, `preview` accepts exactly one file.
 
 If terminal supports Kitty graphics protocol, the preview will be shown as a picture, otherwise for terminals that support true-color mode the preview will use it. If true-color mode is not supported, then the preview will fall back to 216-color mode. The quality is not good, but might be enough to have a quick look at the image.
 
+Automatic Kitty graphics detection is supported on Linux and macOS. On other platforms, use `--graphics` to force the Kitty protocol when your terminal supports it.
+
 |          Fallback mode           |       True-color mode       |         Graphics mode          |
 | :------------------------------: | :-------------------------: | :----------------------------: |
 | ![](docs/ascii-preview-216c.png) | ![](docs/ascii-preview.png) | ![](docs/graphics-preview.png) |
