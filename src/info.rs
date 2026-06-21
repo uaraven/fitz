@@ -51,6 +51,13 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         channel_label(channels, header)
     );
 
+    if let Some(pat) = get_bayerpat(header) {
+        let pat = pat.trim();
+        if !pat.is_empty() {
+            let _ = writeln!(out, "  Bayer:       {pat}");
+        }
+    }
+
     if let Some(object) = header.get_string("OBJECT") {
         let object = object.trim();
         if !object.is_empty() {
@@ -58,8 +65,8 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         }
     }
 
-    push_coordinate(&mut out, header, "RA", "RA", "OBJCTRA");
-    push_coordinate(&mut out, header, "DEC", "DEC", "OBJCTDEC");
+    push_coordinate(&mut out, header, Axis::Ra, "RA", "OBJCTRA");
+    push_coordinate(&mut out, header, Axis::Dec, "DEC", "OBJCTDEC");
 
     if let Some(exptime) = header.get_float("EXPTIME") {
         let _ = writeln!(out, "  Exposure:    {} s", trim_float(exptime));
@@ -121,26 +128,36 @@ fn bit_depth_label(header: &Header, img: &ImageData) -> String {
     }
 }
 
-/// Describe the channel layout, noting the Bayer pattern for raw mosaics.
+/// Describe the channel layout. The Bayer pattern itself is reported on its own
+/// `Bayer:` line, so the raw-mosaic case just notes that it is a mosaic.
 fn channel_label(channels: usize, header: &Header) -> String {
     if channels == 3 {
         return "debayered RGB".to_string();
     }
     match get_bayerpat(header) {
-        Some(pat) => format!("mosaic, BAYERPAT={}", pat.trim()),
+        Some(_) => "mosaic".to_string(),
         None => "monochrome / undebayered".to_string(),
     }
 }
 
-/// Append a sky coordinate to `out`, preferring the decimal-degree keyword and
-/// appending the sexagesimal string form when present.
-fn push_coordinate(
-    out: &mut String,
-    header: &Header,
-    label: &str,
-    deg_key: &str,
-    sexagesimal_key: &str,
-) {
+/// Which sky axis a coordinate is, selecting its sexagesimal convention: right
+/// ascension is expressed in hours (`h m s`, 360° = 24h), declination in signed
+/// degrees (`° ' "`).
+#[derive(Clone, Copy)]
+enum Axis {
+    Ra,
+    Dec,
+}
+
+/// Append a sky coordinate to `out`. When the decimal-degree keyword is present
+/// it is rendered in sexagesimal form (hours for RA, degrees for DEC) with the
+/// decimal value in parentheses; otherwise the raw sexagesimal header string is
+/// shown verbatim.
+fn push_coordinate(out: &mut String, header: &Header, axis: Axis, deg_key: &str, sexagesimal_key: &str) {
+    let label = match axis {
+        Axis::Ra => "RA",
+        Axis::Dec => "DEC",
+    };
     let deg = header.get_float(deg_key);
     let sexagesimal = header
         .get_string(sexagesimal_key)
@@ -148,11 +165,42 @@ fn push_coordinate(
         .filter(|s| !s.is_empty());
 
     let _ = match (deg, sexagesimal) {
-        (Some(d), Some(s)) => writeln!(out, "  {label}:{}{} deg ({s})", pad(label), trim_float(d)),
-        (Some(d), None) => writeln!(out, "  {label}:{}{} deg", pad(label), trim_float(d)),
+        (Some(d), _) => writeln!(out, "  {label}:{}{}", pad(label), format_coordinate(axis, d)),
         (None, Some(s)) => writeln!(out, "  {label}:{}{s}", pad(label)),
         (None, None) => Ok(()),
     };
+}
+
+/// Format a decimal-degree coordinate in sexagesimal form with the decimal value
+/// echoed in parentheses, e.g. `20h 30m 00.00s (20.5h)` for RA or
+/// `-12° 30' 00.00" (-12.5°)` for DEC.
+fn format_coordinate(axis: Axis, deg: f64) -> String {
+    match axis {
+        Axis::Ra => {
+            // 360 degrees of RA span 24 hours, so hours = degrees / 15.
+            let hours = deg / 15.0;
+            let (h, m, s) = sexagesimal(hours.abs());
+            let sign = if hours < 0.0 { "-" } else { "" };
+            format!("{sign}{h}h {m:02}m {s:05.2}s ({}h)", trim_float(hours))
+        }
+        Axis::Dec => {
+            let (d, m, s) = sexagesimal(deg.abs());
+            let sign = if deg < 0.0 { "-" } else { "" };
+            format!("{sign}{d}° {m:02}' {s:05.2}\" ({}°)", trim_float(deg))
+        }
+    }
+}
+
+/// Split a non-negative decimal value into whole units, minutes and seconds.
+/// Rounding is done on the total seconds first so any carry propagates and the
+/// returned minutes/seconds stay in `[0, 60)`.
+fn sexagesimal(value: f64) -> (u64, u64, f64) {
+    let total_seconds = (value * 3600.0 * 100.0).round() / 100.0;
+    let whole = (total_seconds / 3600.0).trunc();
+    let rem = total_seconds - whole * 3600.0;
+    let minutes = (rem / 60.0).trunc();
+    let seconds = rem - minutes * 60.0;
+    (whole as u64, minutes as u64, seconds)
 }
 
 /// Pad after a coordinate label so values line up with the other fields, which
@@ -234,6 +282,32 @@ mod tests {
     }
 
     #[test]
+    fn ra_formats_as_hours() {
+        // 307.5° / 15 = 20.5h = 20h 30m 00s.
+        assert_eq!(format_coordinate(Axis::Ra, 307.5), "20h 30m 00.00s (20.5h)");
+        // 0° is 00h 00m 00s.
+        assert_eq!(format_coordinate(Axis::Ra, 0.0), "0h 00m 00.00s (0h)");
+    }
+
+    #[test]
+    fn dec_formats_as_signed_degrees() {
+        assert_eq!(format_coordinate(Axis::Dec, 12.5), "12° 30' 00.00\" (12.5°)");
+        // Declination is signed.
+        assert_eq!(
+            format_coordinate(Axis::Dec, -12.5),
+            "-12° 30' 00.00\" (-12.5°)"
+        );
+    }
+
+    #[test]
+    fn sexagesimal_carries_rounding() {
+        // 1.0 - a hair: should round cleanly to 1h 00m 00s, not 0h 59m 60s.
+        let (h, m, s) = sexagesimal(0.9999999);
+        assert_eq!((h, m), (1, 0));
+        assert_eq!(s, 0.0);
+    }
+
+    #[test]
     fn pixel_stats_match_known_values() {
         // write_mosaic_fits stores sequential i16 values 0..(w*h) with no
         // BSCALE/BZERO, so physical values equal the raw pixel indices.
@@ -277,7 +351,8 @@ mod tests {
         let img = img.as_ref();
         let is_rgb_cube = get_bayerpat(header).is_none() && img.axes.len() == 3 && img.axes[2] == 3;
         assert!(!is_rgb_cube);
-        assert_eq!(channel_label(1, header), "mosaic, BAYERPAT=RGGB");
+        assert_eq!(channel_label(1, header), "mosaic");
+        assert_eq!(get_bayerpat(header).map(str::trim), Some("RGGB"));
     }
 
     #[test]
@@ -314,7 +389,8 @@ mod tests {
         let img = img.as_ref();
         assert_eq!(img.axes, vec![3008, 3008]);
         assert_eq!(bit_depth_label(header, img), "16-bit unsigned integer");
-        assert_eq!(channel_label(1, header), "mosaic, BAYERPAT=GRBG");
+        assert_eq!(channel_label(1, header), "mosaic");
+        assert_eq!(get_bayerpat(header).map(str::trim), Some("GRBG"));
     }
 
     #[test]

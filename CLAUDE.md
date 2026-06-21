@@ -84,3 +84,4 @@ Avoid code duplication - reuse the existing code when applicable, refactor if ne
 When writing code, write for performance and correctness. 
 Run unit tests after every completed change, make sure no unit tests are broken.
 For the new code add unit tests working on real data. 
+Update readme file if the changes modify command line parameters or their behaviour.
