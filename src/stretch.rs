@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use bayer::CFA;
 use fitskit::FitsFile;
+use rayon::prelude::*;
 
 use crate::debayer::OutputFormat;
 use crate::fits_image::{
@@ -78,31 +79,52 @@ pub(crate) fn load_and_stretch(
 pub fn auto_stretch(rgb: &RgbBuffer, linked: bool) -> Vec<u16> {
     let mut samples = to_normalized(rgb);
 
-    // Each `(start, step)` selects the samples one stretch applies to. Linked
-    // mode is a single stride over everything; otherwise the interleaved
-    // R,G,B,R,G,B,… channels are each stretched from their own statistics.
-    let strides: &[(usize, usize)] = if linked {
-        &[(0, 1)]
+    // Linked mode derives one stretch from all samples; otherwise the
+    // interleaved R,G,B channels are each stretched from their own statistics.
+    // The transfer of one channel never reads another, so every channel's
+    // params are derived from the original normalized samples — which lets us
+    // compute the three independent channels' params in parallel and then apply
+    // the transfer in a single parallel pass. The math (and thus the output) is
+    // identical to processing the channels one after another.
+    if linked {
+        let (shadows, midtones) = find_params(&mut samples.clone());
+        samples
+            .par_iter_mut()
+            .for_each(|v| *v = transfer(*v, shadows, midtones));
     } else {
-        &[(0, 3), (1, 3), (2, 3)]
-    };
-
-    for &(start, step) in strides {
-        let mut chan: Vec<Sample> = samples.iter().skip(start).step_by(step).copied().collect();
-        let (shadows, midtones) = find_params(&mut chan);
-        for v in samples.iter_mut().skip(start).step_by(step) {
-            *v = transfer(*v, shadows, midtones);
-        }
+        let params: Vec<(Sample, Sample)> = (0..3usize)
+            .into_par_iter()
+            .map(|start| {
+                let mut chan: Vec<Sample> =
+                    samples.iter().skip(start).step_by(3).copied().collect();
+                find_params(&mut chan)
+            })
+            .collect();
+        samples.par_chunks_mut(3).for_each(|px| {
+            for (c, v) in px.iter_mut().enumerate() {
+                let (shadows, midtones) = params[c];
+                *v = transfer(*v, shadows, midtones);
+            }
+        });
     }
 
-    samples.iter().map(|&v| round_to_u16((v * OUT_MAX) as f64)).collect()
+    samples
+        .par_iter()
+        .map(|&v| round_to_u16((v * OUT_MAX) as f64))
+        .collect()
 }
 
 /// Normalize the interleaved samples to `[0, 1]` based on the source bit depth.
 fn to_normalized(rgb: &RgbBuffer) -> Vec<Sample> {
     match rgb {
-        RgbBuffer::U8(v) => v.iter().map(|&x| x as Sample / u8::MAX as Sample).collect(),
-        RgbBuffer::U16(v) => v.iter().map(|&x| x as Sample / u16::MAX as Sample).collect(),
+        RgbBuffer::U8(v) => v
+            .par_iter()
+            .map(|&x| x as Sample / u8::MAX as Sample)
+            .collect(),
+        RgbBuffer::U16(v) => v
+            .par_iter()
+            .map(|&x| x as Sample / u16::MAX as Sample)
+            .collect(),
     }
 }
 

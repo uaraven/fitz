@@ -21,6 +21,7 @@ use anyhow::{Result, anyhow};
 use bayer::CFA;
 use clap::{Parser, Subcommand, ValueEnum};
 use fitskit::CompressionType;
+use rayon::prelude::*;
 
 use compress::compress_file;
 use debayer::{OutputFormat, debayer_file, parse_output_format};
@@ -98,6 +99,18 @@ struct Cli {
     /// Print each file being processed
     #[arg(short = 'v', long, global = true)]
     verbose: bool,
+
+    /// Number of files to process in parallel (default: number of CPU cores)
+    #[arg(short = 'j', long, global = true, default_value_t = default_jobs())]
+    jobs: usize,
+}
+
+/// The default `--jobs` value: the number of available CPU cores, or 1 if that
+/// can't be determined.
+fn default_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 #[derive(Subcommand)]
@@ -404,7 +417,19 @@ fn output_path(input: &Path, opts: &Options, is_decompress: bool) -> PathBuf {
 }
 
 fn main() -> ExitCode {
-    let Cli { command, verbose } = Cli::parse();
+    let Cli {
+        command,
+        verbose,
+        jobs,
+    } = Cli::parse();
+
+    // Size the global rayon pool that `process_files` uses to run files in
+    // parallel. 0 leaves rayon's own default (core count); any other value caps
+    // the worker threads. `build_global` only fails if called twice, so the
+    // error is irrelevant here.
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build_global();
 
     match command {
         Command::Compress(a) => run_compress_decompress(
@@ -433,21 +458,33 @@ fn main() -> ExitCode {
     }
 }
 
-/// Run `process` over every input file, printing per-file errors and mapping
-/// the overall outcome to an exit code. Errors don't abort the batch.
-fn process_files(files: &[PathBuf], mut process: impl FnMut(&Path) -> Result<()>) -> ExitCode {
+/// Run `process` over every input file in parallel (one rayon task per file,
+/// each file being fully independent), printing per-file errors and mapping the
+/// overall outcome to an exit code. Errors don't abort the batch. A single
+/// input runs inline on the current thread, avoiding any thread-pool overhead.
+fn process_files(files: &[PathBuf], process: impl Fn(&Path) -> Result<()> + Sync) -> ExitCode {
     if files.is_empty() {
         eprintln!("fitz: no files given");
         return ExitCode::FAILURE;
     }
 
-    let mut had_error = false;
-    for path in files {
+    let run = |path: &Path| {
         if let Err(e) = process(path) {
             eprintln!("fitz: {}: {e:#}", path.display());
-            had_error = true;
+            true
+        } else {
+            false
         }
-    }
+    };
+
+    let had_error = if files.len() == 1 {
+        run(&files[0])
+    } else {
+        files
+            .par_iter()
+            .map(|p| run(p))
+            .reduce(|| false, |a, b| a || b)
+    };
 
     if had_error {
         ExitCode::FAILURE

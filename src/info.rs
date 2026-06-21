@@ -2,10 +2,12 @@
 //! resolution, bit depth, channel count, sky coordinates, and (for
 //! single-channel, non-debayered data) basic pixel statistics.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use fitskit::{FitsFile, Header, ImageData};
+use rayon::prelude::*;
 
 use crate::fits_image::{find_image_hdu, get_bayerpat, print_step, scaled_pixels};
 use crate::options::InfoOptions;
@@ -35,10 +37,16 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     let width = img.axes.first().copied().unwrap_or(0);
     let height = img.axes.get(1).copied().unwrap_or(0);
 
-    println!("{}", input.display());
-    println!("  Resolution:  {width} x {height}");
-    println!("  Bit depth:   {}", bit_depth_label(header, img));
-    println!(
+    // Build the whole report in a buffer and print it with a single write, so
+    // reports for different files don't interleave when `process_files` runs the
+    // batch in parallel. Writing to a `String` is infallible, so the formatting
+    // `Result`s are discarded.
+    let mut out = String::new();
+    let _ = writeln!(out, "{}", input.display());
+    let _ = writeln!(out, "  Resolution:  {width} x {height}");
+    let _ = writeln!(out, "  Bit depth:   {}", bit_depth_label(header, img));
+    let _ = writeln!(
+        out,
         "  Channels:    {channels} ({})",
         channel_label(channels, header)
     );
@@ -46,32 +54,32 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     if let Some(object) = header.get_string("OBJECT") {
         let object = object.trim();
         if !object.is_empty() {
-            println!("  Object:      {object}");
+            let _ = writeln!(out, "  Object:      {object}");
         }
     }
 
-    print_coordinate(header, "RA", "RA", "OBJCTRA");
-    print_coordinate(header, "DEC", "DEC", "OBJCTDEC");
+    push_coordinate(&mut out, header, "RA", "RA", "OBJCTRA");
+    push_coordinate(&mut out, header, "DEC", "DEC", "OBJCTDEC");
 
     if let Some(exptime) = header.get_float("EXPTIME") {
-        println!("  Exposure:    {} s", trim_float(exptime));
+        let _ = writeln!(out, "  Exposure:    {} s", trim_float(exptime));
     }
     if let Some(filter) = header.get_string("FILTER") {
         let filter = filter.trim();
         if !filter.is_empty() {
-            println!("  Filter:      {filter}");
+            let _ = writeln!(out, "  Filter:      {filter}");
         }
     }
     if let Some(instrument) = header.get_string("INSTRUME") {
         let instrument = instrument.trim();
         if !instrument.is_empty() {
-            println!("  Instrument:  {instrument}");
+            let _ = writeln!(out, "  Instrument:  {instrument}");
         }
     }
     if let Some(date) = header.get_string("DATE-OBS") {
         let date = date.trim();
         if !date.is_empty() {
-            println!("  Date-obs:    {date}");
+            let _ = writeln!(out, "  Date-obs:    {date}");
         }
     }
 
@@ -79,7 +87,8 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     // mixing the R/G/B planes of an RGB cube would give a meaningless figure.
     if channels == 1 {
         let stats = pixel_stats(header, img);
-        println!(
+        let _ = writeln!(
+            out,
             "  Pixels:      min={} max={} mean={} median={}",
             trim_float(stats.min),
             trim_float(stats.max),
@@ -88,6 +97,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         );
     }
 
+    print!("{out}");
     Ok(())
 }
 
@@ -122,21 +132,27 @@ fn channel_label(channels: usize, header: &Header) -> String {
     }
 }
 
-/// Print a sky coordinate, preferring the decimal-degree keyword and appending
-/// the sexagesimal string form when present.
-fn print_coordinate(header: &Header, label: &str, deg_key: &str, sexagesimal_key: &str) {
+/// Append a sky coordinate to `out`, preferring the decimal-degree keyword and
+/// appending the sexagesimal string form when present.
+fn push_coordinate(
+    out: &mut String,
+    header: &Header,
+    label: &str,
+    deg_key: &str,
+    sexagesimal_key: &str,
+) {
     let deg = header.get_float(deg_key);
     let sexagesimal = header
         .get_string(sexagesimal_key)
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    match (deg, sexagesimal) {
-        (Some(d), Some(s)) => println!("  {label}:{}{} deg ({s})", pad(label), trim_float(d)),
-        (Some(d), None) => println!("  {label}:{}{} deg", pad(label), trim_float(d)),
-        (None, Some(s)) => println!("  {label}:{}{s}", pad(label)),
-        (None, None) => {}
-    }
+    let _ = match (deg, sexagesimal) {
+        (Some(d), Some(s)) => writeln!(out, "  {label}:{}{} deg ({s})", pad(label), trim_float(d)),
+        (Some(d), None) => writeln!(out, "  {label}:{}{} deg", pad(label), trim_float(d)),
+        (None, Some(s)) => writeln!(out, "  {label}:{}{s}", pad(label)),
+        (None, None) => Ok(()),
+    };
 }
 
 /// Pad after a coordinate label so values line up with the other fields, which
@@ -164,23 +180,25 @@ fn trim_float(v: f64) -> String {
 fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
     let mut values = scaled_pixels(header, img);
 
-    let mut min = f64::INFINITY;
-    let mut max = f64::NEG_INFINITY;
-    let mut sum = 0.0;
-    for &v in &values {
-        if v < min {
-            min = v;
-        }
-        if v > max {
-            max = v;
-        }
-        sum += v;
-    }
+    // min/max reduce in parallel (associative, so the result is independent of
+    // how the work is split). The sum is kept sequential so the reported mean
+    // doesn't drift with thread scheduling from reordered floating-point adds.
+    let (min, max) = values
+        .par_iter()
+        .fold(
+            || (f64::INFINITY, f64::NEG_INFINITY),
+            |(mn, mx), &v| (mn.min(v), mx.max(v)),
+        )
+        .reduce(
+            || (f64::INFINITY, f64::NEG_INFINITY),
+            |a, b| (a.0.min(b.0), a.1.max(b.1)),
+        );
 
     let n = values.len();
     let (mean, median) = if n == 0 {
         (0.0, 0.0)
     } else {
+        let sum: f64 = values.iter().sum();
         (sum / n as f64, median_in_place(&mut values))
     };
 

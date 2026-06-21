@@ -10,6 +10,7 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 use bayer::{run_demosaic, BayerDepth, RasterDepth, RasterMut, CFA};
 use fitskit::{FitsFile, HduData, Header, HeaderValue, ImageData, PixelData};
+use rayon::prelude::*;
 use tiff::encoder::{colortype, TiffEncoder};
 
 /// FITS header keywords used across the debayer/split commands.
@@ -92,7 +93,7 @@ pub(crate) fn high_byte(sample: u16) -> u8 {
 
 /// [`high_byte`] applied across an interleaved 16-bit RGB buffer.
 pub(crate) fn rgb16_to_rgb8(src: &[u16]) -> Vec<u8> {
-    src.iter().copied().map(high_byte).collect()
+    src.par_iter().copied().map(high_byte).collect()
 }
 
 /// The BSCALE/BZERO scaling recorded in the header, defaulting to the FITS
@@ -118,12 +119,29 @@ fn raw_bytes_for_demosaic(header: &Header, img: &ImageData) -> (BayerDepth, Rast
         return (BayerDepth::Depth8, RasterDepth::Depth8, v.clone());
     }
 
-    let bytes = scaled_pixels(header, img)
-        .iter()
-        .flat_map(|&v| round_to_u16(v).to_ne_bytes())
-        .collect();
+    (
+        NATIVE_BAYER_DEPTH16,
+        RasterDepth::Depth16,
+        scaled_u16_bytes(header, img),
+    )
+}
 
-    (NATIVE_BAYER_DEPTH16, RasterDepth::Depth16, bytes)
+/// Map each physical pixel value (BSCALE/BZERO applied) straight to a
+/// native-endian `u16` and emit its bytes, the form the 16-bit demosaic path
+/// consumes. Folding the scale-and-round over the raw pixels avoids the
+/// intermediate `Vec<f64>` (8 bytes/pixel) that [`scaled_pixels`] would
+/// allocate before rounding back down to 2 bytes/pixel.
+fn scaled_u16_bytes(header: &Header, img: &ImageData) -> Vec<u8> {
+    let (bscale, bzero) = bscale_bzero(header);
+    let scale = |x: f64| round_to_u16(bzero + bscale * x).to_ne_bytes();
+    match &img.pixels {
+        PixelData::U8(v) => v.par_iter().flat_map_iter(|&x| scale(x as f64)).collect(),
+        PixelData::I16(v) => v.par_iter().flat_map_iter(|&x| scale(x as f64)).collect(),
+        PixelData::I32(v) => v.par_iter().flat_map_iter(|&x| scale(x as f64)).collect(),
+        PixelData::I64(v) => v.par_iter().flat_map_iter(|&x| scale(x as f64)).collect(),
+        PixelData::F32(v) => v.par_iter().flat_map_iter(|&x| scale(x as f64)).collect(),
+        PixelData::F64(v) => v.par_iter().flat_map_iter(|&x| scale(x)).collect(),
+    }
 }
 
 pub(crate) fn demosaic_to_rgb(
@@ -157,7 +175,7 @@ pub(crate) fn demosaic_to_rgb(
         RasterDepth::Depth8 => RgbBuffer::U8(out_buf),
         RasterDepth::Depth16 => RgbBuffer::U16(
             out_buf
-                .chunks_exact(2)
+                .par_chunks_exact(2)
                 .map(|c| u16::from_ne_bytes([c[0], c[1]]))
                 .collect(),
         ),
@@ -217,39 +235,32 @@ fn rgb_from_cube(header: &Header, img: &ImageData, width: usize, height: usize) 
 
     if let PixelData::U8(v) = &img.pixels {
         let mut out = vec![0u8; plane_len * 3];
-        for i in 0..plane_len {
-            out[i * 3] = v[i];
-            out[i * 3 + 1] = v[plane_len + i];
-            out[i * 3 + 2] = v[2 * plane_len + i];
-        }
+        out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
+            px[0] = v[i];
+            px[1] = v[plane_len + i];
+            px[2] = v[2 * plane_len + i];
+        });
         return RgbBuffer::U8(out);
     }
 
     let scaled = scaled_pixels(header, img);
 
     let mut out = vec![0u16; plane_len * 3];
-    for i in 0..plane_len {
-        out[i * 3] = round_to_u16(scaled[i]);
-        out[i * 3 + 1] = round_to_u16(scaled[plane_len + i]);
-        out[i * 3 + 2] = round_to_u16(scaled[2 * plane_len + i]);
-    }
+    out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
+        px[0] = round_to_u16(scaled[i]);
+        px[1] = round_to_u16(scaled[plane_len + i]);
+        px[2] = round_to_u16(scaled[2 * plane_len + i]);
+    });
     RgbBuffer::U16(out)
 }
 
 /// Split an interleaved RGB sample buffer into concatenated R, G, B planes
 /// (the same plane order [`rgb_from_cube`] expects when reading one back).
-pub(crate) fn deinterleave_to_planes<T: Copy>(v: &[T]) -> Vec<T> {
+pub(crate) fn deinterleave_to_planes<T: Copy + Send + Sync>(v: &[T]) -> Vec<T> {
     let n = v.len() / 3;
-    let mut out = Vec::with_capacity(v.len());
-    for i in 0..n {
-        out.push(v[i * 3]);
-    }
-    for i in 0..n {
-        out.push(v[i * 3 + 1]);
-    }
-    for i in 0..n {
-        out.push(v[i * 3 + 2]);
-    }
+    let mut out: Vec<T> = (0..n).into_par_iter().map(|i| v[i * 3]).collect();
+    out.par_extend((0..n).into_par_iter().map(|i| v[i * 3 + 1]));
+    out.par_extend((0..n).into_par_iter().map(|i| v[i * 3 + 2]));
     out
 }
 

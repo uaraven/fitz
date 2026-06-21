@@ -9,6 +9,7 @@ fitskit = { version = "0.2.0", features = ["gzip"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 bayer = "0.1.5"
+rayon = "1"
 tiff = "0.11"
 terminal_size = "0.4"
 supports-color = "3.0.2"
@@ -24,7 +25,14 @@ opt-level = 'z'       # Optimize for binary size (use 's' if 'z' hurts performan
 lto = true            # Enable Link-Time Optimization for cross-crate dead code elimination
 codegen-units = 1     # Slower compilation, but allows for much better optimization
 strip = true          # NB: panic = 'abort' is incompatible with the `bayer` dep, which
-                      # is published with a `dylib` crate-type that requires unwinding.    
+                      # is published with a `dylib` crate-type that requires unwinding.
+
+# The size-optimized 'z' above hurts our own tight per-pixel loops (stretch math,
+# scaling, resize). Compile just this crate at a speed-oriented opt-level while the
+# dependencies — which dominate the binary size — stay at 'z'. This roughly halves
+# single-file stretch time, at the cost of a larger binary.
+[profile.release.package.fitz]
+opt-level = 2
 
 [profile.profiling]
 inherits = "release"

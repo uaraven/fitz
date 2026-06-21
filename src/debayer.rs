@@ -3,6 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use fitskit::{Bitpix, FitsFile, Header, ImageData, PixelData};
+use rayon::prelude::*;
 use tiff::encoder::{colortype, TiffEncoder};
 
 use crate::fits_image::{
@@ -95,15 +96,15 @@ fn to_output_samples(buf: RgbBuffer, bpp: u32) -> OutputSamples {
     match (buf, bpp) {
         (RgbBuffer::U8(v), 8) => OutputSamples::U8(v),
         (RgbBuffer::U8(v), 16) => {
-            OutputSamples::U16(v.iter().map(|&x| x as u16 * 257).collect())
+            OutputSamples::U16(v.par_iter().map(|&x| x as u16 * 257).collect())
         }
         (RgbBuffer::U8(v), 32) => {
-            OutputSamples::U32(v.iter().map(|&x| x as u32 * 16843009).collect())
+            OutputSamples::U32(v.par_iter().map(|&x| x as u32 * 16843009).collect())
         }
         (RgbBuffer::U16(v), 8) => OutputSamples::U8(rgb16_to_rgb8(&v)),
         (RgbBuffer::U16(v), 16) => OutputSamples::U16(v),
         (RgbBuffer::U16(v), 32) => {
-            OutputSamples::U32(v.iter().map(|&x| x as u32 * 65537).collect())
+            OutputSamples::U32(v.par_iter().map(|&x| x as u32 * 65537).collect())
         }
         (_, other) => unreachable!("bpp {other} should have been rejected by the CLI parser"),
     }
