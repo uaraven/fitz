@@ -19,6 +19,8 @@ fitz [options] COMMAND [command-options]
 `options`:
  - `-v`, `--verbose` - print each file being processed
  - `-j`, `--jobs` - number of files to process in parallel (default: number of CPU cores)
+ - `-V`, `--version` - print the application name and version, then exit
+ - `-h`, `--help` - print help
 
 When a command is given several input files, they are processed in parallel across up to `--jobs` worker threads (defaulting to the number of CPU cores). Each file is independent, so a failure on one file is reported and the rest still run. Pass `-j 1` to force sequential processing.
 
