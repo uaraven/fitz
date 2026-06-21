@@ -1,13 +1,12 @@
-use std::io::{self, IsTerminal};
+use std::fmt::Write;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use fitskit::FitsFile;
+use anyhow::{Result, bail};
 
-use crate::fits_image::{find_image_hdu, load_rgb, print_step};
+use crate::fits_image::{high_byte, print_step, rgb16_to_rgb8};
 use crate::kitty;
 use crate::options::PreviewOptions;
-use crate::stretch::auto_stretch;
+use crate::stretch::load_and_stretch;
 use crate::terminal::{
     self, ColorMode, supports_kitty_graphics, terminal_cell_pixels, terminal_color_mode,
 };
@@ -25,12 +24,13 @@ enum Renderer {
 }
 
 /// Decide how to render: explicit `--truecolor`/`--kitty-graphics` flags win,
-/// otherwise probe for kitty support (only when stdout is a TTY) and fall back
-/// to the auto-detected ANSI color mode.
+/// otherwise probe for kitty support and fall back to the auto-detected ANSI
+/// color mode. `supports_kitty_graphics` already requires a TTY on stdin/stdout,
+/// so it is the single authority for that check.
 fn choose_renderer(opts: &PreviewOptions) -> Renderer {
     if opts.force_truecolor {
         Renderer::Ansi(ColorMode::TrueColor)
-    } else if opts.force_kitty || (io::stdout().is_terminal() && supports_kitty_graphics()) {
+    } else if opts.force_kitty || supports_kitty_graphics() {
         Renderer::Kitty
     } else {
         Renderer::Ansi(terminal_color_mode())
@@ -41,24 +41,13 @@ fn choose_renderer(opts: &PreviewOptions) -> Renderer {
 /// auto-stretch it, downscale it to fit the terminal, and print it as ANSI
 /// half-block "pixels" colored with either 256-color or true-color codes.
 pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
-    print_step(opts.verbose, "reading");
-    let fits =
-        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
-
-    let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
-    let img = img.as_ref();
-
-    let (width, height, rgb) = load_rgb(
-        header,
-        img,
+    let (width, height, stretched) = load_and_stretch(
         input,
         opts.pattern,
         opts.force_demosaic,
+        opts.linked,
         opts.verbose,
     )?;
-
-    print_step(opts.verbose, "stretching");
-    let stretched = auto_stretch(&rgb, opts.linked);
 
     print_step(opts.verbose, "scaling");
     let (cols, rows) = terminal::terminal_dimensions();
@@ -73,9 +62,12 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
             let max_w = (cols.saturating_sub(1)) as usize * cw as usize;
             let max_h = rows as usize * ch as usize;
             let (pw, ph, preview) = scale_rgb_to_fit(&stretched, width, height, max_w, max_h);
-            let rgb8 = kitty::rgb16_to_rgb8(&preview);
+            let rgb8 = rgb16_to_rgb8(&preview);
             print!("{}", kitty::encode_image(&rgb8, pw, ph));
             println!();
+        }
+        Renderer::Ansi(ColorMode::BW) => {
+            bail!("terminal does not support 216-color or true-color output");
         }
         Renderer::Ansi(mode) => {
             // Terminal cells are roughly twice as tall as they are wide; with
@@ -99,20 +91,21 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
 /// stacks two vertical pixels: the upper pixel is painted as the cell's
 /// background and the lower as the foreground of a lower-half-block (`▄`).
 fn convert_to_ansi(src: &[u16], width: usize, height: usize, mode: ColorMode) -> String {
-    if mode == ColorMode::BW {
-        return String::from("Terminal doesn't support required color mode");
-    }
-    let mut result = String::new();
+    let cell_rows = height.div_ceil(2);
+    // Each cell emits two color escapes (~20 bytes each) plus the block glyph,
+    // and each row ends with a reset; preallocate so the buffer never reallocs.
+    let mut result = String::with_capacity(cell_rows * (width * 44 + 5));
     for y in (0..height).step_by(2) {
         for x in 0..width {
             let top = (y * width + x) * 3;
-            result.push_str(&color_to_ansi(
+            push_color_ansi(
+                &mut result,
                 true,
                 src[top],
                 src[top + 1],
                 src[top + 2],
                 mode,
-            ));
+            );
             // The lower half-block. A dangling final row (odd height) has no
             // pixel below it, so reuse the top color to fill the cell solidly.
             let bottom = if y + 1 < height {
@@ -120,13 +113,14 @@ fn convert_to_ansi(src: &[u16], width: usize, height: usize, mode: ColorMode) ->
             } else {
                 top
             };
-            result.push_str(&color_to_ansi(
+            push_color_ansi(
+                &mut result,
                 false,
                 src[bottom],
                 src[bottom + 1],
                 src[bottom + 2],
                 mode,
-            ));
+            );
             result.push('▄');
         }
         // Reset colors at the end of each row so the last cell's background
@@ -136,10 +130,6 @@ fn convert_to_ansi(src: &[u16], width: usize, height: usize, mode: ColorMode) ->
     result
 }
 
-fn scale_to_u8(input: u16) -> u32 {
-    (input >> 8) as u32
-}
-
 fn color_to_ansi256(r: u16, g: u16, b: u16) -> u8 {
     let rm = r / 13107;
     let gm = g / 13107;
@@ -147,19 +137,27 @@ fn color_to_ansi256(r: u16, g: u16, b: u16) -> u8 {
     (16 + 36 * rm + 6 * gm + bm) as u8
 }
 
-fn color_to_ansi(is_bg: bool, r: u16, g: u16, b: u16, mode: terminal::ColorMode) -> String {
+/// Append the SGR color escape for one half-block straight into `out` (the
+/// per-pixel hot path, so it avoids a throwaway `String` per call).
+fn push_color_ansi(out: &mut String, is_bg: bool, r: u16, g: u16, b: u16, mode: ColorMode) {
     // Select-Graphic-Rendition parameter: 4x for background, 3x for foreground.
     let layer = if is_bg { '4' } else { '3' };
+    // Writing into a `String` is infallible, so the `Result` can be discarded.
     match mode {
-        ColorMode::TrueColor => format!(
-            "\x1b[{layer}8;2;{};{};{}m",
-            scale_to_u8(r),
-            scale_to_u8(g),
-            scale_to_u8(b)
-        ),
-        ColorMode::HiColor => format!("\x1b[{layer}8;5;{}m", color_to_ansi256(r, g, b)),
+        ColorMode::TrueColor => {
+            let _ = write!(
+                out,
+                "\x1b[{layer}8;2;{};{};{}m",
+                high_byte(r),
+                high_byte(g),
+                high_byte(b)
+            );
+        }
+        ColorMode::HiColor => {
+            let _ = write!(out, "\x1b[{layer}8;5;{}m", color_to_ansi256(r, g, b));
+        }
         // No color support: emit nothing rather than a bare escape introducer.
-        ColorMode::BW => String::new(),
+        ColorMode::BW => {}
     }
 }
 
@@ -294,21 +292,29 @@ mod tests {
         assert_eq!(color_to_ansi256(u16::MAX, 0, 0), 16 + 36 * 5);
     }
 
+    /// Render one half-block color escape into a fresh `String` so the
+    /// per-pixel `push_color_ansi` can be asserted on in isolation.
+    fn color_ansi(is_bg: bool, r: u16, g: u16, b: u16, mode: ColorMode) -> String {
+        let mut s = String::new();
+        push_color_ansi(&mut s, is_bg, r, g, b, mode);
+        s
+    }
+
     #[test]
     fn truecolor_emits_fg_and_bg_24bit_codes() {
         // Background uses 48;2, foreground 38;2, each with the high byte of the
         // 16-bit channel value.
-        let bg = color_to_ansi(true, 0xFF00, 0x8000, 0x0100, ColorMode::TrueColor);
+        let bg = color_ansi(true, 0xFF00, 0x8000, 0x0100, ColorMode::TrueColor);
         assert_eq!(bg, "\x1b[48;2;255;128;1m");
-        let fg = color_to_ansi(false, 0xFF00, 0x8000, 0x0100, ColorMode::TrueColor);
+        let fg = color_ansi(false, 0xFF00, 0x8000, 0x0100, ColorMode::TrueColor);
         assert_eq!(fg, "\x1b[38;2;255;128;1m");
     }
 
     #[test]
     fn hicolor_emits_256_palette_index() {
-        let bg = color_to_ansi(true, 0, 0, 0, ColorMode::HiColor);
+        let bg = color_ansi(true, 0, 0, 0, ColorMode::HiColor);
         assert_eq!(bg, "\x1b[48;5;16m");
-        let fg = color_to_ansi(false, u16::MAX, u16::MAX, u16::MAX, ColorMode::HiColor);
+        let fg = color_ansi(false, u16::MAX, u16::MAX, u16::MAX, ColorMode::HiColor);
         assert_eq!(fg, "\x1b[38;5;231m");
     }
 
@@ -333,11 +339,7 @@ mod tests {
         // Full pipeline on the bundled frame: it must complete and emit at
         // least one half-block cell.
         let input = test_data("uncompressed.fit");
-        let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input, false).unwrap();
-        let img = img.as_ref();
-        let (w, h, rgb) = load_rgb(header, img, &input, None, false, false).unwrap();
-        let stretched = auto_stretch(&rgb, false);
+        let (w, h, stretched) = load_and_stretch(&input, None, false, false, false).unwrap();
 
         let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
         let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
@@ -349,11 +351,7 @@ mod tests {
         // Full pipeline on the bundled frame: load + stretch + scale to a small
         // terminal-sized box. The frame is square, so the preview must be too.
         let input = test_data("uncompressed.fit");
-        let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input, false).unwrap();
-        let img = img.as_ref();
-        let (w, h, rgb) = load_rgb(header, img, &input, None, false, false).unwrap();
-        let stretched = auto_stretch(&rgb, false);
+        let (w, h, stretched) = load_and_stretch(&input, None, false, false, false).unwrap();
 
         let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
         assert!(pw <= 80 && ph <= 48);

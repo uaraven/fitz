@@ -97,7 +97,6 @@ pub struct InfoOptions {
     pub verbose: bool,
 }
 
-#[derive(Default)]
 pub struct PreviewOptions {
     pub verbose: bool,
     /// Apply one shared set of stretch parameters to all channels instead of

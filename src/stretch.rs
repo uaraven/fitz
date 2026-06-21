@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use bayer::CFA;
 use fitskit::FitsFile;
 
 use crate::debayer::OutputFormat;
@@ -31,24 +32,39 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
     ensure_can_write(output, opts.force)?;
     print_progress(opts.verbose, input, output);
 
-    print_step(opts.verbose, "reading");
-    let fits =
-        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
-
-    let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
-    let img = img.as_ref();
-
-    let (width, height, rgb) =
-        load_rgb(header, img, input, opts.pattern, opts.force_demosaic, opts.verbose)?;
-
-    print_step(opts.verbose, "stretching");
-    let stretched = auto_stretch(&rgb, opts.linked);
+    let (width, height, stretched) =
+        load_and_stretch(input, opts.pattern, opts.force_demosaic, opts.linked, opts.verbose)?;
 
     print_step(opts.verbose, "writing");
     match opts.format {
         OutputFormat::Tiff => write_rgb16_tiff(output, width, height, &stretched),
         OutputFormat::Fits => write_rgb16_fits(output, width, height, &stretched),
     }
+}
+
+/// Load a FITS image (debayering if needed) and apply the auto-stretch, returning
+/// the interleaved 16-bit result and its `(width, height)`. Shared by the
+/// `stretch` and `preview` commands, which differ only in what they do with the
+/// stretched buffer (write it to a file vs. render it to the terminal).
+pub(crate) fn load_and_stretch(
+    input: &Path,
+    pattern: Option<CFA>,
+    force_demosaic: bool,
+    linked: bool,
+    verbose: bool,
+) -> Result<(usize, usize, Vec<u16>)> {
+    print_step(verbose, "reading");
+    let fits =
+        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
+
+    let (header, img) = find_image_hdu(&fits, input, verbose)?;
+    let img = img.as_ref();
+
+    let (width, height, rgb) = load_rgb(header, img, input, pattern, force_demosaic, verbose)?;
+
+    print_step(verbose, "stretching");
+    let stretched = auto_stretch(&rgb, linked);
+    Ok((width, height, stretched))
 }
 
 /// Apply an MTF/STF auto-stretch to an interleaved RGB image, returning

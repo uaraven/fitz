@@ -105,9 +105,7 @@ pub fn supports_kitty_graphics() -> bool {
             break;
         }
         // SAFETY: `read` writes at most `chunk.len()` bytes into the valid buffer.
-        let n = unsafe {
-            libc::read(in_fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len())
-        };
+        let n = unsafe { libc::read(in_fd, chunk.as_mut_ptr() as *mut libc::c_void, chunk.len()) };
         if n <= 0 {
             break;
         }
@@ -201,16 +199,10 @@ pub(crate) enum ColorMode {
 }
 
 pub fn terminal_color_mode() -> ColorMode {
-    if let Some(support) = supports_color::on(Stream::Stdout) {
-        if support.has_16m {
-            ColorMode::TrueColor
-        } else if support.has_256 {
-            ColorMode::HiColor
-        } else {
-            ColorMode::BW
-        }
-    } else {
-        ColorMode::BW
+    match supports_color::on(Stream::Stdout) {
+        Some(s) if s.has_16m => ColorMode::TrueColor,
+        Some(s) if s.has_256 => ColorMode::HiColor,
+        _ => ColorMode::BW,
     }
 }
 
