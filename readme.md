@@ -18,6 +18,9 @@ fitz [options] COMMAND [command-options]
 
 `options`:
  - `-v`, `--verbose` - print each file being processed
+ - `-j`, `--jobs` - number of files to process in parallel (default: number of CPU cores)
+
+When a command is given several input files, they are processed in parallel across up to `--jobs` worker threads (defaulting to the number of CPU cores). Each file is independent, so a failure on one file is reported and the rest still run. Pass `-j 1` to force sequential processing.
 
 `COMMAND` - one of the following:
  - `compress` to compress the FITS file. Use `fitz compress --help` to see more options
@@ -42,6 +45,7 @@ Options:
   -a, --algorithm <ALGORITHM>  Compression algorithm [default: rice1] [possible values: rice1, gzip1, gzip2]
   -o, --output <OUTPUT>        Write output to this file (only valid with a single input file)
   -v, --verbose                Print each file being processed
+  -j, --jobs <JOBS>            Number of files to process in parallel (default: number of CPU cores)
   -h, --help                   Print help
 ```
 
@@ -58,6 +62,7 @@ Options:
   -f, --force             Overwrite output file if it already exists
   -o, --output <OUTPUT>  Write output to this file (only valid with a single input file)
   -v, --verbose          Print each file being processed
+  -j, --jobs <JOBS>      Number of files to process in parallel (default: number of CPU cores)
   -h, --help             Print help
 ```
 
@@ -83,6 +88,7 @@ Options:
       --format <FORMAT>    Output file format [default: fits] (TIFF or FITS)
   -o, --output <OUTPUT>    Write output to this file, or to this folder if processing multiple files
   -v, --verbose            Print each file being processed
+  -j, --jobs <JOBS>        Number of files to process in parallel (default: number of CPU cores)
   -h, --help               Print help
 ```
 
@@ -108,6 +114,7 @@ Options:
       --format <FORMAT>    Output file format [default: fits] (TIFF or FITS)
   -o, --output <OUTPUT>    Write output to this file, or to this folder if processing multiple files
   -v, --verbose            Print each file being processed
+  -j, --jobs <JOBS>        Number of files to process in parallel (default: number of CPU cores)
   -h, --help               Print help
 ```
 
@@ -135,6 +142,7 @@ Options:
       --b-prefix <B_PREFIX>  Prefix for the blue channel file: {prefix}-{original-file-name}
       --b-dir <B_DIR>        Directory to save the blue channel file into (original filename kept)
   -v, --verbose              Print each file being processed
+  -j, --jobs <JOBS>          Number of files to process in parallel (default: number of CPU cores)
   -h, --help                 Print help
 ```
 
@@ -157,8 +165,9 @@ Arguments:
   [FILES]...  FITS files to inspect
 
 Options:
-  -v, --verbose  Print each file being processed
-  -h, --help     Print help
+  -v, --verbose      Print each file being processed
+  -j, --jobs <JOBS>  Number of files to process in parallel (default: number of CPU cores)
+  -h, --help         Print help
 ```
 
 ### preview
@@ -199,6 +208,7 @@ Options:
       --graphics           Force kitty graphics protocol rendering, skipping auto-detection
       --truecolor          Force true-color ANSI half-block rendering, skipping auto-detection
   -v, --verbose            Print each file being processed
+  -j, --jobs <JOBS>        Number of files to process in parallel (default: number of CPU cores)
   -h, --help               Print help
 ```
 

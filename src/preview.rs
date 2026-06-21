@@ -2,6 +2,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use anyhow::{Result, bail};
+use rayon::prelude::*;
 
 use crate::fits_image::{high_byte, print_step, rgb16_to_rgb8};
 use crate::kitty;
@@ -200,31 +201,35 @@ fn resize_rgb(src: &[u16], src_w: usize, src_h: usize, dst_w: usize, dst_h: usiz
         return Vec::new();
     }
     let mut out = vec![0u16; dst_w * dst_h * 3];
-    for dy in 0..dst_h {
-        let sy0 = dy * src_h / dst_h;
-        let sy1 = (((dy + 1) * src_h) / dst_h).max(sy0 + 1);
-        for dx in 0..dst_w {
-            let sx0 = dx * src_w / dst_w;
-            let sx1 = (((dx + 1) * src_w) / dst_w).max(sx0 + 1);
+    // Each destination row reads a disjoint span of source rows and writes its
+    // own output row, so rows are independent and processed in parallel.
+    out.par_chunks_mut(dst_w * 3)
+        .enumerate()
+        .for_each(|(dy, out_row)| {
+            let sy0 = dy * src_h / dst_h;
+            let sy1 = (((dy + 1) * src_h) / dst_h).max(sy0 + 1);
+            for dx in 0..dst_w {
+                let sx0 = dx * src_w / dst_w;
+                let sx1 = (((dx + 1) * src_w) / dst_w).max(sx0 + 1);
 
-            let (mut r, mut g, mut b, mut count) = (0u64, 0u64, 0u64, 0u64);
-            for sy in sy0..sy1 {
-                let row = sy * src_w;
-                for sx in sx0..sx1 {
-                    let i = (row + sx) * 3;
-                    r += src[i] as u64;
-                    g += src[i + 1] as u64;
-                    b += src[i + 2] as u64;
-                    count += 1;
+                let (mut r, mut g, mut b, mut count) = (0u64, 0u64, 0u64, 0u64);
+                for sy in sy0..sy1 {
+                    let row = sy * src_w;
+                    for sx in sx0..sx1 {
+                        let i = (row + sx) * 3;
+                        r += src[i] as u64;
+                        g += src[i + 1] as u64;
+                        b += src[i + 2] as u64;
+                        count += 1;
+                    }
                 }
-            }
 
-            let o = (dy * dst_w + dx) * 3;
-            out[o] = (r / count) as u16;
-            out[o + 1] = (g / count) as u16;
-            out[o + 2] = (b / count) as u16;
-        }
-    }
+                let o = dx * 3;
+                out_row[o] = (r / count) as u16;
+                out_row[o + 1] = (g / count) as u16;
+                out_row[o + 2] = (b / count) as u16;
+            }
+        });
     out
 }
 

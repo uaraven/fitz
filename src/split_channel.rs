@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use fitskit::{FitsFile, PixelData};
+use rayon::prelude::*;
 
 use crate::fits_image::{
     demosaic_to_rgb, ensure_can_write, find_image_hdu, get_bayerpat, print_progress, print_step,
@@ -145,16 +146,13 @@ fn deinterleave(rgb: RgbBuffer) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     }
 }
 
-fn deinterleave_channels<T: Copy + Into<f64>>(v: &[T]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+fn deinterleave_channels<T: Copy + Into<f64> + Send + Sync>(
+    v: &[T],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let n = v.len() / 3;
-    let mut r = Vec::with_capacity(n);
-    let mut g = Vec::with_capacity(n);
-    let mut b = Vec::with_capacity(n);
-    for px in v.chunks_exact(3) {
-        r.push(px[0].into());
-        g.push(px[1].into());
-        b.push(px[2].into());
-    }
+    let r = (0..n).into_par_iter().map(|i| v[i * 3].into()).collect();
+    let g = (0..n).into_par_iter().map(|i| v[i * 3 + 1].into()).collect();
+    let b = (0..n).into_par_iter().map(|i| v[i * 3 + 2].into()).collect();
     (r, g, b)
 }
 
@@ -169,7 +167,7 @@ fn write_channel_fits(
         ChannelFormat::I8 => (
             PixelData::U8(
                 values
-                    .iter()
+                    .par_iter()
                     .map(|&v| v.round().clamp(0.0, 255.0) as u8)
                     .collect(),
             ),
@@ -178,7 +176,7 @@ fn write_channel_fits(
         ChannelFormat::I16 => (
             PixelData::I16(
                 values
-                    .iter()
+                    .par_iter()
                     .map(|&v| (v.round().clamp(0.0, 65535.0) - 32768.0) as i16)
                     .collect(),
             ),
@@ -187,14 +185,14 @@ fn write_channel_fits(
         ChannelFormat::I32 => (
             PixelData::I32(
                 values
-                    .iter()
+                    .par_iter()
                     .map(|&v| (v.round().clamp(0.0, 4294967295.0) - 2147483648.0) as i32)
                     .collect(),
             ),
             2147483648.0,
         ),
         ChannelFormat::F32 => (
-            PixelData::F32(values.iter().map(|&v| v as f32).collect()),
+            PixelData::F32(values.par_iter().map(|&v| v as f32).collect()),
             0.0,
         ),
         ChannelFormat::F64 => (PixelData::F64(values.to_vec()), 0.0),
