@@ -1,6 +1,6 @@
 # fitz
 
-Fitz is a utility for working with FITS (astronomic images) files. 
+Fitz is a CLI utility for working with FITS (astronomic images) files. 
 
 Fitz supports following operations on FITS files:
  - compression using RICE_1 and GZIP algorithms
@@ -9,6 +9,8 @@ Fitz supports following operations on FITS files:
  - auto-stretching an image (debayering it first if needed) and saving it as a FITS or TIFF file
  - Split FITS file into separate per-channel R,G,B files, debayering if needed. 
  - Preview fits file in terminal window
+
+I started fitz to quickly uncompress files created by NINA, because some of the tools and Siril scripts have problems with compressed files, after couple of days the project expanded into what it is now.
 
 ## Usage
 
@@ -154,8 +156,9 @@ Prints a human-readable summary of each FITS file without writing anything. Repo
 
  - **Resolution** — image width × height (`NAXIS1` × `NAXIS2`).
  - **Bit depth** — derived from `BITPIX` (an unsigned 16-bit image, stored as signed 16 with `BZERO=32768`, is labelled as such).
- - **Channels** — `3` for an already-debayered RGB cube (a 3-plane image with no `BAYERPAT` header), otherwise `1` (a raw mosaic or monochrome frame). The Bayer pattern is shown for mosaics.
- - **RA / DEC** — image-center sky coordinates from the `RA`/`DEC` (decimal degrees) and `OBJCTRA`/`OBJCTDEC` (sexagesimal) header keywords, when present.
+ - **Channels** — `3` for an already-debayered RGB cube (a 3-plane image with no `BAYERPAT` header), otherwise `1` (a raw mosaic or monochrome frame).
+ - **Bayer** — the Bayer/CFA pattern (`BAYERPAT`), shown for raw mosaics.
+ - **RA / DEC** — image-center sky coordinates from the `RA`/`DEC` (decimal degrees) and `OBJCTRA`/`OBJCTDEC` (sexagesimal) header keywords, when present. Right ascension is shown in hours/minutes/seconds (with decimal hours in parentheses), declination in signed degrees/minutes/seconds (with decimal degrees), e.g. `RA: 20h 51m 28.02s (20.857783h)` and `DEC: 30° 58' 07.67" (30.968798°)`.
  - **Pixel statistics** — min, max, mean and median of the physical (`BSCALE`/`BZERO`-applied) pixel values, printed for single-channel data only.
 
 When available, the object name, exposure time, filter, instrument and observation date are also shown. Any field whose header keyword is absent is omitted.
