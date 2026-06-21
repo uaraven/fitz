@@ -87,6 +87,7 @@ fn parse_bpp(s: &str) -> Result<u32, String> {
 #[derive(Parser)]
 #[command(
     name = "fitz",
+    version,
     about = "Compress/decompress FITS files using tile compression",
     long_about = "Compress FITS files to .fz (tile-compressed) or decompress .fz back to FITS.\n\
                   Output file replaces the input unless -k is given.\n\
