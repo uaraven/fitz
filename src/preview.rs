@@ -1,4 +1,7 @@
 use std::fmt::Write;
+// `flush()` lives on `std::io::Write`; bring it in anonymously so it doesn't
+// clash with the `std::fmt::Write` used by the ANSI rendering path.
+use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -66,6 +69,9 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
             let rgb8 = rgb16_to_rgb8(&preview);
             print!("{}", kitty::encode_image(&rgb8, pw, ph));
             println!();
+            // Flush so the terminal has the whole image and can acknowledge it,
+            // then swallow that acknowledgment before it leaks to the shell.
+            let _ = std::io::stdout().flush();
         }
         Renderer::Ansi(ColorMode::BW) => {
             bail!("terminal does not support 216-color or true-color output");
