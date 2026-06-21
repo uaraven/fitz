@@ -92,6 +92,11 @@ impl Default for StretchOptions {
     }
 }
 
+#[derive(Default)]
+pub struct InfoOptions {
+    pub verbose: bool,
+}
+
 pub struct SplitChannelOptions {
     pub force: bool,
     pub verbose: bool,

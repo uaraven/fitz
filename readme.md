@@ -24,6 +24,7 @@ fitz [options] COMMAND [command-options]
  - `debayer` to debayer a FITS mosaic image and save it as a FITS or TIFF file. Use `fitz debayer --help` to see more options
  - `stretch` to auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file. Use `fitz stretch --help` to see more options
  - `split` to debayer a FITS mosaic image (or split an already-debayered RGB cube) and save each color channel as a separate FITS file. Use `fitz split --help` to see more options
+ - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics). Use `fitz info --help` to see more options
 
 ### compress
 
@@ -133,6 +134,29 @@ Options:
       --b-dir <B_DIR>        Directory to save the blue channel file into (original filename kept)
   -v, --verbose              Print each file being processed
   -h, --help                 Print help
+```
+
+### info
+
+Prints a human-readable summary of each FITS file without writing anything. Reported fields:
+
+ - **Resolution** — image width × height (`NAXIS1` × `NAXIS2`).
+ - **Bit depth** — derived from `BITPIX` (an unsigned 16-bit image, stored as signed 16 with `BZERO=32768`, is labelled as such).
+ - **Channels** — `3` for an already-debayered RGB cube (a 3-plane image with no `BAYERPAT` header), otherwise `1` (a raw mosaic or monochrome frame). The Bayer pattern is shown for mosaics.
+ - **RA / DEC** — image-center sky coordinates from the `RA`/`DEC` (decimal degrees) and `OBJCTRA`/`OBJCTDEC` (sexagesimal) header keywords, when present.
+ - **Pixel statistics** — min, max, mean and median of the physical (`BSCALE`/`BZERO`-applied) pixel values, printed for single-channel data only.
+
+When available, the object name, exposure time, filter, instrument and observation date are also shown. Any field whose header keyword is absent is omitted.
+
+```
+Usage: fitz info [OPTIONS] [FILES]...
+
+Arguments:
+  [FILES]...  FITS files to inspect
+
+Options:
+  -v, --verbose  Print each file being processed
+  -h, --help     Print help
 ```
 
 ## AI Warning

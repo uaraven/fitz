@@ -2,6 +2,7 @@ mod compress;
 mod debayer;
 mod decompress;
 mod fits_image;
+mod info;
 mod options;
 mod split_channel;
 mod stretch;
@@ -20,7 +21,8 @@ use fitskit::CompressionType;
 use compress::compress_file;
 use debayer::{debayer_file, parse_output_format, OutputFormat};
 use decompress::decompress_file;
-use options::{DebayerOptions, Options, SplitChannelOptions, StretchOptions};
+use info::info_file;
+use options::{DebayerOptions, InfoOptions, Options, SplitChannelOptions, StretchOptions};
 use split_channel::{parse_channel_format, split_channel_file, ChannelFormat};
 use stretch::stretch_file;
 
@@ -104,6 +106,8 @@ enum Command {
     /// Debayer a FITS mosaic image and save each color channel as a separate FITS file
     #[command(name = "split")]
     SplitChannel(SplitChannelArgs),
+    /// Print information about FITS files (resolution, bit depth, channels, coordinates, pixel stats)
+    Info(InfoArgs),
 }
 
 #[derive(clap::Args)]
@@ -258,6 +262,12 @@ struct SplitChannelArgs {
     files: Vec<PathBuf>,
 }
 
+#[derive(clap::Args)]
+struct InfoArgs {
+    /// FITS files to inspect
+    files: Vec<PathBuf>,
+}
+
 /// Derive an output path: explicit `--output` is used as-is (or joined with the
 /// input's stem when batching into a directory); otherwise the input's stem gets
 /// `suffix` and `.ext` appended, placed beside the input.
@@ -380,6 +390,7 @@ fn main() -> ExitCode {
         Command::Debayer(a) => run_debayer(a, verbose),
         Command::Stretch(a) => run_stretch(a, verbose),
         Command::SplitChannel(a) => run_split_channel(a, verbose),
+        Command::Info(a) => run_info(a, verbose),
     }
 }
 
@@ -498,6 +509,12 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
     };
 
     process_files(&files, |path| split_channel_file(path, &opts))
+}
+
+fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
+    let InfoArgs { files } = args;
+    let opts = InfoOptions { verbose };
+    process_files(&files, |path| info_file(path, &opts))
 }
 
 #[cfg(test)]
