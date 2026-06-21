@@ -172,16 +172,13 @@ Unlike the other commands, `preview` accepts exactly one file.
 
 `preview` requires terminal to support at least 216-color mode or better. If terminal is unable to render more than 16 colors, the preview will not work.
 
-For terminals that support true-color mode the preview will use it
-![](docs/ascii-preview.png)
+If terminal supports Kitty graphics protocol, the preview will be shown as a picture, otherwise for terminals that support true-color mode the preview will use it. If true-color mode is not supported, then the preview will fall back to 216-color mode. The quality is not good, but might be enough to have a quick look at the image.
 
-If true-color mode is not supported, then the preview will fall back to 216-color mode. The quality is not good, but might be enough to have a quick preview.
-![](docs/ascii-preview-216c.png)
+|          Fallback mode           |       True-color mode       |         Graphics mode          |
+| :------------------------------: | :-------------------------: | :----------------------------: |
+| ![](docs/ascii-preview-216c.png) | ![](docs/ascii-preview.png) | ![](docs/graphics-preview.png) |
 
-If terminal supports Kitty graphics protocol, the preview will be shown as a picture
-![](docs/graphics-preview.png)
-
-By default `preview` auto-detects the best available mode: it probes for the Kitty graphics protocol and uses it when supported, otherwise it falls back to true-color and then 216-color ANSI text. Two flags override this detection:
+Two flags override the default behaviour:
 
  - `--graphics` forces the Kitty graphics protocol even if detection is skipped or inconclusive (useful when your terminal supports it but doesn't answer the capability query).
  - `--truecolor` forces true-color ANSI half-block rendering instead of the Kitty graphics protocol.
