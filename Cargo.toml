@@ -25,3 +25,8 @@ lto = true            # Enable Link-Time Optimization for cross-crate dead code 
 codegen-units = 1     # Slower compilation, but allows for much better optimization
 strip = true          # NB: panic = 'abort' is incompatible with the `bayer` dep, which
                       # is published with a `dylib` crate-type that requires unwinding.    
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
