@@ -7,7 +7,7 @@ use tiff::encoder::{colortype, TiffEncoder};
 
 use crate::fits_image::{
     bscale_bzero, deinterleave_to_planes, ensure_can_write, find_image_hdu, load_rgb,
-    print_progress, print_step, write_pixel_fits, RgbBuffer,
+    print_progress, print_step, rgb16_to_rgb8, write_pixel_fits, RgbBuffer,
 };
 use crate::options::DebayerOptions;
 
@@ -100,7 +100,7 @@ fn to_output_samples(buf: RgbBuffer, bpp: u32) -> OutputSamples {
         (RgbBuffer::U8(v), 32) => {
             OutputSamples::U32(v.iter().map(|&x| x as u32 * 16843009).collect())
         }
-        (RgbBuffer::U16(v), 8) => OutputSamples::U8(v.iter().map(|&x| (x >> 8) as u8).collect()),
+        (RgbBuffer::U16(v), 8) => OutputSamples::U8(rgb16_to_rgb8(&v)),
         (RgbBuffer::U16(v), 16) => OutputSamples::U16(v),
         (RgbBuffer::U16(v), 32) => {
             OutputSamples::U32(v.iter().map(|&x| x as u32 * 65537).collect())

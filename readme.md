@@ -209,6 +209,10 @@ Options:
 
 This is a small personal project and as such it is not thouroughly tested and not optimized in any way. Use at your own risk.
 
+## License
+
+MIT - see [LICENSE](LICENSE).
+
 ## AI Warning
 
 I needed a quick and dirty tool to compress and uncompress fits files. Researching libraries, understanding FITS format and writing it myself would take time and I needed it now. The result is this tool is mostly vibe-coded with Claude Code. I review the code to make sure I understand what it does and I make changes where neccessary, but still most of the authorship goes to those anonymous heroes who write the code, on which Anthropic trains their models.

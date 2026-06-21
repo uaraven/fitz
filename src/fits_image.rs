@@ -83,6 +83,18 @@ pub(crate) fn round_to_u16(v: f64) -> u16 {
     v.round().clamp(0.0, 65535.0) as u16
 }
 
+/// Narrow a 16-bit sample to 8-bit by keeping its high byte. The single source
+/// of truth for the `>> 8` convention shared by 8-bpp debayer output and the
+/// terminal preview (kitty and ANSI renderers).
+pub(crate) fn high_byte(sample: u16) -> u8 {
+    (sample >> 8) as u8
+}
+
+/// [`high_byte`] applied across an interleaved 16-bit RGB buffer.
+pub(crate) fn rgb16_to_rgb8(src: &[u16]) -> Vec<u8> {
+    src.iter().copied().map(high_byte).collect()
+}
+
 /// The BSCALE/BZERO scaling recorded in the header, defaulting to the FITS
 /// no-op values (1.0/0.0) when the keywords are absent.
 pub(crate) fn bscale_bzero(header: &Header) -> (f64, f64) {
@@ -345,5 +357,12 @@ mod tests {
 
         let cfa = resolve_cfa(&header, None).unwrap();
         assert_eq!(cfa, CFA::RGGB);
+    }
+
+    #[test]
+    fn rgb16_to_rgb8_takes_high_byte() {
+        assert_eq!(high_byte(0xFF00), 255);
+        assert_eq!(high_byte(0x0100), 1);
+        assert_eq!(rgb16_to_rgb8(&[0xFF00, 0x8000, 0x0100]), vec![255, 128, 1]);
     }
 }
