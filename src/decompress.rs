@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
-use fitskit::{FitsFile, HduData};
+use anyhow::{Context, Result, bail};
+use fitskit::{FitsFile, HduData, Header};
 
-use crate::fits_image::{ensure_can_write, print_progress, print_step};
+use crate::fits_image::{copy_metadata, ensure_can_write, print_progress, print_step};
 use crate::options::Options;
 
 pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
@@ -16,22 +16,27 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
     print_progress(opts.verbose, input, output);
 
     print_step(opts.verbose, "reading");
-    let fits = FitsFile::from_file(input)
-        .with_context(|| format!("cannot read {}", input.display()))?;
+    let fits =
+        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let mut first_image: Option<fitskit::ImageData> = None;
+    // The compressed HDU's header carries the original image metadata (OBJECT,
+    // DATE-OBS, BAYERPAT, WCS, …) alongside the BINTABLE/tile-compression
+    // container keywords; `copy_metadata` keeps the former and strips the
+    // latter. BAYERPAT is preserved (empty `extra_drop`) so decompress is a
+    // faithful round-trip of the original mosaic.
+    let mut first_image: Option<(fitskit::ImageData, Header)> = None;
     let mut extra_hdus: Vec<fitskit::Hdu> = Vec::new();
 
     print_step(opts.verbose, "decompressing");
     for hdu in &fits.hdus {
         if let Some(cimg) = hdu.as_compressed_image() {
-            let img = cimg
-                .decompress()
-                .with_context(|| "decompression failed")?;
+            let img = cimg.decompress().with_context(|| "decompression failed")?;
             if first_image.is_none() {
-                first_image = Some(img);
+                first_image = Some((img, hdu.header.clone()));
             } else {
-                extra_hdus.push(fitskit::Hdu::primary_image(img));
+                let mut ext = fitskit::Hdu::primary_image(img);
+                copy_metadata(&mut ext.header, &hdu.header, &[]);
+                extra_hdus.push(ext);
             }
         } else {
             match &hdu.data {
@@ -42,7 +47,11 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
     }
 
     let mut out_fits = match first_image {
-        Some(img) => FitsFile::with_primary_image(img),
+        Some((img, src_header)) => {
+            let mut fits = FitsFile::with_primary_image(img);
+            copy_metadata(&mut fits.primary_mut().header, &src_header, &[]);
+            fits
+        }
         None => bail!("no compressed image found in {}", input.display()),
     };
 
@@ -56,8 +65,7 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
         .with_context(|| format!("cannot write {}", output.display()))?;
 
     if !opts.keep && opts.output.is_none() && output != input {
-        fs::remove_file(input)
-            .with_context(|| format!("cannot remove {}", input.display()))?;
+        fs::remove_file(input).with_context(|| format!("cannot remove {}", input.display()))?;
     }
 
     Ok(())
@@ -75,7 +83,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let output = input.with_extension("");
-        decompress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap();
+        decompress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(output.exists());
     }
 
@@ -93,7 +109,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let output = input.with_extension("");
-        decompress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap();
+        decompress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(input.exists());
     }
 
@@ -103,7 +127,15 @@ mod tests {
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let output = input.with_extension("");
         std::fs::write(&output, b"dummy").unwrap();
-        let err = decompress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap_err();
+        let err = decompress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                ..Options::default()
+            },
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
@@ -113,7 +145,16 @@ mod tests {
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let output = input.with_extension("");
         std::fs::write(&output, b"dummy").unwrap();
-        decompress_file(&input, &output, &Options { keep: true, force: true, ..Options::default() }).unwrap();
+        decompress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                force: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(output.metadata().unwrap().len() > 5);
     }
 
@@ -131,11 +172,49 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let out = tmp.path().join("out.fits");
-        decompress_file(&input, &out, &Options {
-            output: Some(out.clone()),
-            ..Options::default()
-        }).unwrap();
+        decompress_file(
+            &input,
+            &out,
+            &Options {
+                output: Some(out.clone()),
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(input.exists());
+    }
+
+    #[test]
+    fn decompress_keeps_bayerpat_but_drops_container_keywords() {
+        let tmp = TempDir::new().unwrap();
+        let input = copy_to_temp("compressed.fits.fz", &tmp);
+        let output = input.with_extension("");
+        decompress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+
+        let header = FitsFile::from_file(&output)
+            .unwrap()
+            .primary()
+            .header
+            .clone();
+        // The original mosaic metadata is round-tripped...
+        assert!(header.find("BAYERPAT").is_some());
+        // ...but the compressed BINTABLE container keywords are stripped.
+        for kw in [
+            "ZIMAGE", "ZCMPTYPE", "TFORM1", "TFIELDS", "XTENSION", "EXTNAME",
+        ] {
+            assert!(
+                header.find(kw).is_none(),
+                "{kw} leaked into decompress output"
+            );
+        }
     }
 
     #[test]
@@ -143,11 +222,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let custom_out = tmp.path().join("custom.fits");
-        decompress_file(&input, &custom_out, &Options {
-            keep: true,
-            output: Some(custom_out.clone()),
-            ..Options::default()
-        }).unwrap();
+        decompress_file(
+            &input,
+            &custom_out,
+            &Options {
+                keep: true,
+                output: Some(custom_out.clone()),
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(custom_out.exists());
         assert!(!tmp.path().join("compressed.fits").exists());
     }

@@ -7,16 +7,25 @@ use std::fs::File;
 use std::io::Cursor;
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
-use bayer::{run_demosaic, BayerDepth, RasterDepth, RasterMut, CFA};
-use fitskit::{FitsFile, HduData, Header, HeaderValue, ImageData, PixelData};
+use anyhow::{Context, Result, anyhow, bail};
+use bayer::{BayerDepth, CFA, RasterDepth, RasterMut, run_demosaic};
+use fitskit::{FitsFile, HduData, Header, HeaderValue, ImageData, Keyword, PixelData};
 use rayon::prelude::*;
-use tiff::encoder::{colortype, TiffEncoder};
+use tiff::encoder::{TiffEncoder, colortype};
 
 /// FITS header keywords used across the debayer/split commands.
 pub(crate) const BAYERPAT: &str = "BAYERPAT";
 pub(crate) const BSCALE: &str = "BSCALE";
 pub(crate) const BZERO: &str = "BZERO";
+
+/// CFA-mosaic keywords that become meaningless once an image is debayered into
+/// an RGB cube. Dropped by the image commands (debayer/stretch/split) when
+/// copying the source header, but not by decompress, which round-trips the
+/// mosaic faithfully. `load_rgb` also relies on the absence of `BAYERPAT` to
+/// detect an already-debayered 3-plane cube, so leaving it would break
+/// re-processing the output.
+pub(crate) const CFA_KEYWORDS: &[&str] =
+    &["BAYERPAT", "XBAYROFF", "YBAYROFF", "BAYOFFX", "BAYOFFY"];
 
 #[cfg(target_endian = "little")]
 const NATIVE_BAYER_DEPTH16: BayerDepth = BayerDepth::Depth16LE;
@@ -284,41 +293,137 @@ pub(crate) fn write_rgb16_tiff(
 
 /// Write an interleaved 16-bit RGB image as a 3-plane FITS cube, using the FITS
 /// unsigned-16 convention (BITPIX 16 with BZERO 32768) so values in 0..=65535
-/// round-trip.
+/// round-trip. Metadata from `src_header` (minus `drop` and structural keywords)
+/// is copied onto the output, and `history`, when present, is recorded as a
+/// HISTORY card.
 pub(crate) fn write_rgb16_fits(
     output: &Path,
     width: usize,
     height: usize,
     interleaved: &[u16],
+    src_header: Option<&Header>,
+    drop: &[&str],
+    history: Option<&str>,
 ) -> Result<()> {
     let planes = deinterleave_to_planes(interleaved);
     let pixels = PixelData::I16(planes.iter().map(|&p| (p as i32 - 32768) as i16).collect());
-    write_pixel_fits(output, vec![width, height, 3], pixels, 1.0, 32768.0)
+    write_pixel_fits(
+        output,
+        vec![width, height, 3],
+        pixels,
+        1.0,
+        32768.0,
+        src_header,
+        drop,
+        history,
+    )
 }
 
 /// Write a FITS file with the given pixel data, recording `bscale`/`bzero` in
 /// the BSCALE/BZERO header keywords so readers can recover the original
 /// (potentially unsigned or wider-range) physical values.
+///
+/// When `src_header` is given, its metadata keywords are copied onto the output
+/// after the mandatory keywords and BSCALE/BZERO (see [`copy_metadata`]), with
+/// `drop` naming extra keywords to skip. `history`, when present, is appended as
+/// a HISTORY provenance card.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_pixel_fits(
     output: &Path,
     axes: Vec<usize>,
     pixels: PixelData,
     bscale: f64,
     bzero: f64,
+    src_header: Option<&Header>,
+    drop: &[&str],
+    history: Option<&str>,
 ) -> Result<()> {
     let img = ImageData::new(axes, pixels);
     let mut fits = FitsFile::with_primary_image(img);
 
-    if bscale != 1.0 || bzero != 0.0 {
+    {
         let header = &mut fits.primary_mut().header;
-        header.set(BZERO, HeaderValue::Float(bzero), None);
-        header.set(BSCALE, HeaderValue::Float(bscale), None);
+        if bscale != 1.0 || bzero != 0.0 {
+            header.set(BZERO, HeaderValue::Float(bzero), None);
+            header.set(BSCALE, HeaderValue::Float(bscale), None);
+        }
+        if let Some(src) = src_header {
+            copy_metadata(header, src, drop);
+        }
+        if let Some(text) = history {
+            add_history(header, text);
+        }
     }
 
     fits.to_file(output)
         .with_context(|| format!("cannot write {}", output.display()))?;
 
     Ok(())
+}
+
+/// Copy metadata keywords from `src` onto `dest`, skipping structural/reserved
+/// keywords (see [`is_reserved_keyword`]) plus any names in `extra_drop`. `dest`
+/// is expected to already carry the mandatory keywords that
+/// `FitsFile::with_primary_image` generated (and any BSCALE/BZERO the writer
+/// set); survivors are appended after them, preserving FITS keyword ordering.
+/// Commentary cards (COMMENT/HISTORY, whose value is `None`) are copied verbatim
+/// via `push` rather than `set`.
+pub(crate) fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) {
+    for kw in &src.keywords {
+        if is_reserved_keyword(&kw.name) {
+            continue;
+        }
+        if extra_drop.iter().any(|d| d.eq_ignore_ascii_case(&kw.name)) {
+            continue;
+        }
+        dest.push(kw.clone());
+    }
+}
+
+/// Append a HISTORY provenance card to `dest`.
+pub(crate) fn add_history(dest: &mut Header, text: &str) {
+    dest.push(Keyword::commentary("HISTORY", text));
+}
+
+/// True if `name` is `prefix` followed by at least one ASCII digit and nothing
+/// else (e.g. `is_indexed("NAXIS3", "NAXIS")` is true, but `"NAXIS"` and
+/// `"NAXISA"` are false).
+fn is_indexed(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .map(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
+/// True if `name` (uppercase, as fitskit stores keyword names) is a structural,
+/// data-encoding, table, or tile-compression keyword that must not be copied
+/// from a source header onto a freshly built output header: fitskit regenerates
+/// the mandatory keywords for the new geometry, each writer sets its own
+/// BSCALE/BZERO, and the table/`Z*` keywords only describe a compressed
+/// container, not the image.
+fn is_reserved_keyword(name: &str) -> bool {
+    const EXACT: &[&str] = &[
+        // Mandatory / structural.
+        "SIMPLE", "BITPIX", "NAXIS", "EXTEND", "XTENSION", "PCOUNT", "GCOUNT",
+        // Output encoding — owned by the writer.
+        "BSCALE", "BZERO", // Data-dependent values tied to the old BITPIX / pixels.
+        "BLANK", "DATAMIN", "DATAMAX", "CHECKSUM", "DATASUM",
+        // BINTABLE structure (the compressed-image container).
+        "TFIELDS", "THEAP", "EXTNAME", // Tile-compression scalar keywords.
+        "ZIMAGE", "ZCMPTYPE", "ZBITPIX", "ZNAXIS", "ZQUANTIZ", "ZDITHER0", "ZBLANK", "ZMASKCMP",
+        "ZSIMPLE", "ZEXTEND", "ZTENSION", "ZPCOUNT", "ZGCOUNT", "ZHECKSUM", "ZDATASUM",
+        // Never copied as standalone cards.
+        "END", "CONTINUE",
+    ];
+    if EXACT.contains(&name) {
+        return true;
+    }
+
+    // Indexed families: <prefix> followed by one or more digits.
+    const INDEXED: &[&str] = &[
+        "NAXIS", "TFORM", "TTYPE", "TUNIT", "TSCAL", "TZERO", "TNULL", "TDIM", "TDISP", "ZNAXIS",
+        "ZTILE", "ZNAME", "ZVAL",
+    ];
+    INDEXED.iter().any(|p| is_indexed(name, p))
 }
 
 pub(crate) fn get_bayerpat(header: &Header) -> Option<&str> {
@@ -375,5 +480,71 @@ mod tests {
         assert_eq!(high_byte(0xFF00), 255);
         assert_eq!(high_byte(0x0100), 1);
         assert_eq!(rgb16_to_rgb8(&[0xFF00, 0x8000, 0x0100]), vec![255, 128, 1]);
+    }
+
+    #[test]
+    fn is_indexed_matches_prefix_plus_digits_only() {
+        assert!(is_indexed("NAXIS3", "NAXIS"));
+        assert!(is_indexed("TFORM12", "TFORM"));
+        assert!(is_indexed("ZNAXIS2", "ZNAXIS"));
+        // bare prefix, non-digit suffix, and unrelated names do not match
+        assert!(!is_indexed("NAXIS", "NAXIS"));
+        assert!(!is_indexed("TFORMAT", "TFORM"));
+        assert!(!is_indexed("OBJECT", "NAXIS"));
+    }
+
+    #[test]
+    fn is_reserved_keyword_covers_structural_table_and_compression() {
+        for kw in [
+            "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS3", "BSCALE", "BZERO", "BLANK", "DATAMIN",
+            "CHECKSUM", "TFIELDS", "TFORM1", "TTYPE3", "EXTNAME", "ZIMAGE", "ZNAXIS", "ZNAXIS2",
+            "ZTILE1", "ZVAL1", "END",
+        ] {
+            assert!(is_reserved_keyword(kw), "{kw} should be reserved");
+        }
+        for kw in [
+            "OBJECT", "DATE-OBS", "CRVAL1", "BAYERPAT", "GAIN", "COMMENT", "HISTORY",
+        ] {
+            assert!(!is_reserved_keyword(kw), "{kw} should not be reserved");
+        }
+    }
+
+    #[test]
+    fn copy_metadata_keeps_metadata_and_drops_reserved_and_extra() {
+        let mut src = Header::default();
+        // Structural/table/compression keywords that must be dropped.
+        src.set("SIMPLE", HeaderValue::Logical(true), None);
+        src.set("BITPIX", HeaderValue::Integer(16), None);
+        src.set("NAXIS1", HeaderValue::Integer(8), None);
+        src.set("BSCALE", HeaderValue::Float(1.0), None);
+        src.set("BZERO", HeaderValue::Float(32768.0), None);
+        src.set("TFORM1", HeaderValue::String("1PB".to_string()), None);
+        src.set("ZIMAGE", HeaderValue::Logical(true), None);
+        src.set("ZNAXIS2", HeaderValue::Integer(8), None);
+        src.set(
+            "EXTNAME",
+            HeaderValue::String("COMPRESSED_IMAGE".to_string()),
+            None,
+        );
+        // Metadata that must survive.
+        src.set("OBJECT", HeaderValue::String("M31".to_string()), None);
+        src.set("CRVAL1", HeaderValue::Float(10.68), None);
+        src.set(BAYERPAT, HeaderValue::String("RGGB".to_string()), None);
+        src.push(Keyword::commentary("COMMENT", "hi"));
+
+        let mut dest = Header::default();
+        copy_metadata(&mut dest, &src, CFA_KEYWORDS);
+
+        assert_eq!(dest.get_string("OBJECT"), Some("M31"));
+        assert_eq!(dest.get_float("CRVAL1"), Some(10.68));
+        assert!(dest.iter().any(|k| k.name == "COMMENT"));
+        // CFA + reserved keywords are gone.
+        assert!(dest.find(BAYERPAT).is_none());
+        for kw in [
+            "SIMPLE", "BITPIX", "NAXIS1", "BSCALE", "BZERO", "TFORM1", "ZIMAGE", "ZNAXIS2",
+            "EXTNAME",
+        ] {
+            assert!(dest.find(kw).is_none(), "{kw} leaked into output");
+        }
     }
 }

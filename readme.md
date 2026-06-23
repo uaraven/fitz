@@ -70,11 +70,15 @@ Options:
   -h, --help             Print help
 ```
 
+Decompression restores the original image header, keeping its metadata (including `BAYERPAT`) and stripping only the compressed-container table/`Z*` keywords, so a `compress` → `decompress` round-trip preserves the header.
+
 ### debayer
 
 Debayers a FITS mosaic image using [libbayer](https://github.com/wangds/libbayer) and saves it as a FITS (3-plane RGB cube) or TIFF file. The Bayer pattern is taken from `--pattern` when given, and otherwise read from the FITS `BAYERPAT` header keyword. If the input has no `BAYERPAT` header but is already a 3-plane RGB cube (`NAXIS3=3`), the demosaic step is skipped and a notice is printed to stdout. Pass `--force-demosaic` if an input is actually a raw mosaic that happens to have 3 planes for some other reason, so it isn't silently treated as RGB; this requires a Bayer pattern from either `--pattern` or the header.
 
 When `-o`/`--output` is not given, the output file is named `{input-stem}_debayer.{ext}` next to the input, where `ext` is `fits` or `tiff` depending on `--format`.
+
+FITS output preserves the source header's metadata (object, date, exposure, instrument, WCS coordinates, etc.) and adds a `HISTORY` card recording the debayer step. Keywords that no longer describe the output are dropped: the structural and pixel-scaling keywords (regenerated for the RGB cube), the now-meaningless CFA keywords (`BAYERPAT` and the Bayer-offset keywords), and — for tile-compressed `.fz` inputs — the compressed-container table/`Z*` keywords.
 
 FITS output always preserves the source image's pixel format (its `BITPIX` and `BSCALE`/`BZERO` scaling), so `--bpp` only affects TIFF output, which is written as 8-, 16-, or 32-bit unsigned integers.
 
@@ -104,6 +108,8 @@ The stretch derives its shadows clip and midtones balance from each image's own 
 
 When `-o`/`--output` is not given, the output file is named `{input-stem}_stretch.{ext}` next to the input, where `ext` is `fits` or `tiff` depending on `--format`.
 
+Like `debayer`, FITS output preserves the source header's metadata, adds a `HISTORY` card recording the stretch, and drops the structural/scaling, CFA, and (for `.fz` inputs) compressed-container keywords that no longer apply.
+
 ```
 Usage: fitz stretch [OPTIONS] [FILES]...
 
@@ -127,6 +133,8 @@ Options:
 Debayers a FITS mosaic image and saves each color channel as a separate FITS file. If the input has no `BAYERPAT` header, it's assumed to already be a 3-plane RGB cube (`NAXIS3=3`) and the debayer step is skipped. Pass `--force-demosaic` (with `--pattern`, since there's no header to read it from) if an input is actually a raw mosaic that happens to have 3 planes for some other reason.
 
 `--r-prefix`/`--r-dir` (and the `g`/`b` equivalents) are mutually exclusive. If none of the six prefix/dir options are given, all three channels are saved next to the input file using the default `R-`/`G-`/`B-` prefixes. If any are given, only the explicitly configured channels are saved. In directory mode the original filename is kept unchanged (use distinct directories per channel to avoid one channel overwriting another).
+
+Each per-channel FITS file preserves the source header's metadata, adds a `HISTORY` card naming the channel, and drops the structural/scaling, CFA, and (for `.fz` inputs) compressed-container keywords that no longer apply.
 
 ```
 Usage: fitz split [OPTIONS] [FILES]...

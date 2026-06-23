@@ -12,8 +12,8 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
     print_progress(opts.verbose, input, output);
 
     print_step(opts.verbose, "reading");
-    let fits = FitsFile::from_file(input)
-        .with_context(|| format!("cannot read {}", input.display()))?;
+    let fits =
+        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
     let compress_opts = CompressOptions {
         algorithm: opts.algorithm,
@@ -44,8 +44,7 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
         .with_context(|| format!("cannot write {}", output.display()))?;
 
     if !opts.keep && opts.output.is_none() {
-        fs::remove_file(input)
-            .with_context(|| format!("cannot remove {}", input.display()))?;
+        fs::remove_file(input).with_context(|| format!("cannot remove {}", input.display()))?;
     }
 
     Ok(())
@@ -72,7 +71,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let output = with_fz(&input);
-        compress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap();
+        compress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(output.exists());
     }
 
@@ -90,7 +97,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let output = with_fz(&input);
-        compress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap();
+        compress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(input.exists());
     }
 
@@ -100,7 +115,15 @@ mod tests {
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let output = with_fz(&input);
         std::fs::write(&output, b"dummy").unwrap();
-        let err = compress_file(&input, &output, &Options { keep: true, ..Options::default() }).unwrap_err();
+        let err = compress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                ..Options::default()
+            },
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("already exists"));
     }
 
@@ -110,7 +133,16 @@ mod tests {
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let output = with_fz(&input);
         std::fs::write(&output, b"dummy").unwrap();
-        compress_file(&input, &output, &Options { keep: true, force: true, ..Options::default() }).unwrap();
+        compress_file(
+            &input,
+            &output,
+            &Options {
+                keep: true,
+                force: true,
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(output.metadata().unwrap().len() > 5);
     }
 
@@ -119,10 +151,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let out = tmp.path().join("out.fz");
-        compress_file(&input, &out, &Options {
-            output: Some(out.clone()),
-            ..Options::default()
-        }).unwrap();
+        compress_file(
+            &input,
+            &out,
+            &Options {
+                output: Some(out.clone()),
+                ..Options::default()
+            },
+        )
+        .unwrap();
         assert!(input.exists());
     }
 
