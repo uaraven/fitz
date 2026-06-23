@@ -148,11 +148,8 @@ const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 
 /// Index (0..=5) of the cube level nearest to an 8-bit channel value.
 fn nearest_cube_level(v: u8) -> usize {
-    CUBE_LEVELS
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, &lvl)| (lvl as i32 - v as i32).abs())
-        .map(|(i, _)| i)
+    (0..CUBE_LEVELS.len())
+        .min_by_key(|&i| (CUBE_LEVELS[i] as i32 - v as i32).abs())
         .unwrap()
 }
 
@@ -173,8 +170,8 @@ fn color_to_ansi256(r: u16, g: u16, b: u16) -> u8 {
     let cube_rgb = (CUBE_LEVELS[ri], CUBE_LEVELS[gi], CUBE_LEVELS[bi]);
     let cube_idx = (16 + 36 * ri + 6 * gi + bi) as u8;
 
-    // Nearest gray from the 24-step ramp (values 8, 18, ..., 238; indices
-    // 232..=255), which fills in the neutral tones the coarse cube can't.
+    // // Nearest gray from the 24-step ramp (values 8, 18, ..., 238; indices
+    // // 232..=255), which fills in the neutral tones the coarse cube can't.
     let avg = (r as i32 + g as i32 + b as i32) / 3;
     let gray_i = ((avg - 8 + 5) / 10).clamp(0, 23);
     let gray_val = (8 + gray_i * 10) as u8;
@@ -184,7 +181,7 @@ fn color_to_ansi256(r: u16, g: u16, b: u16) -> u8 {
         let dr = c.0 as i32 - r as i32;
         let dg = c.1 as i32 - g as i32;
         let db = c.2 as i32 - b as i32;
-        dr * dr + dg * dg + db * db
+        dr * dr + dg * dg + db * db 
     };
 
     if dist(cube_rgb) <= dist((gray_val, gray_val, gray_val)) {
@@ -344,6 +341,12 @@ mod tests {
         assert!(out.chunks_exact(3).all(|c| c == [1, 2, 3]));
     }
 
+    /// Build a 16-bit channel value whose high byte is `v` (the byte the
+    /// quantizer actually sees), mirroring `high_byte`.
+    fn ch16(v: u8) -> u16 {
+        ((v as u16) << 8) | v as u16
+    }
+
     #[test]
     fn ansi256_maps_primaries_to_cube_corners() {
         // Black and white sit at opposite corners of the 6x6x6 color cube
@@ -351,6 +354,23 @@ mod tests {
         assert_eq!(color_to_ansi256(0, 0, 0), 16);
         assert_eq!(color_to_ansi256(u16::MAX, u16::MAX, u16::MAX), 231);
         assert_eq!(color_to_ansi256(u16::MAX, 0, 0), 16 + 36 * 5);
+    }
+
+    #[test]
+    fn ansi256_routes_dark_neutral_noise_to_gray_ramp() {
+        // A dim, slightly color-imbalanced background pixel — the kind that used
+        // to speckle into saturated low cube corners (blue/red/purple) — must
+        // resolve to the neutral grayscale ramp (indices 232..=255) instead.
+        let idx = color_to_ansi256(ch16(40), ch16(30), ch16(50));
+        assert!(idx >= 232, "expected gray-ramp index, got {idx}");
+    }
+
+    #[test]
+    fn ansi256_snaps_channels_to_nearest_cube_level() {
+        // A value of 175 is exactly cube level 3; a saturated color must land on
+        // the nearest cube levels, not a linearly-scaled (and too dark) bucket.
+        // (175, 0, 0) -> r level 3, g/b level 0 -> 16 + 36*3.
+        assert_eq!(color_to_ansi256(ch16(175), 0, 0), 16 + 36 * 3);
     }
 
     /// Render one half-block color escape into a fresh `String` so the

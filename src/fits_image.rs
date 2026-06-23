@@ -212,7 +212,7 @@ pub(crate) fn load_rgb(
 
     if already_debayered {
         println!(
-            "{}: already debayered (no BAYERPAT header, found a 3-plane RGB cube) — skipping debayer step",
+            "{}: already debayered — skipping debayer step",
             input.display()
         );
         let width = img.axes[0];
