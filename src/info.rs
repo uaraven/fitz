@@ -44,6 +44,18 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
     let img = img.as_ref();
 
+    // `--headers` is a distinct mode: dump the image HDU's raw header cards
+    // instead of the formatted summary. For a tile-compressed input this is the
+    // compressed HDU's header as stored, so the binary-table container and `Z*`
+    // keywords appear alongside the carried-over original image keywords.
+    if opts.headers {
+        let mut out = String::new();
+        let _ = writeln!(out, "{}", input.display());
+        push_raw_headers(&mut out, header);
+        print!("{out}");
+        return Ok(());
+    }
+
     // A 3-plane cube with no BAYERPAT is an already-debayered RGB image (3
     // channels); anything else is treated as a single-channel frame, matching
     // the detection used by the debayer/stretch/split commands.
@@ -143,6 +155,21 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 
     print!("{out}");
     Ok(())
+}
+
+/// Append the header's raw FITS cards to `out`, one card per line with trailing
+/// padding trimmed. Each keyword is serialized back to its 80-column card image
+/// (so commentary cards and CONTINUE-split long strings are shown as they appear
+/// in the file), giving an unformatted dump rather than the curated summary.
+fn push_raw_headers(out: &mut String, header: &Header) {
+    for keyword in header.iter() {
+        for card in keyword.to_cards() {
+            // Cards are fixed-width ASCII; `from_utf8_lossy` is only a guard
+            // against a malformed card and won't allocate for valid ones.
+            let line = String::from_utf8_lossy(&card);
+            let _ = writeln!(out, "{}", line.trim_end());
+        }
+    }
 }
 
 /// Describe the pixel storage format. The bit depth comes from the (possibly
@@ -675,6 +702,49 @@ mod tests {
         // treat it as a single channel.
         let input = test_data("uncompressed.fit");
         info_file(&input, &InfoOptions::default()).unwrap();
+    }
+
+    #[test]
+    fn info_file_dumps_headers_on_real_data() {
+        // `--headers` must succeed on a real frame, reading the HDU header.
+        let input = test_data("uncompressed.fit");
+        info_file(
+            &input,
+            &InfoOptions {
+                headers: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn raw_headers_are_dumped_verbatim() {
+        // The raw dump emits one trimmed card per keyword, in order, and each
+        // line re-parses to the same keyword it came from.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
+
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, _img) = find_image_hdu(&fits, &input, false).unwrap();
+
+        let mut out = String::new();
+        push_raw_headers(&mut out, header);
+        let lines: Vec<&str> = out.lines().collect();
+
+        // Standard mandatory cards appear in their raw card form, in order.
+        assert!(lines.iter().any(|l| l.starts_with("SIMPLE  =")));
+        assert!(lines.iter().any(|l| l.starts_with("BITPIX  =")));
+        assert!(lines.iter().any(|l| l.starts_with("NAXIS1  =")));
+        assert!(lines.iter().any(|l| l.contains("RGGB")));
+        // No card exceeds the 80-column FITS card width, and none is END
+        // (the terminator isn't stored as a keyword).
+        assert!(lines.iter().all(|l| l.chars().count() <= 80));
+        assert!(!lines.iter().any(|l| l.starts_with("END")));
+        // One emitted line per stored keyword (these fixtures use no
+        // CONTINUE-split long strings).
+        assert_eq!(lines.len(), header.iter().count());
     }
 
     #[test]

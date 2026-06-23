@@ -296,6 +296,9 @@ struct InfoArgs {
     /// together with --pixel, which is what produces the histogram.
     #[arg(long)]
     log: bool,
+    /// Print the raw FITS header cards instead of the formatted summary
+    #[arg(long)]
+    headers: bool,
     /// FITS files to inspect
     files: Vec<PathBuf>,
 }
@@ -625,8 +628,18 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
 }
 
 fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
-    let InfoArgs { pixel, log, files } = args;
-    let opts = InfoOptions { verbose, pixel, log };
+    let InfoArgs {
+        pixel,
+        log,
+        headers,
+        files,
+    } = args;
+    let opts = InfoOptions {
+        verbose,
+        pixel,
+        log,
+        headers,
+    };
     process_files(&files, |path| info_file(path, &opts))
 }
 

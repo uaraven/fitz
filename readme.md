@@ -175,7 +175,7 @@ By default only these header-derived fields are reported. Pass `--pixel` to addi
 
 Pixel data can only be shown for RAW images.
 
-When available, the object name, exposure time, filter, instrument and observation date are also shown. Any field whose header keyword is absent is omitted.
+Pass `--headers` to skip the formatted summary entirely and instead dump the raw FITS header cards, one per line, exactly as found in the file.
 
 ```
 Usage: fitz info [OPTIONS] [FILES]...
@@ -186,6 +186,7 @@ Arguments:
 Options:
       --pixel        Read the pixel data and report pixel statistics (not supported for debayered images)
       --log          Use a logarithmic vertical axis for the histogram (only useful with --pixel)
+      --headers      Print the raw FITS header cards instead of the formatted summary
   -v, --verbose      Print each file being processed
   -j, --jobs <JOBS>  Number of files to process in parallel (default: number of CPU cores)
   -h, --help         Print help
