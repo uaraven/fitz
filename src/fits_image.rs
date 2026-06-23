@@ -430,12 +430,41 @@ pub(crate) fn get_bayerpat(header: &Header) -> Option<&str> {
     header.get_string(BAYERPAT)
 }
 
-/// Bail if `output` already exists and the user didn't pass `--force`.
-pub(crate) fn ensure_can_write(output: &Path, force: bool) -> Result<()> {
-    if output.exists() && !force {
-        bail!("{} already exists — use -f to overwrite", output.display());
+/// Serializes overwrite prompts so parallel batch runs don't interleave their
+/// questions and answers on the shared terminal.
+static PROMPT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Ensure `output` may be written. If it already exists and the user didn't
+/// pass `--yes`, ask whether to overwrite it (when running interactively) and
+/// bail if the answer is no.
+pub(crate) fn ensure_can_write(output: &Path, assume_yes: bool) -> Result<()> {
+    if !output.exists() || assume_yes {
+        return Ok(());
     }
-    Ok(())
+    if confirm_overwrite(output)? {
+        Ok(())
+    } else {
+        bail!("{} already exists — skipped", output.display());
+    }
+}
+
+/// Prompt on the terminal whether to overwrite an existing `output`. When stdin
+/// isn't a terminal there's no one to ask, so refuse and point at `--yes`
+/// (matching the old non-interactive guard).
+fn confirm_overwrite(output: &Path) -> Result<bool> {
+    use std::io::{BufRead, IsTerminal, Write};
+
+    if !std::io::stdin().is_terminal() {
+        bail!("{} already exists — use -y to overwrite", output.display());
+    }
+
+    // Hold the lock across the whole prompt/answer exchange.
+    let _guard = PROMPT_LOCK.lock().unwrap();
+    print!("{} already exists — overwrite? [y/N] ", output.display());
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES"))
 }
 
 /// Print the `input -> output` mapping when verbose mode is enabled.

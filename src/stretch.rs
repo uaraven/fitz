@@ -30,7 +30,7 @@ const MAD_NORM: Sample = 1.4826;
 const OUT_MAX: Sample = u16::MAX as Sample;
 
 pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
-    ensure_can_write(output, opts.force)?;
+    ensure_can_write(output, opts.yes)?;
     print_progress(opts.verbose, input, output);
 
     let (width, height, stretched, header) = load_and_stretch(
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn stretch_errors_if_output_exists_without_force() {
+    fn stretch_errors_if_output_exists_without_yes() {
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("raw.fits");
         write_mosaic_fits(&input, 4, 4, Some("RGGB"));
@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn stretch_force_overwrites_existing_output() {
+    fn stretch_yes_overwrites_existing_output() {
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("raw.fits");
         write_mosaic_fits(&input, 4, 4, Some("RGGB"));
@@ -479,7 +479,7 @@ mod tests {
         std::fs::write(&output, b"dummy").unwrap();
 
         let opts = StretchOptions {
-            force: true,
+            yes: true,
             ..StretchOptions::default()
         };
         stretch_file(&input, &output, &opts).unwrap();

@@ -492,7 +492,11 @@ fn render_histogram(hist: &[u64], width: usize, rows: usize, log: bool) -> Strin
     let total_levels = rows as u64 * LEVELS_PER_ROW;
     // `weight` maps a count onto the 0..=1 axis. The log axis uses `ln(c + 1)`
     // (so an empty column still weighs 0) normalised by the tallest column.
-    let max_weight = if log { ((max + 1) as f64).ln() } else { max as f64 };
+    let max_weight = if log {
+        ((max + 1) as f64).ln()
+    } else {
+        max as f64
+    };
     let weight = |c: u64| if log { ((c + 1) as f64).ln() } else { c as f64 };
     let heights: Vec<u64> = columns
         .iter()
@@ -552,11 +556,7 @@ mod tests {
         header.set("FOCRATIO", HeaderValue::Float(4.5), None);
         assert_eq!(telescope_label(&header).as_deref(), Some("203mm F/4.5"));
 
-        header.set(
-            "TELESCOP",
-            HeaderValue::String("My Scope".into()),
-            None,
-        );
+        header.set("TELESCOP", HeaderValue::String("My Scope".into()), None);
         assert_eq!(
             telescope_label(&header).as_deref(),
             Some("My Scope (203mm F/4.5)")

@@ -11,7 +11,7 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
     // Decompressing in place (output == input) is allowed and must not trip
     // the "already exists" guard.
     if output != input {
-        ensure_can_write(output, opts.force)?;
+        ensure_can_write(output, opts.yes)?;
     }
     print_progress(opts.verbose, input, output);
 
@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn decompress_errors_if_output_exists_without_force() {
+    fn decompress_errors_if_output_exists_without_yes() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let output = input.with_extension("");
@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn decompress_force_overwrites_existing_output() {
+    fn decompress_yes_overwrites_existing_output() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("compressed.fits.fz", &tmp);
         let output = input.with_extension("");
@@ -150,7 +150,7 @@ mod tests {
             &output,
             &Options {
                 keep: true,
-                force: true,
+                yes: true,
                 ..Options::default()
             },
         )

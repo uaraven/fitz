@@ -105,7 +105,7 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
     // Check all outputs before writing any, so a pre-existing file doesn't
     // leave a partial set of channels written to disk.
     for (output, _, _) in &outputs {
-        ensure_can_write(output, opts.force)?;
+        ensure_can_write(output, opts.yes)?;
     }
 
     for (output, values, channel) in outputs {
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn split_channel_errors_if_output_exists_without_force() {
+    fn split_channel_errors_if_output_exists_without_yes() {
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("raw.fits");
         write_mosaic_fits(&input, 4, 4, Some("RGGB"));

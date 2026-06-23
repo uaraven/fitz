@@ -8,7 +8,7 @@ use crate::fits_image::{ensure_can_write, print_progress, print_step};
 use crate::options::Options;
 
 pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
-    ensure_can_write(output, opts.force)?;
+    ensure_can_write(output, opts.yes)?;
     print_progress(opts.verbose, input, output);
 
     print_step(opts.verbose, "reading");
@@ -110,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn compress_errors_if_output_exists_without_force() {
+    fn compress_errors_if_output_exists_without_yes() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let output = with_fz(&input);
@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn compress_force_overwrites_existing_output() {
+    fn compress_yes_overwrites_existing_output() {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let output = with_fz(&input);
@@ -138,7 +138,7 @@ mod tests {
             &output,
             &Options {
                 keep: true,
-                force: true,
+                yes: true,
                 ..Options::default()
             },
         )

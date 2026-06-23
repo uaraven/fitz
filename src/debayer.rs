@@ -62,7 +62,7 @@ impl SourceFormat {
 }
 
 pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Result<()> {
-    ensure_can_write(output, opts.force)?;
+    ensure_can_write(output, opts.yes)?;
     print_progress(opts.verbose, input, output);
 
     print_step(opts.verbose, "reading");
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn debayer_errors_if_output_exists_without_force() {
+    fn debayer_errors_if_output_exists_without_yes() {
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("raw.fits");
         write_mosaic_fits(&input, 4, 4, Some("RGGB"));
@@ -399,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn debayer_force_overwrites_existing_output() {
+    fn debayer_yes_overwrites_existing_output() {
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("raw.fits");
         write_mosaic_fits(&input, 4, 4, Some("RGGB"));
@@ -408,7 +408,7 @@ mod tests {
         std::fs::write(&output, b"dummy").unwrap();
 
         let opts = DebayerOptions {
-            force: true,
+            yes: true,
             ..DebayerOptions::default()
         };
         debayer_file(&input, &output, &opts).unwrap();
