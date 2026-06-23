@@ -181,7 +181,7 @@ fn color_to_ansi256(r: u16, g: u16, b: u16) -> u8 {
         let dr = c.0 as i32 - r as i32;
         let dg = c.1 as i32 - g as i32;
         let db = c.2 as i32 - b as i32;
-        dr * dr + dg * dg + db * db 
+        dr * dr + dg * dg + db * db
     };
 
     if dist(cube_rgb) <= dist((gray_val, gray_val, gray_val)) {

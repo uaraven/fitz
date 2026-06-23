@@ -188,7 +188,7 @@ struct DebayerArgs {
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Always demosaic, even if the input looks like an already-debayered RGB image.
     /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     #[arg(long)]
     force_demosaic: bool,
@@ -220,7 +220,7 @@ struct StretchArgs {
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Always demosaic, even if the input looks like an already-debayered RGB image.
     /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     #[arg(long)]
     force_demosaic: bool,
@@ -251,7 +251,7 @@ struct SplitChannelArgs {
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Always demosaic, even if the input looks like an already-debayered RGB image.
     /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     /// (requires --pattern if there's no pattern information in the file).
     #[arg(long)]
@@ -311,7 +311,7 @@ struct PreviewArgs {
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Always demosaic, even if the input looks like an already-debayered RGB image.
     /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     #[arg(long)]
     force_demosaic: bool,
@@ -653,7 +653,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         graphics,
         truecolor,
         file,
-        fallback
+        fallback,
     } = args;
 
     let opts = PreviewOptions {

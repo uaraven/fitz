@@ -380,6 +380,25 @@ pub(crate) fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]
     }
 }
 
+/// Pixel-scaling keywords that [`copy_metadata`] deliberately drops (the image
+/// commands let their writer own scaling), but which a lossless compress /
+/// decompress round-trip must preserve: the pixels are stored unchanged, so the
+/// original `BSCALE`/`BZERO`/`BLANK` are still the correct physical
+/// interpretation. Dropping `BZERO` would, for example, silently shift an
+/// unsigned-16 image (`BZERO = 32768`) by 32768.
+pub(crate) const SCALING_KEYWORDS: &[&str] = &[BSCALE, BZERO, "BLANK"];
+
+/// Copy the [`SCALING_KEYWORDS`] present on `src` onto `dest`, used by the
+/// compress/decompress container paths to keep the physical pixel scaling that
+/// [`copy_metadata`] strips.
+pub(crate) fn copy_scaling(dest: &mut Header, src: &Header) {
+    for &name in SCALING_KEYWORDS {
+        if let Some(kw) = src.find(name) {
+            dest.push(kw.clone());
+        }
+    }
+}
+
 /// Append a HISTORY provenance card to `dest`.
 pub(crate) fn add_history(dest: &mut Header, text: &str) {
     dest.push(Keyword::commentary("HISTORY", text));

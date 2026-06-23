@@ -35,8 +35,8 @@ pub struct DebayerOptions {
     /// Bayer pattern override; takes precedence over the FITS headers.
     pub pattern: Option<CFA>,
     /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB image. Use this when an input is a genuine raw mosaic that 
-    /// happens to have 3 channels for some other reason, so it isn't 
+    /// RGB image. Use this when an input is a genuine raw mosaic that
+    /// happens to have 3 channels for some other reason, so it isn't
     /// silently misread as RGB.
     pub force_demosaic: bool,
     pub format: OutputFormat,
