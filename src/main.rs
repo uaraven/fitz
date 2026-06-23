@@ -139,9 +139,9 @@ struct CompressArgs {
     #[arg(short = 'k', long)]
     keep: bool,
 
-    /// Overwrite output file if it already exists
-    #[arg(short = 'f', long)]
-    force: bool,
+    /// Assume yes to overwrite question
+    #[arg(short = 'y', long)]
+    yes: bool,
 
     /// Compression algorithm
     #[arg(short = 'a', long, default_value = "rice1")]
@@ -161,9 +161,9 @@ struct DecompressArgs {
     #[arg(short = 'k', long)]
     keep: bool,
 
-    /// Overwrite output file if it already exists
-    #[arg(short = 'f', long)]
-    force: bool,
+    /// Assume yes to overwrite question
+    #[arg(short = 'y', long)]
+    yes: bool,
 
     /// Write output to this file (only valid with a single input file)
     #[arg(short = 'o', long)]
@@ -175,9 +175,9 @@ struct DecompressArgs {
 
 #[derive(clap::Args)]
 struct DebayerArgs {
-    /// Overwrite output file if it already exists
-    #[arg(short = 'f', long)]
-    force: bool,
+    /// Assume yes to overwrite question
+    #[arg(short = 'y', long)]
+    yes: bool,
 
     /// Bits per pixel in the output image (TIFF only; FITS output keeps the
     /// source image's pixel format)
@@ -195,7 +195,7 @@ struct DebayerArgs {
     force_demosaic: bool,
 
     /// Output file format
-    #[arg(long, default_value = "fits", value_parser = parse_output_format)]
+    #[arg(short = 'f', long = "output-format", default_value = "fits", value_parser = parse_output_format)]
     format: OutputFormat,
 
     /// Write output to this file, or to this folder if processing multiple files
@@ -208,9 +208,9 @@ struct DebayerArgs {
 
 #[derive(clap::Args)]
 struct StretchArgs {
-    /// Overwrite output file if it already exists
-    #[arg(short = 'f', long)]
-    force: bool,
+    /// Assume yes to overwrite question
+    #[arg(short = 'y', long)]
+    yes: bool,
 
     /// Apply one shared stretch to all channels instead of stretching each
     /// channel independently (which also neutralizes the background)
@@ -228,7 +228,7 @@ struct StretchArgs {
     force_demosaic: bool,
 
     /// Output file format
-    #[arg(long, default_value = "fits", value_parser = parse_output_format)]
+    #[arg(short = 'f', long = "output-format", default_value = "fits", value_parser = parse_output_format)]
     format: OutputFormat,
 
     /// Write output to this file, or to this folder if processing multiple files
@@ -241,22 +241,22 @@ struct StretchArgs {
 
 #[derive(clap::Args)]
 struct SplitChannelArgs {
-    /// Overwrite output files if they already exist
-    #[arg(short = 'f', long)]
-    force: bool,
+    /// Assume yes to overwrite question
+    #[arg(short = 'y', long)]
+    yes: bool,
 
     /// Per-channel pixel format of the resulting FITS files
-    #[arg(long, default_value = "i16", value_parser = parse_channel_format)]
+    #[arg(short = 'p', long = "output-pixel-format", default_value = "i16", value_parser = parse_channel_format)]
     format: ChannelFormat,
 
-    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    /// Bayer pattern of the sensor; if omitted, read from the fits header
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input has no BAYERPAT header but looks
-    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
-    /// raw mosaic that happens to have 3 planes for some other reason
-    /// (requires --pattern if there's no BAYERPAT header).
+    /// Always demosaic, even if the input has no CFA pattern header but looks
+    /// like an already-debayered RGB image. Use this for a
+    /// raw mosaic that happens to have 3 channels for some other reason
+    /// (requires --pattern if there's no pattern information in the file).
     #[arg(long)]
     force_demosaic: bool,
 
@@ -448,7 +448,7 @@ fn main() -> ExitCode {
         Command::Compress(a) => run_compress_decompress(
             false,
             a.keep,
-            a.force,
+            a.yes,
             a.algorithm.into(),
             a.output,
             a.files,
@@ -457,7 +457,7 @@ fn main() -> ExitCode {
         Command::Decompress(a) => run_compress_decompress(
             true,
             a.keep,
-            a.force,
+            a.yes,
             CompressionType::Rice1,
             a.output,
             a.files,
@@ -509,7 +509,7 @@ fn process_files(files: &[PathBuf], process: impl Fn(&Path) -> Result<()> + Sync
 fn run_compress_decompress(
     is_decompress: bool,
     keep: bool,
-    force: bool,
+    yes: bool,
     algorithm: CompressionType,
     output: Option<PathBuf>,
     files: Vec<PathBuf>,
@@ -522,7 +522,7 @@ fn run_compress_decompress(
 
     let opts = Options {
         keep,
-        force,
+        yes,
         verbose,
         output,
         algorithm,
@@ -541,7 +541,7 @@ fn run_compress_decompress(
 
 fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
     let DebayerArgs {
-        force,
+        yes,
         bpp,
         pattern,
         force_demosaic,
@@ -551,7 +551,7 @@ fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = DebayerOptions {
-        force,
+        yes,
         verbose,
         bpp,
         pattern: pattern.map(Into::into),
@@ -569,7 +569,7 @@ fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
 
 fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
     let StretchArgs {
-        force,
+        yes,
         linked_channel,
         pattern,
         force_demosaic,
@@ -579,7 +579,7 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = StretchOptions {
-        force,
+        yes,
         verbose,
         linked: linked_channel,
         pattern: pattern.map(Into::into),
@@ -597,7 +597,7 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
 
 fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
     let SplitChannelArgs {
-        force,
+        yes,
         format,
         pattern,
         force_demosaic,
@@ -611,7 +611,7 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = SplitChannelOptions {
-        force,
+        yes,
         verbose,
         format,
         pattern: pattern.map(Into::into),

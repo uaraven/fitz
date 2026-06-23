@@ -1,6 +1,6 @@
 # TODO for release
 
- - [ ] Ask before overwriting file (rename `-f` option to `-y`)
+ - [x] Ask before overwriting file (rename `-f` option to `-y`)
  - [ ] Test rice compression with float data (shouldn't work)
  - [ ] Add low level tools:
    - [x] Show all headers

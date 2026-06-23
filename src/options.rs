@@ -8,7 +8,7 @@ use crate::split_channel::ChannelFormat;
 
 pub struct Options {
     pub keep: bool,
-    pub force: bool,
+    pub yes: bool,
     pub verbose: bool,
     pub output: Option<PathBuf>,
     pub algorithm: CompressionType,
@@ -19,7 +19,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             keep: false,
-            force: false,
+            yes: false,
             verbose: false,
             output: None,
             algorithm: CompressionType::Rice1,
@@ -29,7 +29,7 @@ impl Default for Options {
 }
 
 pub struct DebayerOptions {
-    pub force: bool,
+    pub yes: bool,
     pub verbose: bool,
     pub bpp: u32,
     /// Bayer pattern override; takes precedence over the FITS header's
@@ -48,7 +48,7 @@ pub struct DebayerOptions {
 impl Default for DebayerOptions {
     fn default() -> Self {
         DebayerOptions {
-            force: false,
+            yes: false,
             verbose: false,
             bpp: 16,
             pattern: None,
@@ -61,7 +61,7 @@ impl Default for DebayerOptions {
 }
 
 pub struct StretchOptions {
-    pub force: bool,
+    pub yes: bool,
     pub verbose: bool,
     /// Apply one shared set of stretch parameters to all channels instead of
     /// stretching each channel independently.
@@ -80,7 +80,7 @@ pub struct StretchOptions {
 impl Default for StretchOptions {
     fn default() -> Self {
         StretchOptions {
-            force: false,
+            yes: false,
             verbose: false,
             linked: false,
             pattern: None,
@@ -124,7 +124,7 @@ pub struct PreviewOptions {
 }
 
 pub struct SplitChannelOptions {
-    pub force: bool,
+    pub yes: bool,
     pub verbose: bool,
     pub format: ChannelFormat,
     /// Bayer pattern override; takes precedence over the FITS header's
@@ -144,7 +144,7 @@ pub struct SplitChannelOptions {
 impl Default for SplitChannelOptions {
     fn default() -> Self {
         SplitChannelOptions {
-            force: false,
+            yes: false,
             verbose: false,
             format: ChannelFormat::I16,
             pattern: None,
