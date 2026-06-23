@@ -61,7 +61,7 @@ Thin CLI over the **`fitskit`** crate (FITS read/write/tile-compression). Other 
   keywords (BAYERPAT, BSCALE/BZERO, RA/DEC, …), so downstream logic is unchanged.
 - **Shared "already debayered" detection:** `load_rgb` in `fits_image.rs` is the single
   source of truth for debayer/stretch/split. A 2D image is demosaiced; a 3-plane image
-  (`NAXIS3=3`) with **no** `BAYERPAT` header is treated as an already-debayered RGB cube and
+  (`NAXIS3=3`) with **no** `BAYERPAT` header is treated as an already-debayered RGB image and
   skips demosaicing. `--force-demosaic` overrides this (and then needs a Bayer pattern from
   `--pattern` or the header). The Bayer pattern resolves from `--pattern` first, else the
   FITS `BAYERPAT` keyword (`resolve_cfa`).
