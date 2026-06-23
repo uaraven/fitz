@@ -32,13 +32,12 @@ pub struct DebayerOptions {
     pub yes: bool,
     pub verbose: bool,
     pub bpp: u32,
-    /// Bayer pattern override; takes precedence over the FITS header's
-    /// BAYERPAT keyword. Falls back to BAYERPAT when not given.
+    /// Bayer pattern override; takes precedence over the FITS headers.
     pub pattern: Option<CFA>,
     /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB cube (no BAYERPAT header, 3-plane image). Use this when an input
-    /// is a genuine raw mosaic that happens to have 3 planes for some other
-    /// reason, so it isn't silently misread as RGB.
+    /// RGB image. Use this when an input is a genuine raw mosaic that 
+    /// happens to have 3 channels for some other reason, so it isn't 
+    /// silently misread as RGB.
     pub force_demosaic: bool,
     pub format: OutputFormat,
     pub output: Option<PathBuf>,
@@ -66,11 +65,10 @@ pub struct StretchOptions {
     /// Apply one shared set of stretch parameters to all channels instead of
     /// stretching each channel independently.
     pub linked: bool,
-    /// Bayer pattern override; takes precedence over the FITS header's
-    /// BAYERPAT keyword. Falls back to BAYERPAT when not given.
+    /// Bayer pattern override; takes precedence over the FITS headers.
     pub pattern: Option<CFA>,
     /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB cube (no BAYERPAT header, 3-plane image). See `DebayerOptions::force_demosaic`.
+    /// RGB image. See `DebayerOptions::force_demosaic`.
     pub force_demosaic: bool,
     pub format: OutputFormat,
     pub output: Option<PathBuf>,
@@ -111,27 +109,27 @@ pub struct PreviewOptions {
     /// Apply one shared set of stretch parameters to all channels instead of
     /// stretching each channel independently.
     pub linked: bool,
-    /// Bayer pattern override; takes precedence over the FITS header's
-    /// BAYERPAT keyword. Falls back to BAYERPAT when not given.
+    /// Bayer pattern override; takes precedence over the FITS headers.
     pub pattern: Option<CFA>,
     /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB cube (no BAYERPAT header, 3-plane image). See `DebayerOptions::force_demosaic`.
+    /// RGB image. See `DebayerOptions::force_demosaic`.
     pub force_demosaic: bool,
     /// Force kitty graphics protocol rendering, bypassing auto-detection.
     pub force_kitty: bool,
-    /// Force true-color ANSI half-block rendering, bypassing auto-detection.
+    /// Force true-color ASCII rendering, bypassing auto-detection.
     pub force_truecolor: bool,
+    /// Fallback to most compatible ASCII rendering mode, with only 216 colours.
+    pub fallback: bool,
 }
 
 pub struct SplitChannelOptions {
     pub yes: bool,
     pub verbose: bool,
     pub format: ChannelFormat,
-    /// Bayer pattern override; takes precedence over the FITS header's
-    /// BAYERPAT keyword. Falls back to BAYERPAT when not given.
+    /// Bayer pattern override; takes precedence over the FITS headers.
     pub pattern: Option<CFA>,
     /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB cube (no BAYERPAT header, 3-plane image). See `DebayerOptions::force_demosaic`.
+    /// RGB image. See `DebayerOptions::force_demosaic`.
     pub force_demosaic: bool,
     pub r_prefix: Option<String>,
     pub r_dir: Option<PathBuf>,

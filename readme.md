@@ -31,7 +31,7 @@ When a command is given several input files, they are processed in parallel acro
  - `decompress` to decompress the compressed FITS file. Use `fitz decompress --help` to see more options
  - `debayer` to debayer a FITS mosaic image and save it as a FITS or TIFF file. Use `fitz debayer --help` to see more options
  - `stretch` to auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file. Use `fitz stretch --help` to see more options
- - `split` to debayer a FITS mosaic image (or split an already-debayered RGB cube) and save each color channel as a separate FITS file. Use `fitz split --help` to see more options
+ - `split` to debayer a FITS mosaic image (or split an already-debayered RGB image) and save each color channel as a separate FITS file. Use `fitz split --help` to see more options
  - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics). Use `fitz info --help` to see more options
  - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using maximal available quality mode. See [Preview section](#preview) for more details.
 
@@ -74,7 +74,7 @@ Decompression restores the original image header, keeping its metadata (includin
 
 ### debayer
 
-Debayers a FITS mosaic image and saves it as a FITS (3-channel) or TIFF file. The Bayer pattern is retrieved from the FITS headers and can be overwritten with `--pattern` parameter. If the input file is already a 3-plane RGB cube, the demosaic step is skipped and a notice is printed to stdout. Pass `--force-demosaic` if an input is actually a raw mosaic that happens to have 3 planes for some other reason, so it isn't silently treated as RGB; this requires a Bayer pattern from either `--pattern` or the header.
+Debayers a FITS mosaic image and saves it as a FITS (3-channel) or TIFF file. The Bayer pattern is retrieved from the FITS headers and can be overwritten with `--pattern` parameter. If the input file is already a 3-plane RGB image, the demosaic step is skipped and a notice is printed to stdout. Pass `--force-demosaic` if an input is actually a raw mosaic that happens to have 3 planes for some other reason, so it isn't silently treated as RGB; this requires a Bayer pattern from either `--pattern` or the header.
 
 When `-o`/`--output` is not given, the output file is named `{input-stem}_debayer.{ext}` next to the input, where `ext` is `fits` or `tiff` depending on `--format`.
 
@@ -90,7 +90,7 @@ Options:
   -y, --yes                Assume yes to overwrite question
       --bpp <BPP>          Bits per pixel in the output image (TIFF only; FITS keeps the source format) [default: 16] (8, 16 or 32)
       --pattern <PATTERN>  Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
-      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB cube
+      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB image
   -f, --output-format <FORMAT>
                            Output file format [default: fits] (TIFF or FITS)
   -o, --output <OUTPUT>    Write output to this file, or to this folder if processing multiple files
@@ -117,7 +117,7 @@ Options:
   -y, --yes                Assume yes to overwrite question
       --linked-channel     Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
       --pattern <PATTERN>  Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
-      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB cube
+      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB image
   -f, --output-format <FORMAT>
                            Output file format [default: fits] (TIFF or FITS)
   -o, --output <OUTPUT>    Write output to this file, or to this folder if processing multiple files
@@ -143,7 +143,7 @@ Options:
   -p, --output-pixel-format <FORMAT>
                              Pixel format of the resulting per-channel FITS files [default: i16] [possible values: i8, i16, i32, f32, f64]
       --pattern <PATTERN>    Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
-      --force-demosaic       Always demosaic, even if the input looks like an already-debayered RGB cube
+      --force-demosaic       Always demosaic, even if the input looks like an already-debayered RGB image
       --r-prefix <R_PREFIX>  Prefix for the red channel file: {prefix}-{original-file-name}
       --r-dir <R_DIR>        Directory to save the red channel file into (original filename kept)
       --g-prefix <G_PREFIX>  Prefix for the green channel file: {prefix}-{original-file-name}
@@ -229,7 +229,7 @@ Arguments:
 Options:
       --linked-channel     Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
       --pattern <PATTERN>  Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
-      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB cube
+      --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB image
       --graphics           Force kitty graphics protocol rendering, skipping auto-detection
       --truecolor          Force true-color ANSI half-block rendering, skipping auto-detection
   -v, --verbose            Print each file being processed
