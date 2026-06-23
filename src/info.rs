@@ -95,9 +95,21 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 
     push_coordinate(&mut out, header, Axis::Ra, "RA", "OBJCTRA");
     push_coordinate(&mut out, header, Axis::Dec, "DEC", "OBJCTDEC");
+    if let Some(rot) = header.get_float("OBJCTROT") {
+        let _ = writeln!(out, "  Rotation:    {}°", trim_float(rot));
+    }
 
     if let Some(exptime) = header.get_float("EXPTIME") {
         let _ = writeln!(out, "  Exposure:    {} s", trim_float(exptime));
+    }
+    if let Some(gain) = header.get_float("GAIN") {
+        let _ = writeln!(out, "  Gain:        {}", trim_float(gain));
+    }
+    if let Some(offset) = header.get_float("OFFSET") {
+        let _ = writeln!(out, "  Offset:      {}", trim_float(offset));
+    }
+    if let (Some(xbin), Some(ybin)) = (header.get_int("XBINNING"), header.get_int("YBINNING")) {
+        let _ = writeln!(out, "  Binning:     {xbin}x{ybin}");
     }
     if let Some(filter) = header.get_string("FILTER") {
         let filter = filter.trim();
@@ -110,6 +122,9 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         if !instrument.is_empty() {
             let _ = writeln!(out, "  Instrument:  {instrument}");
         }
+    }
+    if let Some(telescope) = telescope_label(header) {
+        let _ = writeln!(out, "  Telescope:   {telescope}");
     }
     if let Some(date) = header.get_string("DATE-OBS") {
         let date = date.trim();
@@ -140,15 +155,17 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
                 stats.zeros,
             );
             // The histogram is the last thing in the report: a title aligned
-            // with the other fields, then the bar chart spanning 80% of the
-            // terminal width, centered horizontally.
+            // with the other fields, then the bar chart centered horizontally.
+            // The width is chosen so each column maps to a whole number of
+            // buckets: the largest of 16/32/64/128/256 whose drawn box (`width
+            // + 2` for the `|` borders) fits the terminal.
             let (cols, _) = terminal_dimensions();
             let _ = writeln!(out, "  Histogram:");
-            let width = (cols as usize * 80) / 100;
+            let width = histogram_width(cols as usize);
             // The drawn box adds a `|` on each side, so center the full
             // `width + 2` box within the terminal.
-            let boxed = (width + 2).min(cols as usize);
-            let left_pad = (cols as usize - boxed) / 2;
+            let boxed = width + 2;
+            let left_pad = (cols as usize).saturating_sub(boxed) / 2;
             push_histogram(&mut out, &stats.histogram, width, left_pad, opts.log);
         }
     }
@@ -201,6 +218,35 @@ fn channel_label(channels: usize, header: &Header) -> String {
     match get_bayerpat(header) {
         Some(_) => "mosaic".to_string(),
         None => "monochrome / undebayered".to_string(),
+    }
+}
+
+/// Describe the imaging telescope: its name (`TELESCOP`) optionally followed by
+/// its optical figure derived from focal length (`FOCALLEN`, mm) and focal ratio
+/// (`FOCRATIO`), e.g. `My Scope (203mm F/4.5)`. Returns `None` when no telescope
+/// keyword carries usable information.
+fn telescope_label(header: &Header) -> Option<String> {
+    let name = header
+        .get_string("TELESCOP")
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut optics = String::new();
+    if let Some(focal) = header.get_float("FOCALLEN") {
+        optics.push_str(&format!("{}mm", trim_float(focal)));
+    }
+    if let Some(ratio) = header.get_float("FOCRATIO") {
+        if !optics.is_empty() {
+            optics.push(' ');
+        }
+        optics.push_str(&format!("F/{}", trim_float(ratio)));
+    }
+
+    match (name, optics.is_empty()) {
+        (Some(name), false) => Some(format!("{name} ({optics})")),
+        (Some(name), true) => Some(name.to_string()),
+        (None, false) => Some(optics),
+        (None, true) => None,
     }
 }
 
@@ -376,6 +422,20 @@ fn histogram(values: &[f64], min: f64, max: f64) -> Vec<u64> {
         )
 }
 
+/// Pick the drawn histogram width for a terminal `cols` wide.
+///
+/// The width is the largest power-of-two divisor of [`HISTOGRAM_BUCKETS`] in
+/// `16..=256` whose box (`width + 2` for the `|` borders) fits within `cols`,
+/// so every column maps to a whole number of buckets. Falls back to the
+/// smallest candidate (16) on a very narrow terminal.
+fn histogram_width(cols: usize) -> usize {
+    const CANDIDATES: [usize; 5] = [256, 128, 64, 32, 16];
+    CANDIDATES
+        .into_iter()
+        .find(|&w| w + 2 <= cols)
+        .unwrap_or(16)
+}
+
 /// Append the rendered histogram to `out`, enclosed in a `+`/`-`/`|` box and
 /// indented by `left_pad` spaces so the box is centered under the report.
 /// Delegates the chart shape to [`render_histogram`] and uses [`HISTOGRAM_ROWS`]
@@ -478,6 +538,34 @@ mod tests {
     use super::*;
     use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
     use tempfile::TempDir;
+
+    #[test]
+    fn telescope_label_combines_name_and_optics() {
+        use fitskit::HeaderValue;
+
+        let mut header = Header::new();
+        assert_eq!(telescope_label(&header), None);
+
+        header.set("FOCALLEN", HeaderValue::Float(203.0), None);
+        assert_eq!(telescope_label(&header).as_deref(), Some("203mm"));
+
+        header.set("FOCRATIO", HeaderValue::Float(4.5), None);
+        assert_eq!(telescope_label(&header).as_deref(), Some("203mm F/4.5"));
+
+        header.set(
+            "TELESCOP",
+            HeaderValue::String("My Scope".into()),
+            None,
+        );
+        assert_eq!(
+            telescope_label(&header).as_deref(),
+            Some("My Scope (203mm F/4.5)")
+        );
+
+        let mut name_only = Header::new();
+        name_only.set("TELESCOP", HeaderValue::String("Bare".into()), None);
+        assert_eq!(telescope_label(&name_only).as_deref(), Some("Bare"));
+    }
 
     #[test]
     fn trim_float_drops_trailing_zeros() {
@@ -650,6 +738,24 @@ mod tests {
         for line in &lines[1..lines.len() - 1] {
             let trimmed = line.trim_start();
             assert!(trimmed.starts_with('|') && trimmed.ends_with('|'));
+        }
+    }
+
+    #[test]
+    fn histogram_width_picks_power_of_two_fitting_terminal() {
+        // Each candidate is chosen once the terminal is wide enough for its
+        // box (`width + 2`); every candidate evenly divides the bucket count.
+        assert_eq!(histogram_width(300), 256);
+        assert_eq!(histogram_width(258), 256);
+        assert_eq!(histogram_width(257), 128);
+        assert_eq!(histogram_width(130), 128);
+        assert_eq!(histogram_width(129), 64);
+        assert_eq!(histogram_width(66), 64);
+        assert_eq!(histogram_width(33), 16);
+        // Narrower than the smallest box still falls back to 16.
+        assert_eq!(histogram_width(0), 16);
+        for w in [256, 128, 64, 32, 16] {
+            assert_eq!(HISTOGRAM_BUCKETS % w, 0);
         }
     }
 
