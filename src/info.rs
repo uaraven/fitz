@@ -1,6 +1,8 @@
 //! The `info` command: print a human-readable summary of a FITS image —
-//! resolution, bit depth, channel count, sky coordinates, and (for
-//! single-channel, non-debayered data) basic pixel statistics.
+//! resolution, bit depth, channel count and sky coordinates. With `--pixel`
+//! it additionally reads the (possibly tile-compressed) pixel data and reports
+//! basic pixel statistics, which are only meaningful for single-channel,
+//! non-debayered data.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -12,12 +14,24 @@ use rayon::prelude::*;
 use crate::fits_image::{find_image_hdu, get_bayerpat, print_step, scaled_pixels};
 use crate::options::InfoOptions;
 
-/// Min, max, mean and median of a single-channel image's physical pixel values.
+/// Number of buckets in the pixel-value histogram.
+const HISTOGRAM_BUCKETS: usize = 256;
+
+/// Min, max, mean and median of a single-channel image's physical pixel values,
+/// plus the count of pixels whose physical value is exactly zero and a
+/// `HISTOGRAM_BUCKETS`-bin histogram of the values over the `[min, max]` range.
 struct PixelStats {
     min: f64,
     max: f64,
     mean: f64,
     median: f64,
+    zeros: usize,
+    /// Pixel counts per bucket, evenly spanning `[min, max]`. Bucket `i` covers
+    /// values in `[min + i*w, min + (i+1)*w)` where `w = (max - min) / BUCKETS`,
+    /// with `max` itself folded into the last bucket. Held in memory for a
+    /// later display step (not rendered yet).
+    #[allow(dead_code)]
+    histogram: Vec<u64>,
 }
 
 pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
@@ -90,18 +104,28 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         }
     }
 
-    // Pixel statistics only make sense for a single, non-debayered channel:
-    // mixing the R/G/B planes of an RGB cube would give a meaningless figure.
-    if channels == 1 {
-        let stats = pixel_stats(header, img);
-        let _ = writeln!(
-            out,
-            "  Pixels:      min={} max={} mean={} median={}",
-            trim_float(stats.min),
-            trim_float(stats.max),
-            trim_float(stats.mean),
-            trim_float(stats.median),
-        );
+    // Pixel statistics are only computed on request (`--pixel`), since they
+    // require reading and decompressing the full pixel array. They only make
+    // sense for a single, non-debayered channel: mixing the R/G/B planes of an
+    // RGB cube would give a meaningless figure.
+    if opts.pixel {
+        if is_rgb_cube {
+            let _ = writeln!(
+                out,
+                "  Pixels:      pixel statistics are not supported for debayered images"
+            );
+        } else {
+            let stats = pixel_stats(header, img);
+            let _ = writeln!(
+                out,
+                "  Pixels:      min={} max={} mean={} median={} zeros={}",
+                trim_float(stats.min),
+                trim_float(stats.max),
+                trim_float(stats.mean),
+                trim_float(stats.median),
+                stats.zeros,
+            );
+        }
     }
 
     print!("{out}");
@@ -234,24 +258,30 @@ fn trim_float(v: f64) -> String {
     }
 }
 
-/// Compute min/max/mean/median of the image's physical (BSCALE/BZERO-applied)
-/// pixel values.
+/// Compute min/max/mean/median, the zero count and the value histogram of the
+/// image's physical (BSCALE/BZERO-applied) pixel values.
 fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
     let mut values = scaled_pixels(header, img);
 
-    // min/max reduce in parallel (associative, so the result is independent of
-    // how the work is split). The sum is kept sequential so the reported mean
-    // doesn't drift with thread scheduling from reordered floating-point adds.
-    let (min, max) = values
+    // min/max and the zero count reduce in parallel (all associative, so the
+    // result is independent of how the work is split). The sum is kept
+    // sequential so the reported mean doesn't drift with thread scheduling from
+    // reordered floating-point adds.
+    let (min, max, zeros) = values
         .par_iter()
         .fold(
-            || (f64::INFINITY, f64::NEG_INFINITY),
-            |(mn, mx), &v| (mn.min(v), mx.max(v)),
+            || (f64::INFINITY, f64::NEG_INFINITY, 0usize),
+            |(mn, mx, z), &v| (mn.min(v), mx.max(v), z + (v == 0.0) as usize),
         )
         .reduce(
-            || (f64::INFINITY, f64::NEG_INFINITY),
-            |a, b| (a.0.min(b.0), a.1.max(b.1)),
+            || (f64::INFINITY, f64::NEG_INFINITY, 0usize),
+            |a, b| (a.0.min(b.0), a.1.max(b.1), a.2 + b.2),
         );
+
+    // Bin into the histogram once min/max are known. Done as a separate pass
+    // (the data is already in memory) so the bucket edges can span the actual
+    // value range. Per-thread bucket arrays are summed element-wise in reduce.
+    let histogram = histogram(&values, min, max);
 
     let n = values.len();
     let (mean, median) = if n == 0 {
@@ -266,7 +296,44 @@ fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
         max,
         mean,
         median,
+        zeros,
+        histogram,
     }
+}
+
+/// Bin `values` into a `HISTOGRAM_BUCKETS`-bin histogram spanning `[min, max]`.
+/// `max` (and anything rounding to the upper edge) folds into the last bucket.
+/// A degenerate range (`max <= min`, e.g. a constant image) puts every value in
+/// bucket 0. The work is split across threads, each filling a local bucket
+/// array that is then summed element-wise.
+fn histogram(values: &[f64], min: f64, max: f64) -> Vec<u64> {
+    let range = max - min;
+    if range <= 0.0 {
+        let mut buckets = vec![0u64; HISTOGRAM_BUCKETS];
+        buckets[0] = values.len() as u64;
+        return buckets;
+    }
+
+    let scale = HISTOGRAM_BUCKETS as f64 / range;
+    values
+        .par_iter()
+        .fold(
+            || vec![0u64; HISTOGRAM_BUCKETS],
+            |mut buckets, &v| {
+                let idx = (((v - min) * scale) as usize).min(HISTOGRAM_BUCKETS - 1);
+                buckets[idx] += 1;
+                buckets
+            },
+        )
+        .reduce(
+            || vec![0u64; HISTOGRAM_BUCKETS],
+            |mut a, b| {
+                for (slot, count) in a.iter_mut().zip(b) {
+                    *slot += count;
+                }
+                a
+            },
+        )
 }
 
 /// Median via in-place selection; averages the two central values for an even
@@ -343,6 +410,34 @@ mod tests {
         assert_eq!(stats.max, 15.0);
         assert_eq!(stats.mean, 7.5);
         assert_eq!(stats.median, 7.5); // mean of 7 and 8
+        assert_eq!(stats.zeros, 1); // only the single 0 pixel
+
+        // 16 values (0..15) over 256 buckets: every value lands in a distinct
+        // bucket, the total is conserved, and 15 (the max) folds into bucket 255.
+        assert_eq!(stats.histogram.len(), HISTOGRAM_BUCKETS);
+        assert_eq!(stats.histogram.iter().sum::<u64>(), 16);
+        assert_eq!(stats.histogram[0], 1); // value 0
+        assert_eq!(stats.histogram[HISTOGRAM_BUCKETS - 1], 1); // value 15 (max)
+    }
+
+    #[test]
+    fn histogram_distributes_values_across_buckets() {
+        // Values 0..255 over a [0, 255] range with 256 buckets put exactly one
+        // value in each bucket.
+        let values: Vec<f64> = (0..256).map(|v| v as f64).collect();
+        let h = histogram(&values, 0.0, 255.0);
+        assert_eq!(h.len(), HISTOGRAM_BUCKETS);
+        assert!(h.iter().all(|&c| c == 1));
+        assert_eq!(h.iter().sum::<u64>(), 256);
+    }
+
+    #[test]
+    fn histogram_handles_constant_image() {
+        // A degenerate (zero) range dumps every pixel into the first bucket.
+        let values = vec![42.0; 100];
+        let h = histogram(&values, 42.0, 42.0);
+        assert_eq!(h[0], 100);
+        assert_eq!(h.iter().sum::<u64>(), 100);
     }
 
     #[test]
@@ -394,6 +489,52 @@ mod tests {
         // treat it as a single channel.
         let input = test_data("uncompressed.fit");
         info_file(&input, &InfoOptions::default()).unwrap();
+    }
+
+    #[test]
+    fn info_file_reads_pixels_on_real_data() {
+        // With `--pixel` the command must read the pixel data and succeed on a
+        // single-channel mosaic frame.
+        let input = test_data("uncompressed.fit");
+        info_file(
+            &input,
+            &InfoOptions {
+                pixel: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn info_file_pixels_on_rgb_cube_does_not_fail() {
+        // Pixel stats aren't supported for debayered RGB cubes; the command
+        // reports that in the output rather than erroring out.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("rgb.fits");
+        write_rgb_cube_fits(&input, 4, 3);
+        info_file(
+            &input,
+            &InfoOptions {
+                pixel: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn zero_pixels_are_counted() {
+        // A 3x3 mosaic stores values 0..8, so exactly one pixel is zero.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits(&input, 3, 3, None);
+
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, img) = find_image_hdu(&fits, &input, false).unwrap();
+        let img = img.as_ref();
+        let stats = pixel_stats(header, img);
+        assert_eq!(stats.zeros, 1);
     }
 
     #[test]

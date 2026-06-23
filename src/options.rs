@@ -95,6 +95,9 @@ impl Default for StretchOptions {
 #[derive(Default)]
 pub struct InfoOptions {
     pub verbose: bool,
+    /// Read (decompressing if needed) the pixel data and report pixel
+    /// statistics. Without it, `info` reports header-derived metadata only.
+    pub pixel: bool,
 }
 
 pub struct PreviewOptions {
