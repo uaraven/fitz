@@ -287,6 +287,18 @@ struct SplitChannelArgs {
 
 #[derive(clap::Args)]
 struct InfoArgs {
+    /// Read the pixel data (decompressing first if needed) and report pixel
+    /// statistics (min/max/mean/median and the count of zero-valued pixels).
+    /// Not supported for debayered RGB images.
+    #[arg(long)]
+    pixel: bool,
+    /// Use a logarithmic vertical axis for the pixel histogram. Only useful
+    /// together with --pixel, which is what produces the histogram.
+    #[arg(long)]
+    log: bool,
+    /// Print the raw FITS header cards instead of the formatted summary
+    #[arg(long)]
+    headers: bool,
     /// FITS files to inspect
     files: Vec<PathBuf>,
 }
@@ -616,8 +628,18 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
 }
 
 fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
-    let InfoArgs { files } = args;
-    let opts = InfoOptions { verbose };
+    let InfoArgs {
+        pixel,
+        log,
+        headers,
+        files,
+    } = args;
+    let opts = InfoOptions {
+        verbose,
+        pixel,
+        log,
+        headers,
+    };
     process_files(&files, |path| info_file(path, &opts))
 }
 

@@ -162,14 +162,26 @@ Options:
 
 Prints a human-readable summary of each FITS file without writing anything. Reported fields:
 
- - **Resolution** — image width × height (`NAXIS1` × `NAXIS2`).
- - **Bit depth** — derived from `BITPIX` (an unsigned 16-bit image, stored as signed 16 with `BZERO=32768`, is labelled as such).
- - **Channels** — `3` for an already-debayered RGB cube (a 3-plane image with no `BAYERPAT` header), otherwise `1` (a raw mosaic or monochrome frame).
- - **Bayer** — the Bayer/CFA pattern (`BAYERPAT`), shown for raw mosaics.
- - **RA / DEC** — image-center sky coordinates from the `RA`/`DEC` (decimal degrees) and `OBJCTRA`/`OBJCTDEC` (sexagesimal) header keywords, when present. Right ascension is shown in hours/minutes/seconds (with decimal hours in parentheses), declination in signed degrees/minutes/seconds (with decimal degrees), e.g. `RA: 20h 51m 28.02s (20.857783h)` and `DEC: 30° 58' 07.67" (30.968798°)`.
- - **Pixel statistics** — min, max, mean and median of the physical (`BSCALE`/`BZERO`-applied) pixel values, printed for single-channel data only.
+ - **Resolution** — image width × height.
+ - **Bit depth** — Number of bits per pixel.
+ - **Channels** — `3` for an already-debayered RGB, otherwise `1` (a raw mosaic or monochrome frame).
+ - **Bayer** — the Bayer/CFA pattern, shown for raw mosaics.
+ - **RA / DEC** — image-center sky coordinates, when present. 
+ - **Rotation** — object/camera rotation angle in degrees.
+ - **Gain / Offset** — camera gain and offset.
+ - **Binning** — sensor binning.
+ - **Telescope** — the telescope name followed, when available, by its focal length and focal ratio.
 
-When available, the object name, exposure time, filter, instrument and observation date are also shown. Any field whose header keyword is absent is omitted.
+Each of the above is only shown when the corresponding header keyword is present. By default only these header-derived fields are reported. 
+
+Pass `--pixel` to additionally read the pixel data (transparently decompressing a tile-compressed input first) and print:
+
+ - **Pixel statistics** — min, max, mean and median of the physical (`BSCALE`/`BZERO`-applied) pixel values, plus the count of pixels whose value is exactly zero. Pixel statistics are not supported for already-debayered RGB images; for those a notice is printed instead.
+ - **Histogram** — a histogram of the pixel values is drawn last, after the textual fields. Pass `--log` for a logarithmic vertical axis, which keeps a tall low-value spike (common in astronomical frames) from flattening the rest of the distribution. `--log` only affects the histogram, so it is only useful together with `--pixel`.
+
+Pixel data can only be shown for RAW images.
+
+Pass `--headers` to skip the formatted summary entirely and instead dump the raw FITS header cards, one per line, exactly as found in the file.
 
 ```
 Usage: fitz info [OPTIONS] [FILES]...
@@ -178,6 +190,9 @@ Arguments:
   [FILES]...  FITS files to inspect
 
 Options:
+      --pixel        Read the pixel data and report pixel statistics (not supported for debayered images)
+      --log          Use a logarithmic vertical axis for the histogram (only useful with --pixel)
+      --headers      Print the raw FITS header cards instead of the formatted summary
   -v, --verbose      Print each file being processed
   -j, --jobs <JOBS>  Number of files to process in parallel (default: number of CPU cores)
   -h, --help         Print help
