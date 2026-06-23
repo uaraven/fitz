@@ -19,7 +19,7 @@ pub(crate) const BSCALE: &str = "BSCALE";
 pub(crate) const BZERO: &str = "BZERO";
 
 /// CFA-mosaic keywords that become meaningless once an image is debayered into
-/// an RGB cube. Dropped by the image commands (debayer/stretch/split) when
+/// an RGB image. Dropped by the image commands (debayer/stretch/split) when
 /// copying the source header, but not by decompress, which round-trips the
 /// mosaic faithfully. `load_rgb` also relies on the absence of `BAYERPAT` to
 /// detect an already-debayered 3-plane cube, so leaving it would break

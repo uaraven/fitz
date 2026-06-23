@@ -184,13 +184,12 @@ struct DebayerArgs {
     #[arg(long, default_value = "16", value_parser = parse_bpp)]
     bpp: u32,
 
-    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    /// Bayer pattern of the sensor; if omitted, read from the FITS header
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input has no BAYERPAT header but looks
-    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
-    /// raw mosaic that happens to have 3 planes for some other reason.
+    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     #[arg(long)]
     force_demosaic: bool,
 
@@ -217,13 +216,12 @@ struct StretchArgs {
     #[arg(long)]
     linked_channel: bool,
 
-    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    /// Bayer pattern of the sensor; if omitted, read from the FITS header
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input has no BAYERPAT header but looks
-    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
-    /// raw mosaic that happens to have 3 planes for some other reason.
+    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     #[arg(long)]
     force_demosaic: bool,
 
@@ -249,13 +247,12 @@ struct SplitChannelArgs {
     #[arg(short = 'p', long = "output-pixel-format", default_value = "i16", value_parser = parse_channel_format)]
     format: ChannelFormat,
 
-    /// Bayer pattern of the sensor; if omitted, read from the fits header
+    /// Bayer pattern of the sensor; if omitted, read from the FITS header
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input has no CFA pattern header but looks
-    /// like an already-debayered RGB image. Use this for a
-    /// raw mosaic that happens to have 3 channels for some other reason
+    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     /// (requires --pattern if there's no pattern information in the file).
     #[arg(long)]
     force_demosaic: bool,
@@ -310,23 +307,26 @@ struct PreviewArgs {
     #[arg(long)]
     linked_channel: bool,
 
-    /// Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header
+    /// Bayer pattern of the sensor; if omitted, read from the FITS header
     #[arg(long)]
     pattern: Option<BayerPattern>,
 
-    /// Always demosaic, even if the input has no BAYERPAT header but looks
-    /// like an already-debayered RGB cube (a 3-plane image). Use this for a
-    /// raw mosaic that happens to have 3 planes for some other reason.
+    /// Always demosaic, even if the input looks like an already-debayered RGB image. 
+    /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     #[arg(long)]
     force_demosaic: bool,
 
-    /// Force kitty graphics protocol rendering, skipping auto-detection
-    #[arg(long, conflicts_with = "truecolor")]
+    /// Force terminal graphics protocol rendering, skipping auto-detection
+    #[arg(long, conflicts_with_all = ["truecolor", "fallback"])]
     graphics: bool,
 
-    /// Force true-color ANSI half-block rendering, skipping auto-detection
-    #[arg(long)]
+    /// Force true-color ASCII rendering, skipping auto-detection
+    #[arg(long, conflicts_with_all = ["graphics", "fallback"])]
     truecolor: bool,
+
+    /// Force compatibility fallback ASCII rendering using only 216 colours
+    #[arg(long, conflicts_with_all = ["truecolor", "graphics"])]
+    fallback: bool,
 
     /// FITS file to preview (only a single file is accepted)
     file: PathBuf,
@@ -653,6 +653,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         graphics,
         truecolor,
         file,
+        fallback
     } = args;
 
     let opts = PreviewOptions {
@@ -662,6 +663,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         force_demosaic,
         force_kitty: graphics,
         force_truecolor: truecolor,
+        fallback: fallback,
     };
 
     if let Err(e) = preview_file(&file, &opts) {
