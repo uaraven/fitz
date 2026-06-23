@@ -287,6 +287,11 @@ struct SplitChannelArgs {
 
 #[derive(clap::Args)]
 struct InfoArgs {
+    /// Read the pixel data (decompressing first if needed) and report pixel
+    /// statistics (min/max/mean/median and the count of zero-valued pixels).
+    /// Not supported for debayered RGB images.
+    #[arg(long)]
+    pixel: bool,
     /// FITS files to inspect
     files: Vec<PathBuf>,
 }
@@ -616,8 +621,8 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
 }
 
 fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
-    let InfoArgs { files } = args;
-    let opts = InfoOptions { verbose };
+    let InfoArgs { pixel, files } = args;
+    let opts = InfoOptions { verbose, pixel };
     process_files(&files, |path| info_file(path, &opts))
 }
 
