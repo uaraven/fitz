@@ -95,6 +95,15 @@ impl Default for StretchOptions {
 #[derive(Default)]
 pub struct InfoOptions {
     pub verbose: bool,
+    /// Read (decompressing if needed) the pixel data and report pixel
+    /// statistics. Without it, `info` reports header-derived metadata only.
+    pub pixel: bool,
+    /// Use a logarithmic vertical axis for the pixel histogram. Only meaningful
+    /// together with `pixel`, which is what triggers the histogram.
+    pub log: bool,
+    /// Print the raw FITS header cards of the image HDU instead of the formatted
+    /// summary.
+    pub headers: bool,
 }
 
 pub struct PreviewOptions {

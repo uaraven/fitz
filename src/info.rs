@@ -1,6 +1,8 @@
 //! The `info` command: print a human-readable summary of a FITS image —
-//! resolution, bit depth, channel count, sky coordinates, and (for
-//! single-channel, non-debayered data) basic pixel statistics.
+//! resolution, bit depth, channel count and sky coordinates. With `--pixel`
+//! it additionally reads the (possibly tile-compressed) pixel data and reports
+//! basic pixel statistics, which are only meaningful for single-channel,
+//! non-debayered data.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -11,13 +13,27 @@ use rayon::prelude::*;
 
 use crate::fits_image::{find_image_hdu, get_bayerpat, print_step, scaled_pixels};
 use crate::options::InfoOptions;
+use crate::terminal::terminal_dimensions;
 
-/// Min, max, mean and median of a single-channel image's physical pixel values.
+/// Number of buckets in the pixel-value histogram.
+const HISTOGRAM_BUCKETS: usize = 256;
+
+/// Height of the rendered histogram in terminal character rows.
+const HISTOGRAM_ROWS: usize = 10;
+
+/// Min, max, mean and median of a single-channel image's physical pixel values,
+/// plus the count of pixels whose physical value is exactly zero and a
+/// `HISTOGRAM_BUCKETS`-bin histogram of the values over the `[min, max]` range.
 struct PixelStats {
     min: f64,
     max: f64,
     mean: f64,
     median: f64,
+    zeros: usize,
+    /// Pixel counts per bucket, evenly spanning `[min, max]`. Bucket `i` covers
+    /// values in `[min + i*w, min + (i+1)*w)` where `w = (max - min) / BUCKETS`,
+    /// with `max` itself folded into the last bucket.
+    histogram: Vec<u64>,
 }
 
 pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
@@ -27,6 +43,18 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 
     let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
     let img = img.as_ref();
+
+    // `--headers` is a distinct mode: dump the image HDU's raw header cards
+    // instead of the formatted summary. For a tile-compressed input this is the
+    // compressed HDU's header as stored, so the binary-table container and `Z*`
+    // keywords appear alongside the carried-over original image keywords.
+    if opts.headers {
+        let mut out = String::new();
+        let _ = writeln!(out, "{}", input.display());
+        push_raw_headers(&mut out, header);
+        print!("{out}");
+        return Ok(());
+    }
 
     // A 3-plane cube with no BAYERPAT is an already-debayered RGB image (3
     // channels); anything else is treated as a single-channel frame, matching
@@ -67,9 +95,21 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 
     push_coordinate(&mut out, header, Axis::Ra, "RA", "OBJCTRA");
     push_coordinate(&mut out, header, Axis::Dec, "DEC", "OBJCTDEC");
+    if let Some(rot) = header.get_float("OBJCTROT") {
+        let _ = writeln!(out, "  Rotation:    {}°", trim_float(rot));
+    }
 
     if let Some(exptime) = header.get_float("EXPTIME") {
         let _ = writeln!(out, "  Exposure:    {} s", trim_float(exptime));
+    }
+    if let Some(gain) = header.get_float("GAIN") {
+        let _ = writeln!(out, "  Gain:        {}", trim_float(gain));
+    }
+    if let Some(offset) = header.get_float("OFFSET") {
+        let _ = writeln!(out, "  Offset:      {}", trim_float(offset));
+    }
+    if let (Some(xbin), Some(ybin)) = (header.get_int("XBINNING"), header.get_int("YBINNING")) {
+        let _ = writeln!(out, "  Binning:     {xbin}x{ybin}");
     }
     if let Some(filter) = header.get_string("FILTER") {
         let filter = filter.trim();
@@ -83,6 +123,9 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
             let _ = writeln!(out, "  Instrument:  {instrument}");
         }
     }
+    if let Some(telescope) = telescope_label(header) {
+        let _ = writeln!(out, "  Telescope:   {telescope}");
+    }
     if let Some(date) = header.get_string("DATE-OBS") {
         let date = date.trim();
         if !date.is_empty() {
@@ -90,22 +133,60 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         }
     }
 
-    // Pixel statistics only make sense for a single, non-debayered channel:
-    // mixing the R/G/B planes of an RGB cube would give a meaningless figure.
-    if channels == 1 {
-        let stats = pixel_stats(header, img);
-        let _ = writeln!(
-            out,
-            "  Pixels:      min={} max={} mean={} median={}",
-            trim_float(stats.min),
-            trim_float(stats.max),
-            trim_float(stats.mean),
-            trim_float(stats.median),
-        );
+    // Pixel statistics are only computed on request (`--pixel`), since they
+    // require reading and decompressing the full pixel array. They only make
+    // sense for a single, non-debayered channel: mixing the R/G/B planes of an
+    // RGB cube would give a meaningless figure.
+    if opts.pixel {
+        if is_rgb_cube {
+            let _ = writeln!(
+                out,
+                "  Pixels:      pixel statistics are not supported for debayered images"
+            );
+        } else {
+            let stats = pixel_stats(header, img);
+            let _ = writeln!(
+                out,
+                "  Pixels:      min={} max={} mean={} median={} zeros={}",
+                trim_float(stats.min),
+                trim_float(stats.max),
+                trim_float(stats.mean),
+                trim_float(stats.median),
+                stats.zeros,
+            );
+            // The histogram is the last thing in the report: a title aligned
+            // with the other fields, then the bar chart centered horizontally.
+            // The width is chosen so each column maps to a whole number of
+            // buckets: the largest of 16/32/64/128/256 whose drawn box (`width
+            // + 2` for the `|` borders) fits the terminal.
+            let (cols, _) = terminal_dimensions();
+            let _ = writeln!(out, "  Histogram:");
+            let width = histogram_width(cols as usize);
+            // The drawn box adds a `|` on each side, so center the full
+            // `width + 2` box within the terminal.
+            let boxed = width + 2;
+            let left_pad = (cols as usize).saturating_sub(boxed) / 2;
+            push_histogram(&mut out, &stats.histogram, width, left_pad, opts.log);
+        }
     }
 
     print!("{out}");
     Ok(())
+}
+
+/// Append the header's raw FITS cards to `out`, one card per line with trailing
+/// padding trimmed. Each keyword is serialized back to its 80-column card image
+/// (so commentary cards and CONTINUE-split long strings are shown as they appear
+/// in the file), giving an unformatted dump rather than the curated summary.
+fn push_raw_headers(out: &mut String, header: &Header) {
+    for keyword in header.iter() {
+        for card in keyword.to_cards() {
+            // Cards are fixed-width ASCII; `from_utf8_lossy` is only a guard
+            // against a malformed card and won't allocate for valid ones.
+            let line = String::from_utf8_lossy(&card);
+            let _ = writeln!(out, "{}", line.trim_end());
+        }
+    }
 }
 
 /// Describe the pixel storage format. The bit depth comes from the (possibly
@@ -137,6 +218,35 @@ fn channel_label(channels: usize, header: &Header) -> String {
     match get_bayerpat(header) {
         Some(_) => "mosaic".to_string(),
         None => "monochrome / undebayered".to_string(),
+    }
+}
+
+/// Describe the imaging telescope: its name (`TELESCOP`) optionally followed by
+/// its optical figure derived from focal length (`FOCALLEN`, mm) and focal ratio
+/// (`FOCRATIO`), e.g. `My Scope (203mm F/4.5)`. Returns `None` when no telescope
+/// keyword carries usable information.
+fn telescope_label(header: &Header) -> Option<String> {
+    let name = header
+        .get_string("TELESCOP")
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut optics = String::new();
+    if let Some(focal) = header.get_float("FOCALLEN") {
+        optics.push_str(&format!("{}mm", trim_float(focal)));
+    }
+    if let Some(ratio) = header.get_float("FOCRATIO") {
+        if !optics.is_empty() {
+            optics.push(' ');
+        }
+        optics.push_str(&format!("F/{}", trim_float(ratio)));
+    }
+
+    match (name, optics.is_empty()) {
+        (Some(name), false) => Some(format!("{name} ({optics})")),
+        (Some(name), true) => Some(name.to_string()),
+        (None, false) => Some(optics),
+        (None, true) => None,
     }
 }
 
@@ -234,24 +344,30 @@ fn trim_float(v: f64) -> String {
     }
 }
 
-/// Compute min/max/mean/median of the image's physical (BSCALE/BZERO-applied)
-/// pixel values.
+/// Compute min/max/mean/median, the zero count and the value histogram of the
+/// image's physical (BSCALE/BZERO-applied) pixel values.
 fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
     let mut values = scaled_pixels(header, img);
 
-    // min/max reduce in parallel (associative, so the result is independent of
-    // how the work is split). The sum is kept sequential so the reported mean
-    // doesn't drift with thread scheduling from reordered floating-point adds.
-    let (min, max) = values
+    // min/max and the zero count reduce in parallel (all associative, so the
+    // result is independent of how the work is split). The sum is kept
+    // sequential so the reported mean doesn't drift with thread scheduling from
+    // reordered floating-point adds.
+    let (min, max, zeros) = values
         .par_iter()
         .fold(
-            || (f64::INFINITY, f64::NEG_INFINITY),
-            |(mn, mx), &v| (mn.min(v), mx.max(v)),
+            || (f64::INFINITY, f64::NEG_INFINITY, 0usize),
+            |(mn, mx, z), &v| (mn.min(v), mx.max(v), z + (v == 0.0) as usize),
         )
         .reduce(
-            || (f64::INFINITY, f64::NEG_INFINITY),
-            |a, b| (a.0.min(b.0), a.1.max(b.1)),
+            || (f64::INFINITY, f64::NEG_INFINITY, 0usize),
+            |a, b| (a.0.min(b.0), a.1.max(b.1), a.2 + b.2),
         );
+
+    // Bin into the histogram once min/max are known. Done as a separate pass
+    // (the data is already in memory) so the bucket edges can span the actual
+    // value range. Per-thread bucket arrays are summed element-wise in reduce.
+    let histogram = histogram(&values, min, max);
 
     let n = values.len();
     let (mean, median) = if n == 0 {
@@ -266,7 +382,140 @@ fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
         max,
         mean,
         median,
+        zeros,
+        histogram,
     }
+}
+
+/// Bin `values` into a `HISTOGRAM_BUCKETS`-bin histogram spanning `[min, max]`.
+/// `max` (and anything rounding to the upper edge) folds into the last bucket.
+/// A degenerate range (`max <= min`, e.g. a constant image) puts every value in
+/// bucket 0. The work is split across threads, each filling a local bucket
+/// array that is then summed element-wise.
+fn histogram(values: &[f64], min: f64, max: f64) -> Vec<u64> {
+    let range = max - min;
+    if range <= 0.0 {
+        let mut buckets = vec![0u64; HISTOGRAM_BUCKETS];
+        buckets[0] = values.len() as u64;
+        return buckets;
+    }
+
+    let scale = HISTOGRAM_BUCKETS as f64 / range;
+    values
+        .par_iter()
+        .fold(
+            || vec![0u64; HISTOGRAM_BUCKETS],
+            |mut buckets, &v| {
+                let idx = (((v - min) * scale) as usize).min(HISTOGRAM_BUCKETS - 1);
+                buckets[idx] += 1;
+                buckets
+            },
+        )
+        .reduce(
+            || vec![0u64; HISTOGRAM_BUCKETS],
+            |mut a, b| {
+                for (slot, count) in a.iter_mut().zip(b) {
+                    *slot += count;
+                }
+                a
+            },
+        )
+}
+
+/// Pick the drawn histogram width for a terminal `cols` wide.
+///
+/// The width is the largest power-of-two divisor of [`HISTOGRAM_BUCKETS`] in
+/// `16..=256` whose box (`width + 2` for the `|` borders) fits within `cols`,
+/// so every column maps to a whole number of buckets. Falls back to the
+/// smallest candidate (16) on a very narrow terminal.
+fn histogram_width(cols: usize) -> usize {
+    const CANDIDATES: [usize; 5] = [256, 128, 64, 32, 16];
+    CANDIDATES
+        .into_iter()
+        .find(|&w| w + 2 <= cols)
+        .unwrap_or(16)
+}
+
+/// Append the rendered histogram to `out`, enclosed in a `+`/`-`/`|` box and
+/// indented by `left_pad` spaces so the box is centered under the report.
+/// Delegates the chart shape to [`render_histogram`] and uses [`HISTOGRAM_ROWS`]
+/// for the height.
+fn push_histogram(out: &mut String, hist: &[u64], width: usize, left_pad: usize, log: bool) {
+    let chart = render_histogram(hist, width, HISTOGRAM_ROWS, log);
+    let pad = " ".repeat(left_pad);
+    let border = format!("{pad}+{}+\n", "-".repeat(width));
+    out.push_str(&border);
+    for line in chart.lines() {
+        out.push_str(&pad);
+        out.push('|');
+        out.push_str(line);
+        out.push('|');
+        out.push('\n');
+    }
+    out.push_str(&border);
+}
+
+/// Render `hist` as a text bar chart `rows` characters tall and `width`
+/// characters wide. Unicode block elements give sub-cell vertical resolution:
+/// each character row is split into quarters (`▂ ▄ ▆ █`), so the effective
+/// height is `rows * 4` levels. Bars are scaled so the tallest column reaches
+/// the full height; any non-empty column shows at least one quarter so it stays
+/// visible. With `log`, the bar heights scale by `log(count + 1)` instead of
+/// linearly, which keeps a tall low-value spike from flattening the rest of the
+/// distribution. The result is `rows` newline-terminated lines, drawn
+/// top-to-bottom.
+fn render_histogram(hist: &[u64], width: usize, rows: usize, log: bool) -> String {
+    /// Vertical sub-divisions per character cell (quarter-height blocks).
+    const LEVELS_PER_ROW: u64 = 4;
+    /// Block glyphs indexed by how many quarters of the cell are filled (0..=4).
+    const BLOCKS: [char; 5] = [' ', '▂', '▄', '▆', '█'];
+
+    if width == 0 || rows == 0 {
+        return String::new();
+    }
+
+    // Resample the buckets onto `width` columns: each column sums the buckets
+    // falling in its slice of the range. `max(start + 1)` guarantees every
+    // column maps to at least one bucket, so a display wider than the bucket
+    // count stretches (rather than leaving gaps in) the histogram.
+    let n = hist.len();
+    let mut columns = vec![0u64; width];
+    if n > 0 {
+        for (j, slot) in columns.iter_mut().enumerate() {
+            let start = j * n / width;
+            let end = ((j + 1) * n / width).max(start + 1).min(n);
+            *slot = hist[start..end].iter().sum();
+        }
+    }
+
+    let max = columns.iter().copied().max().unwrap_or(0);
+    let total_levels = rows as u64 * LEVELS_PER_ROW;
+    // `weight` maps a count onto the 0..=1 axis. The log axis uses `ln(c + 1)`
+    // (so an empty column still weighs 0) normalised by the tallest column.
+    let max_weight = if log { ((max + 1) as f64).ln() } else { max as f64 };
+    let weight = |c: u64| if log { ((c + 1) as f64).ln() } else { c as f64 };
+    let heights: Vec<u64> = columns
+        .iter()
+        .map(|&c| {
+            if max == 0 || c == 0 {
+                0
+            } else {
+                ((weight(c) / max_weight) * total_levels as f64)
+                    .round()
+                    .max(1.0) as u64
+            }
+        })
+        .collect();
+
+    let mut out = String::with_capacity(rows * (width + 1));
+    for row in (0..rows as u64).rev() {
+        for &h in &heights {
+            let filled = h.saturating_sub(row * LEVELS_PER_ROW).min(LEVELS_PER_ROW);
+            out.push(BLOCKS[filled as usize]);
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Median via in-place selection; averages the two central values for an even
@@ -289,6 +538,34 @@ mod tests {
     use super::*;
     use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
     use tempfile::TempDir;
+
+    #[test]
+    fn telescope_label_combines_name_and_optics() {
+        use fitskit::HeaderValue;
+
+        let mut header = Header::new();
+        assert_eq!(telescope_label(&header), None);
+
+        header.set("FOCALLEN", HeaderValue::Float(203.0), None);
+        assert_eq!(telescope_label(&header).as_deref(), Some("203mm"));
+
+        header.set("FOCRATIO", HeaderValue::Float(4.5), None);
+        assert_eq!(telescope_label(&header).as_deref(), Some("203mm F/4.5"));
+
+        header.set(
+            "TELESCOP",
+            HeaderValue::String("My Scope".into()),
+            None,
+        );
+        assert_eq!(
+            telescope_label(&header).as_deref(),
+            Some("My Scope (203mm F/4.5)")
+        );
+
+        let mut name_only = Header::new();
+        name_only.set("TELESCOP", HeaderValue::String("Bare".into()), None);
+        assert_eq!(telescope_label(&name_only).as_deref(), Some("Bare"));
+    }
 
     #[test]
     fn trim_float_drops_trailing_zeros() {
@@ -343,6 +620,143 @@ mod tests {
         assert_eq!(stats.max, 15.0);
         assert_eq!(stats.mean, 7.5);
         assert_eq!(stats.median, 7.5); // mean of 7 and 8
+        assert_eq!(stats.zeros, 1); // only the single 0 pixel
+
+        // 16 values (0..15) over 256 buckets: every value lands in a distinct
+        // bucket, the total is conserved, and 15 (the max) folds into bucket 255.
+        assert_eq!(stats.histogram.len(), HISTOGRAM_BUCKETS);
+        assert_eq!(stats.histogram.iter().sum::<u64>(), 16);
+        assert_eq!(stats.histogram[0], 1); // value 0
+        assert_eq!(stats.histogram[HISTOGRAM_BUCKETS - 1], 1); // value 15 (max)
+    }
+
+    #[test]
+    fn histogram_distributes_values_across_buckets() {
+        // Values 0..255 over a [0, 255] range with 256 buckets put exactly one
+        // value in each bucket.
+        let values: Vec<f64> = (0..256).map(|v| v as f64).collect();
+        let h = histogram(&values, 0.0, 255.0);
+        assert_eq!(h.len(), HISTOGRAM_BUCKETS);
+        assert!(h.iter().all(|&c| c == 1));
+        assert_eq!(h.iter().sum::<u64>(), 256);
+    }
+
+    #[test]
+    fn histogram_handles_constant_image() {
+        // A degenerate (zero) range dumps every pixel into the first bucket.
+        let values = vec![42.0; 100];
+        let h = histogram(&values, 42.0, 42.0);
+        assert_eq!(h[0], 100);
+        assert_eq!(h.iter().sum::<u64>(), 100);
+    }
+
+    #[test]
+    fn render_histogram_shape_and_scaling() {
+        // Two columns: the tallest fills the full height, the half-height one
+        // reaches halfway. 4 rows => 16 quarter-levels total.
+        let rows = 4;
+        let out = render_histogram(&[8, 4], 2, rows, false);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), rows);
+
+        // Column 0 (max) is a full block on every row.
+        assert!(lines.iter().all(|l| l.chars().next() == Some('█')));
+        // Column 1 (half) is empty on the top two rows and full on the bottom two.
+        let col1: Vec<char> = lines.iter().map(|l| l.chars().nth(1).unwrap()).collect();
+        assert_eq!(col1, vec![' ', ' ', '█', '█']);
+    }
+
+    #[test]
+    fn render_histogram_keeps_tiny_bars_visible() {
+        // A column far below the max must still render at least one quarter so
+        // it doesn't vanish; an all-zero column stays blank.
+        let out = render_histogram(&[1000, 1, 0], 3, 10, false);
+        let bottom = out.lines().last().unwrap();
+        let chars: Vec<char> = bottom.chars().collect();
+        assert_eq!(chars[0], '█'); // the max column
+        assert_eq!(chars[1], '▂'); // tiny but present
+        assert_eq!(chars[2], ' '); // genuinely empty
+    }
+
+    #[test]
+    fn render_histogram_fits_requested_geometry() {
+        // Output is exactly `rows` lines, each `width` characters wide.
+        let width = 50;
+        let rows = 10;
+        let hist: Vec<u64> = (0..256).collect();
+        let out = render_histogram(&hist, width, rows, false);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), rows);
+        assert!(lines.iter().all(|l| l.chars().count() == width));
+    }
+
+    #[test]
+    fn render_histogram_log_axis_lifts_small_columns() {
+        // A column 1000x smaller than the max is invisible on a linear axis
+        // (rounds to a single quarter) but is lifted well above the floor on a
+        // log axis, where ln(1000+1)/ln(1_000_000+1) ≈ 0.5 of full height.
+        let hist = [1_000_000u64, 1000];
+        let linear = render_histogram(&hist, 2, 10, false);
+        let log = render_histogram(&hist, 2, 10, true);
+
+        // Count filled (non-space) cells in the second column for each axis.
+        let filled = |chart: &str| {
+            chart
+                .lines()
+                .filter(|l| l.chars().nth(1).is_some_and(|c| c != ' '))
+                .count()
+        };
+        assert!(filled(&log) > filled(&linear));
+    }
+
+    #[test]
+    fn render_histogram_handles_degenerate_geometry() {
+        assert_eq!(render_histogram(&[1, 2, 3], 0, 10, false), "");
+        assert_eq!(render_histogram(&[1, 2, 3], 10, 0, false), "");
+    }
+
+    #[test]
+    fn push_histogram_draws_centered_box() {
+        // The chart is wrapped in a `+`/`-`/`|` box, and every line is prefixed
+        // by `left_pad` spaces so the box sits centered under the report.
+        let width = 6;
+        let pad = 4;
+        let mut out = String::new();
+        push_histogram(&mut out, &[1, 2, 3], width, pad, false);
+        let lines: Vec<&str> = out.lines().collect();
+
+        // HISTOGRAM_ROWS chart rows plus the top and bottom borders.
+        assert_eq!(lines.len(), HISTOGRAM_ROWS + 2);
+        assert!(lines.iter().all(|l| l.starts_with("    ")));
+        // pad spaces + box border (`|` + width + `|`).
+        assert!(lines.iter().all(|l| l.chars().count() == pad + width + 2));
+
+        let border = format!("{}+{}+", " ".repeat(pad), "-".repeat(width));
+        assert_eq!(*lines.first().unwrap(), border);
+        assert_eq!(*lines.last().unwrap(), border);
+        // Interior rows are bounded by `|` on both sides.
+        for line in &lines[1..lines.len() - 1] {
+            let trimmed = line.trim_start();
+            assert!(trimmed.starts_with('|') && trimmed.ends_with('|'));
+        }
+    }
+
+    #[test]
+    fn histogram_width_picks_power_of_two_fitting_terminal() {
+        // Each candidate is chosen once the terminal is wide enough for its
+        // box (`width + 2`); every candidate evenly divides the bucket count.
+        assert_eq!(histogram_width(300), 256);
+        assert_eq!(histogram_width(258), 256);
+        assert_eq!(histogram_width(257), 128);
+        assert_eq!(histogram_width(130), 128);
+        assert_eq!(histogram_width(129), 64);
+        assert_eq!(histogram_width(66), 64);
+        assert_eq!(histogram_width(33), 16);
+        // Narrower than the smallest box still falls back to 16.
+        assert_eq!(histogram_width(0), 16);
+        for w in [256, 128, 64, 32, 16] {
+            assert_eq!(HISTOGRAM_BUCKETS % w, 0);
+        }
     }
 
     #[test]
@@ -394,6 +808,95 @@ mod tests {
         // treat it as a single channel.
         let input = test_data("uncompressed.fit");
         info_file(&input, &InfoOptions::default()).unwrap();
+    }
+
+    #[test]
+    fn info_file_dumps_headers_on_real_data() {
+        // `--headers` must succeed on a real frame, reading the HDU header.
+        let input = test_data("uncompressed.fit");
+        info_file(
+            &input,
+            &InfoOptions {
+                headers: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn raw_headers_are_dumped_verbatim() {
+        // The raw dump emits one trimmed card per keyword, in order, and each
+        // line re-parses to the same keyword it came from.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
+
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, _img) = find_image_hdu(&fits, &input, false).unwrap();
+
+        let mut out = String::new();
+        push_raw_headers(&mut out, header);
+        let lines: Vec<&str> = out.lines().collect();
+
+        // Standard mandatory cards appear in their raw card form, in order.
+        assert!(lines.iter().any(|l| l.starts_with("SIMPLE  =")));
+        assert!(lines.iter().any(|l| l.starts_with("BITPIX  =")));
+        assert!(lines.iter().any(|l| l.starts_with("NAXIS1  =")));
+        assert!(lines.iter().any(|l| l.contains("RGGB")));
+        // No card exceeds the 80-column FITS card width, and none is END
+        // (the terminator isn't stored as a keyword).
+        assert!(lines.iter().all(|l| l.chars().count() <= 80));
+        assert!(!lines.iter().any(|l| l.starts_with("END")));
+        // One emitted line per stored keyword (these fixtures use no
+        // CONTINUE-split long strings).
+        assert_eq!(lines.len(), header.iter().count());
+    }
+
+    #[test]
+    fn info_file_reads_pixels_on_real_data() {
+        // With `--pixel` the command must read the pixel data and succeed on a
+        // single-channel mosaic frame.
+        let input = test_data("uncompressed.fit");
+        info_file(
+            &input,
+            &InfoOptions {
+                pixel: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn info_file_pixels_on_rgb_cube_does_not_fail() {
+        // Pixel stats aren't supported for debayered RGB cubes; the command
+        // reports that in the output rather than erroring out.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("rgb.fits");
+        write_rgb_cube_fits(&input, 4, 3);
+        info_file(
+            &input,
+            &InfoOptions {
+                pixel: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn zero_pixels_are_counted() {
+        // A 3x3 mosaic stores values 0..8, so exactly one pixel is zero.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits(&input, 3, 3, None);
+
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, img) = find_image_hdu(&fits, &input, false).unwrap();
+        let img = img.as_ref();
+        let stats = pixel_stats(header, img);
+        assert_eq!(stats.zeros, 1);
     }
 
     #[test]
