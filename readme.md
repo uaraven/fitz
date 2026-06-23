@@ -171,6 +171,9 @@ Prints a human-readable summary of each FITS file without writing anything. Repo
 By default only these header-derived fields are reported. Pass `--pixel` to additionally read the pixel data (transparently decompressing a tile-compressed input first) and print:
 
  - **Pixel statistics** — min, max, mean and median of the physical (`BSCALE`/`BZERO`-applied) pixel values, plus the count of pixels whose value is exactly zero. Pixel statistics are not supported for already-debayered RGB images; for those a notice is printed instead.
+ - **Histogram** — a histogram of the pixel values is drawn last, after the textual fields. Pass `--log` for a logarithmic vertical axis, which keeps a tall low-value spike (common in astronomical frames) from flattening the rest of the distribution. `--log` only affects the histogram, so it is only useful together with `--pixel`.
+
+Pixel data can only be shown for RAW images.
 
 When available, the object name, exposure time, filter, instrument and observation date are also shown. Any field whose header keyword is absent is omitted.
 
@@ -182,6 +185,7 @@ Arguments:
 
 Options:
       --pixel        Read the pixel data and report pixel statistics (not supported for debayered images)
+      --log          Use a logarithmic vertical axis for the histogram (only useful with --pixel)
   -v, --verbose      Print each file being processed
   -j, --jobs <JOBS>  Number of files to process in parallel (default: number of CPU cores)
   -h, --help         Print help

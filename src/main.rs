@@ -292,6 +292,10 @@ struct InfoArgs {
     /// Not supported for debayered RGB images.
     #[arg(long)]
     pixel: bool,
+    /// Use a logarithmic vertical axis for the pixel histogram. Only useful
+    /// together with --pixel, which is what produces the histogram.
+    #[arg(long)]
+    log: bool,
     /// FITS files to inspect
     files: Vec<PathBuf>,
 }
@@ -621,8 +625,8 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
 }
 
 fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
-    let InfoArgs { pixel, files } = args;
-    let opts = InfoOptions { verbose, pixel };
+    let InfoArgs { pixel, log, files } = args;
+    let opts = InfoOptions { verbose, pixel, log };
     process_files(&files, |path| info_file(path, &opts))
 }
 
