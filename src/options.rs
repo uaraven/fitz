@@ -98,6 +98,9 @@ pub struct InfoOptions {
     /// Read (decompressing if needed) the pixel data and report pixel
     /// statistics. Without it, `info` reports header-derived metadata only.
     pub pixel: bool,
+    /// Use a logarithmic vertical axis for the pixel histogram. Only meaningful
+    /// together with `pixel`, which is what triggers the histogram.
+    pub log: bool,
 }
 
 pub struct PreviewOptions {
