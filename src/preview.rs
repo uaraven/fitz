@@ -45,7 +45,7 @@ fn choose_renderer(opts: &PreviewOptions) -> Renderer {
 /// auto-stretch it, downscale it to fit the terminal, and print it as ANSI
 /// half-block "pixels" colored with either 256-color or true-color codes.
 pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
-    let (width, height, stretched) = load_and_stretch(
+    let (width, height, stretched, _header) = load_and_stretch(
         input,
         opts.pattern,
         opts.force_demosaic,
@@ -350,7 +350,7 @@ mod tests {
         // Full pipeline on the bundled frame: it must complete and emit at
         // least one half-block cell.
         let input = test_data("uncompressed.fit");
-        let (w, h, stretched) = load_and_stretch(&input, None, false, false, false).unwrap();
+        let (w, h, stretched, _) = load_and_stretch(&input, None, false, false, false).unwrap();
 
         let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
         let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
@@ -362,7 +362,7 @@ mod tests {
         // Full pipeline on the bundled frame: load + stretch + scale to a small
         // terminal-sized box. The frame is square, so the preview must be too.
         let input = test_data("uncompressed.fit");
-        let (w, h, stretched) = load_and_stretch(&input, None, false, false, false).unwrap();
+        let (w, h, stretched, _) = load_and_stretch(&input, None, false, false, false).unwrap();
 
         let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
         assert!(pw <= 80 && ph <= 48);

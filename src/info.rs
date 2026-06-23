@@ -153,7 +153,13 @@ enum Axis {
 /// it is rendered in sexagesimal form (hours for RA, degrees for DEC) with the
 /// decimal value in parentheses; otherwise the raw sexagesimal header string is
 /// shown verbatim.
-fn push_coordinate(out: &mut String, header: &Header, axis: Axis, deg_key: &str, sexagesimal_key: &str) {
+fn push_coordinate(
+    out: &mut String,
+    header: &Header,
+    axis: Axis,
+    deg_key: &str,
+    sexagesimal_key: &str,
+) {
     let label = match axis {
         Axis::Ra => "RA",
         Axis::Dec => "DEC",
@@ -165,7 +171,12 @@ fn push_coordinate(out: &mut String, header: &Header, axis: Axis, deg_key: &str,
         .filter(|s| !s.is_empty());
 
     let _ = match (deg, sexagesimal) {
-        (Some(d), _) => writeln!(out, "  {label}:{}{}", pad(label), format_coordinate(axis, d)),
+        (Some(d), _) => writeln!(
+            out,
+            "  {label}:{}{}",
+            pad(label),
+            format_coordinate(axis, d)
+        ),
         (None, Some(s)) => writeln!(out, "  {label}:{}{s}", pad(label)),
         (None, None) => Ok(()),
     };
@@ -250,7 +261,12 @@ fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
         (sum / n as f64, median_in_place(&mut values))
     };
 
-    PixelStats { min, max, mean, median }
+    PixelStats {
+        min,
+        max,
+        mean,
+        median,
+    }
 }
 
 /// Median via in-place selection; averages the two central values for an even
@@ -291,7 +307,10 @@ mod tests {
 
     #[test]
     fn dec_formats_as_signed_degrees() {
-        assert_eq!(format_coordinate(Axis::Dec, 12.5), "12° 30' 00.00\" (12.5°)");
+        assert_eq!(
+            format_coordinate(Axis::Dec, 12.5),
+            "12° 30' 00.00\" (12.5°)"
+        );
         // Declination is signed.
         assert_eq!(
             format_coordinate(Axis::Dec, -12.5),

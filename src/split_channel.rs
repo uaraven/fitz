@@ -1,13 +1,13 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
-use fitskit::{FitsFile, PixelData};
+use anyhow::{Context, Result, anyhow, bail};
+use fitskit::{FitsFile, Header, PixelData};
 use rayon::prelude::*;
 
 use crate::fits_image::{
-    demosaic_to_rgb, ensure_can_write, find_image_hdu, get_bayerpat, print_progress, print_step,
-    resolve_cfa, scaled_pixels, write_pixel_fits, RgbBuffer,
+    CFA_KEYWORDS, RgbBuffer, demosaic_to_rgb, ensure_can_write, find_image_hdu, get_bayerpat,
+    print_progress, print_step, resolve_cfa, scaled_pixels, write_pixel_fits,
 };
 use crate::options::SplitChannelOptions;
 
@@ -99,19 +99,19 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
         }
 
         let output = channel_output_path(input, default_prefix, prefix, dir)?;
-        outputs.push((output, values));
+        outputs.push((output, values, default_prefix));
     }
 
     // Check all outputs before writing any, so a pre-existing file doesn't
     // leave a partial set of channels written to disk.
-    for (output, _) in &outputs {
+    for (output, _, _) in &outputs {
         ensure_can_write(output, opts.force)?;
     }
 
-    for (output, values) in outputs {
+    for (output, values, channel) in outputs {
         print_progress(opts.verbose, input, &output);
         print_step(opts.verbose, "writing");
-        write_channel_fits(&output, width, height, values, opts.format)?;
+        write_channel_fits(&output, width, height, values, opts.format, header, channel)?;
     }
 
     Ok(())
@@ -151,8 +151,14 @@ fn deinterleave_channels<T: Copy + Into<f64> + Send + Sync>(
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let n = v.len() / 3;
     let r = (0..n).into_par_iter().map(|i| v[i * 3].into()).collect();
-    let g = (0..n).into_par_iter().map(|i| v[i * 3 + 1].into()).collect();
-    let b = (0..n).into_par_iter().map(|i| v[i * 3 + 2].into()).collect();
+    let g = (0..n)
+        .into_par_iter()
+        .map(|i| v[i * 3 + 1].into())
+        .collect();
+    let b = (0..n)
+        .into_par_iter()
+        .map(|i| v[i * 3 + 2].into())
+        .collect();
     (r, g, b)
 }
 
@@ -162,6 +168,8 @@ fn write_channel_fits(
     height: usize,
     values: &[f64],
     format: ChannelFormat,
+    src_header: &Header,
+    channel: &str,
 ) -> Result<()> {
     let (pixels, bzero) = match format {
         ChannelFormat::I8 => (
@@ -198,16 +206,82 @@ fn write_channel_fits(
         ChannelFormat::F64 => (PixelData::F64(values.to_vec()), 0.0),
     };
 
-    write_pixel_fits(output, vec![width, height], pixels, 1.0, bzero)
+    let history = format!(
+        "split channel {} by fitz {}",
+        channel,
+        env!("CARGO_PKG_VERSION")
+    );
+    write_pixel_fits(
+        output,
+        vec![width, height],
+        pixels,
+        1.0,
+        bzero,
+        Some(src_header),
+        CFA_KEYWORDS,
+        Some(&history),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{copy_to_temp, test_data, write_mosaic_fits, write_rgb_cube_fits};
+    use crate::test_support::{
+        copy_to_temp, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
+        write_rgb_cube_fits,
+    };
     use fitskit::HduData;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
+
+    #[test]
+    fn split_channel_preserves_metadata_and_drops_bayerpat() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits_with_metadata(&input, 8, 6, Some("RGGB"));
+
+        split_channel_file(&input, &SplitChannelOptions::default()).unwrap();
+
+        for (channel, file) in [
+            ("R", "R-raw.fits"),
+            ("G", "G-raw.fits"),
+            ("B", "B-raw.fits"),
+        ] {
+            let header = FitsFile::from_file(tmp.path().join(file))
+                .unwrap()
+                .primary()
+                .header
+                .clone();
+            assert_eq!(header.get_string("OBJECT"), Some("M31"), "{channel}");
+            assert_eq!(header.get_float("CRVAL1"), Some(10.68), "{channel}");
+            assert!(header.find("BAYERPAT").is_none(), "{channel}");
+            let marker = format!("split channel {channel} by fitz");
+            assert!(
+                header.iter().any(|k| k.name == "HISTORY"
+                    && k.comment.as_deref().is_some_and(|c| c.contains(&marker))),
+                "missing HISTORY for {channel}"
+            );
+        }
+    }
+
+    #[test]
+    fn split_channel_fz_output_does_not_leak_container_keywords() {
+        let tmp = TempDir::new().unwrap();
+        let input = copy_to_temp("compressed.fits.fz", &tmp);
+
+        split_channel_file(&input, &SplitChannelOptions::default()).unwrap();
+
+        let header = FitsFile::from_file(tmp.path().join("R-compressed.fits.fz"))
+            .unwrap()
+            .primary()
+            .header
+            .clone();
+        for kw in [
+            "TFORM1", "TFIELDS", "ZIMAGE", "ZCMPTYPE", "ZNAXIS1", "XTENSION", "EXTNAME", "BAYERPAT",
+        ] {
+            assert!(header.find(kw).is_none(), "{kw} leaked into split output");
+        }
+    }
 
     #[test]
     fn split_channel_default_writes_all_three_with_default_prefixes() {
@@ -354,10 +428,7 @@ mod tests {
                 .to_string();
 
             let actual_path = dir.join("uncompressed.fit");
-            let actual = format!(
-                "{:x}",
-                Sha256::digest(std::fs::read(&actual_path).unwrap())
-            );
+            let actual = format!("{:x}", Sha256::digest(std::fs::read(&actual_path).unwrap()));
             assert_eq!(actual, expected);
         }
     }

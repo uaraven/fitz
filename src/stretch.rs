@@ -5,13 +5,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use bayer::CFA;
-use fitskit::FitsFile;
+use fitskit::{FitsFile, Header};
 use rayon::prelude::*;
 
 use crate::debayer::OutputFormat;
 use crate::fits_image::{
-    ensure_can_write, find_image_hdu, load_rgb, print_progress, print_step, round_to_u16,
-    write_rgb16_fits, write_rgb16_tiff, RgbBuffer,
+    CFA_KEYWORDS, RgbBuffer, ensure_can_write, find_image_hdu, load_rgb, print_progress,
+    print_step, round_to_u16, write_rgb16_fits, write_rgb16_tiff,
 };
 use crate::options::StretchOptions;
 
@@ -33,13 +33,29 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
     ensure_can_write(output, opts.force)?;
     print_progress(opts.verbose, input, output);
 
-    let (width, height, stretched) =
-        load_and_stretch(input, opts.pattern, opts.force_demosaic, opts.linked, opts.verbose)?;
+    let (width, height, stretched, header) = load_and_stretch(
+        input,
+        opts.pattern,
+        opts.force_demosaic,
+        opts.linked,
+        opts.verbose,
+    )?;
 
     print_step(opts.verbose, "writing");
     match opts.format {
         OutputFormat::Tiff => write_rgb16_tiff(output, width, height, &stretched),
-        OutputFormat::Fits => write_rgb16_fits(output, width, height, &stretched),
+        OutputFormat::Fits => {
+            let history = format!("stretched by fitz {}", env!("CARGO_PKG_VERSION"));
+            write_rgb16_fits(
+                output,
+                width,
+                height,
+                &stretched,
+                Some(&header),
+                CFA_KEYWORDS,
+                Some(&history),
+            )
+        }
     }
 }
 
@@ -53,7 +69,7 @@ pub(crate) fn load_and_stretch(
     force_demosaic: bool,
     linked: bool,
     verbose: bool,
-) -> Result<(usize, usize, Vec<u16>)> {
+) -> Result<(usize, usize, Vec<u16>, Header)> {
     print_step(verbose, "reading");
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
@@ -65,7 +81,7 @@ pub(crate) fn load_and_stretch(
 
     print_step(verbose, "stretching");
     let stretched = auto_stretch(&rgb, linked);
-    Ok((width, height, stretched))
+    Ok((width, height, stretched, header.clone()))
 }
 
 /// Apply an MTF/STF auto-stretch to an interleaved RGB image, returning
@@ -205,10 +221,56 @@ fn select_nth(values: &mut [Sample], k: usize) -> &Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
+    use crate::test_support::{
+        test_data, write_mosaic_fits, write_mosaic_fits_with_metadata, write_rgb_cube_fits,
+    };
     use fitskit::HduData;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
+
+    fn output_header(path: &Path) -> Header {
+        FitsFile::from_file(path).unwrap().primary().header.clone()
+    }
+
+    #[test]
+    fn stretch_fits_preserves_metadata_and_drops_bayerpat() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits_with_metadata(&input, 8, 6, Some("RGGB"));
+
+        let output = tmp.path().join("out.fits");
+        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+
+        let header = output_header(&output);
+        assert_eq!(header.get_string("OBJECT"), Some("M31"));
+        assert_eq!(header.get_float("CRVAL1"), Some(10.68));
+        assert!(header.find("BAYERPAT").is_none());
+        assert!(header.iter().any(|k| {
+            k.name == "HISTORY"
+                && k.comment
+                    .as_deref()
+                    .is_some_and(|c| c.contains("stretched by fitz"))
+        }));
+    }
+
+    #[test]
+    fn stretch_fz_output_does_not_leak_container_keywords() {
+        let tmp = TempDir::new().unwrap();
+        let output = tmp.path().join("out.fits");
+        stretch_file(
+            &test_data("compressed.fits.fz"),
+            &output,
+            &StretchOptions::default(),
+        )
+        .unwrap();
+
+        let header = output_header(&output);
+        for kw in [
+            "TFORM1", "TFIELDS", "ZIMAGE", "ZCMPTYPE", "ZNAXIS1", "XTENSION", "EXTNAME", "BAYERPAT",
+        ] {
+            assert!(header.find(kw).is_none(), "{kw} leaked into stretch output");
+        }
+    }
 
     #[test]
     fn mtf_hits_its_anchor_points() {
@@ -282,7 +344,10 @@ mod tests {
         let n = 256usize;
         let samples: Vec<u16> = (0..n).flat_map(|_| [20000u16, 20000, 20000]).collect();
         let out = auto_stretch(&RgbBuffer::U16(samples), false);
-        assert!(out.iter().any(|&v| v < u16::MAX), "flat image went all white");
+        assert!(
+            out.iter().any(|&v| v < u16::MAX),
+            "flat image went all white"
+        );
     }
 
     #[test]

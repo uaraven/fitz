@@ -4,11 +4,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use fitskit::{Bitpix, FitsFile, Header, ImageData, PixelData};
 use rayon::prelude::*;
-use tiff::encoder::{colortype, TiffEncoder};
+use tiff::encoder::{TiffEncoder, colortype};
 
 use crate::fits_image::{
-    bscale_bzero, deinterleave_to_planes, ensure_can_write, find_image_hdu, load_rgb,
-    print_progress, print_step, rgb16_to_rgb8, write_pixel_fits, RgbBuffer,
+    CFA_KEYWORDS, RgbBuffer, bscale_bzero, deinterleave_to_planes, ensure_can_write,
+    find_image_hdu, load_rgb, print_progress, print_step, rgb16_to_rgb8, write_pixel_fits,
 };
 use crate::options::DebayerOptions;
 
@@ -74,8 +74,14 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
 
     let source = SourceFormat::from_image(header, img);
 
-    let (width, height, rgb) =
-        load_rgb(header, img, input, opts.pattern, opts.force_demosaic, opts.verbose)?;
+    let (width, height, rgb) = load_rgb(
+        header,
+        img,
+        input,
+        opts.pattern,
+        opts.force_demosaic,
+        opts.verbose,
+    )?;
 
     print_step(opts.verbose, "writing");
     match opts.format {
@@ -83,7 +89,7 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
             let samples = to_output_samples(rgb, opts.bpp);
             write_tiff(output, width, height, samples)?;
         }
-        OutputFormat::Fits => write_fits(output, width, height, rgb, &source)?,
+        OutputFormat::Fits => write_fits(output, width, height, rgb, &source, header)?,
     }
 
     Ok(())
@@ -140,14 +146,19 @@ fn write_fits(
     height: usize,
     rgb: RgbBuffer,
     source: &SourceFormat,
+    src_header: &Header,
 ) -> Result<()> {
     let pixels = encode_rgb_as_source(rgb, source);
+    let history = format!("debayered by fitz {}", env!("CARGO_PKG_VERSION"));
     write_pixel_fits(
         output,
         vec![width, height, 3],
         pixels,
         source.bscale,
         source.bzero,
+        Some(src_header),
+        CFA_KEYWORDS,
+        Some(&history),
     )
 }
 
@@ -170,9 +181,12 @@ fn encode_physical_as_source(planes: &[u16], source: &SourceFormat) -> PixelData
     let raw_int = |p: u16, lo: f64, hi: f64| raw(p).round().clamp(lo, hi);
 
     match source.bitpix {
-        Bitpix::U8 => {
-            PixelData::U8(planes.iter().map(|&p| raw_int(p, 0.0, u8::MAX as f64) as u8).collect())
-        }
+        Bitpix::U8 => PixelData::U8(
+            planes
+                .iter()
+                .map(|&p| raw_int(p, 0.0, u8::MAX as f64) as u8)
+                .collect(),
+        ),
         Bitpix::I16 => PixelData::I16(
             planes
                 .iter()
@@ -199,11 +213,62 @@ fn encode_physical_as_source(planes: &[u16], source: &SourceFormat) -> PixelData
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
+    use crate::test_support::{
+        test_data, write_mosaic_fits, write_mosaic_fits_with_metadata, write_rgb_cube_fits,
+    };
     use bayer::CFA;
     use fitskit::{HduData, HeaderValue};
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
+
+    fn output_header(path: &Path) -> Header {
+        FitsFile::from_file(path).unwrap().primary().header.clone()
+    }
+
+    #[test]
+    fn debayer_fits_preserves_metadata_and_drops_bayerpat() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits_with_metadata(&input, 8, 6, Some("RGGB"));
+
+        let output = tmp.path().join("out.fits");
+        debayer_file(&input, &output, &DebayerOptions::default()).unwrap();
+
+        let header = output_header(&output);
+        assert_eq!(header.get_string("OBJECT"), Some("M31"));
+        assert_eq!(header.get_string("DATE-OBS"), Some("2026-06-22T00:00:00"));
+        assert_eq!(header.get_float("CRVAL1"), Some(10.68));
+        assert_eq!(header.get_float("CRVAL2"), Some(41.27));
+        // BAYERPAT must be gone so re-running debayer/stretch sees an RGB cube.
+        assert!(header.find("BAYERPAT").is_none());
+        // Exactly one NAXIS keyword, and a HISTORY provenance card.
+        assert_eq!(header.iter().filter(|k| k.name == "NAXIS").count(), 1);
+        assert!(header.iter().any(|k| {
+            k.name == "HISTORY"
+                && k.comment
+                    .as_deref()
+                    .is_some_and(|c| c.contains("debayered by fitz"))
+        }));
+    }
+
+    #[test]
+    fn debayer_fz_output_does_not_leak_container_keywords() {
+        let tmp = TempDir::new().unwrap();
+        let output = tmp.path().join("out.fits");
+        debayer_file(
+            &test_data("compressed.fits.fz"),
+            &output,
+            &DebayerOptions::default(),
+        )
+        .unwrap();
+
+        let header = output_header(&output);
+        for kw in [
+            "TFORM1", "TFIELDS", "ZIMAGE", "ZCMPTYPE", "ZNAXIS1", "XTENSION", "EXTNAME", "BAYERPAT",
+        ] {
+            assert!(header.find(kw).is_none(), "{kw} leaked into debayer output");
+        }
+    }
 
     #[test]
     fn debayer_produces_tiff_of_expected_size() {

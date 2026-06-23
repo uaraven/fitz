@@ -35,6 +35,37 @@ pub(crate) fn write_mosaic_fits(path: &Path, width: usize, height: usize, patter
     fits.to_file(path).unwrap();
 }
 
+/// Like [`write_mosaic_fits`] but also stamps representative metadata (OBJECT,
+/// DATE-OBS, a WCS pair, and a COMMENT card) so header-preservation tests have
+/// something to assert survives the processing commands.
+pub(crate) fn write_mosaic_fits_with_metadata(
+    path: &Path,
+    width: usize,
+    height: usize,
+    pattern: Option<&str>,
+) {
+    let pixels: Vec<i16> = (0..(width * height) as i16).collect();
+    let img = ImageData::new(vec![width, height], PixelData::I16(pixels));
+    let mut fits = FitsFile::with_primary_image(img);
+    let header = &mut fits.primary_mut().header;
+    if let Some(p) = pattern {
+        header.set(BAYERPAT, HeaderValue::String(p.to_string()), None);
+    }
+    header.set("OBJECT", HeaderValue::String("M31".to_string()), None);
+    header.set(
+        "DATE-OBS",
+        HeaderValue::String("2026-06-22T00:00:00".to_string()),
+        None,
+    );
+    header.set("CRVAL1", HeaderValue::Float(10.68), None);
+    header.set("CRVAL2", HeaderValue::Float(41.27), None);
+    header.push(fitskit::Keyword::commentary(
+        "COMMENT",
+        "captured by fitz test suite",
+    ));
+    fits.to_file(path).unwrap();
+}
+
 /// Write a 3-plane (R, G, B) I16 RGB cube with sequential pixel values.
 pub(crate) fn write_rgb_cube_fits(path: &Path, width: usize, height: usize) {
     let n = width * height;
