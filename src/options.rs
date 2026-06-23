@@ -101,6 +101,9 @@ pub struct InfoOptions {
     /// Use a logarithmic vertical axis for the pixel histogram. Only meaningful
     /// together with `pixel`, which is what triggers the histogram.
     pub log: bool,
+    /// Print the raw FITS header cards of the image HDU instead of the formatted
+    /// summary.
+    pub headers: bool,
 }
 
 pub struct PreviewOptions {
