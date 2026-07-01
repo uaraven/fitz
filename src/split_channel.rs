@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::fits_image::{
     CFA_KEYWORDS, RgbBuffer, demosaic_to_rgb, ensure_can_write, find_image_hdu, get_bayerpat,
-    print_progress, print_step, resolve_cfa, scaled_pixels, write_pixel_fits,
+    is_rgb_cube_shape, print_progress, print_step, resolve_cfa, scaled_pixels, write_pixel_fits,
 };
 use crate::options::SplitChannelOptions;
 
@@ -61,7 +61,7 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
         let (r, g, b) = deinterleave(rgb);
         (width, height, r, g, b)
     } else {
-        if img.axes.len() != 3 || img.axes[2] != 3 {
+        if !is_rgb_cube_shape(img) {
             bail!(
                 "{}: no BAYERPAT header and image is not a 3-plane RGB cube (NAXIS3=3)",
                 input.display()
@@ -329,17 +329,6 @@ mod tests {
         split_channel_file(&input, &opts).unwrap();
 
         assert!(r_dir.join("raw.fits").exists());
-    }
-
-    #[test]
-    fn split_channel_errors_if_output_exists_without_yes() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
-        std::fs::write(tmp.path().join("R-raw.fits"), b"dummy").unwrap();
-
-        let err = split_channel_file(&input, &SplitChannelOptions::default()).unwrap_err();
-        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]

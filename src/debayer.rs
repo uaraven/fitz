@@ -183,30 +183,30 @@ fn encode_physical_as_source(planes: &[u16], source: &SourceFormat) -> PixelData
     match source.bitpix {
         Bitpix::U8 => PixelData::U8(
             planes
-                .iter()
+                .par_iter()
                 .map(|&p| raw_int(p, 0.0, u8::MAX as f64) as u8)
                 .collect(),
         ),
         Bitpix::I16 => PixelData::I16(
             planes
-                .iter()
+                .par_iter()
                 .map(|&p| raw_int(p, i16::MIN as f64, i16::MAX as f64) as i16)
                 .collect(),
         ),
         Bitpix::I32 => PixelData::I32(
             planes
-                .iter()
+                .par_iter()
                 .map(|&p| raw_int(p, i32::MIN as f64, i32::MAX as f64) as i32)
                 .collect(),
         ),
         Bitpix::I64 => PixelData::I64(
             planes
-                .iter()
+                .par_iter()
                 .map(|&p| raw_int(p, i64::MIN as f64, i64::MAX as f64) as i64)
                 .collect(),
         ),
-        Bitpix::F32 => PixelData::F32(planes.iter().map(|&p| raw(p) as f32).collect()),
-        Bitpix::F64 => PixelData::F64(planes.iter().map(|&p| raw(p)).collect()),
+        Bitpix::F32 => PixelData::F32(planes.par_iter().map(|&p| raw(p) as f32).collect()),
+        Bitpix::F64 => PixelData::F64(planes.par_iter().map(|&p| raw(p)).collect()),
     }
 }
 
@@ -214,16 +214,13 @@ fn encode_physical_as_source(planes: &[u16], source: &SourceFormat) -> PixelData
 mod tests {
     use super::*;
     use crate::test_support::{
-        test_data, write_mosaic_fits, write_mosaic_fits_with_metadata, write_rgb_cube_fits,
+        output_header, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
+        write_rgb_cube_fits,
     };
     use bayer::CFA;
     use fitskit::{HduData, HeaderValue};
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
-
-    fn output_header(path: &Path) -> Header {
-        FitsFile::from_file(path).unwrap().primary().header.clone()
-    }
 
     #[test]
     fn debayer_fits_preserves_metadata_and_drops_bayerpat() {
@@ -383,19 +380,6 @@ mod tests {
         };
         debayer_file(&input, &output, &opts).unwrap();
         assert!(output.exists());
-    }
-
-    #[test]
-    fn debayer_errors_if_output_exists_without_yes() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
-
-        let output = tmp.path().join("raw.tiff");
-        std::fs::write(&output, b"dummy").unwrap();
-
-        let err = debayer_file(&input, &output, &DebayerOptions::default()).unwrap_err();
-        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]

@@ -11,7 +11,9 @@ use anyhow::{Context, Result};
 use fitskit::{FitsFile, Header, ImageData};
 use rayon::prelude::*;
 
-use crate::fits_image::{find_image_hdu, get_bayerpat, print_step, scaled_pixels};
+use crate::fits_image::{
+    find_image_hdu, get_bayerpat, is_debayered_rgb_cube, print_step, scaled_pixels,
+};
 use crate::options::InfoOptions;
 use crate::terminal::terminal_dimensions;
 
@@ -59,7 +61,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     // A 3-plane cube with no BAYERPAT is an already-debayered RGB image (3
     // channels); anything else is treated as a single-channel frame, matching
     // the detection used by the debayer/stretch/split commands.
-    let is_rgb_cube = get_bayerpat(header).is_none() && img.axes.len() == 3 && img.axes[2] == 3;
+    let is_rgb_cube = is_debayered_rgb_cube(header, img);
     let channels = if is_rgb_cube { 3 } else { 1 };
 
     let width = img.axes.first().copied().unwrap_or(0);
@@ -79,19 +81,8 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         channel_label(channels, header)
     );
 
-    if let Some(pat) = get_bayerpat(header) {
-        let pat = pat.trim();
-        if !pat.is_empty() {
-            let _ = writeln!(out, "  Bayer:       {pat}");
-        }
-    }
-
-    if let Some(object) = header.get_string("OBJECT") {
-        let object = object.trim();
-        if !object.is_empty() {
-            let _ = writeln!(out, "  Object:      {object}");
-        }
-    }
+    push_field(&mut out, "Bayer", get_bayerpat(header));
+    push_field(&mut out, "Object", header.get_string("OBJECT"));
 
     push_coordinate(&mut out, header, Axis::Ra, "RA", "OBJCTRA");
     push_coordinate(&mut out, header, Axis::Dec, "DEC", "OBJCTDEC");
@@ -111,27 +102,12 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     if let (Some(xbin), Some(ybin)) = (header.get_int("XBINNING"), header.get_int("YBINNING")) {
         let _ = writeln!(out, "  Binning:     {xbin}x{ybin}");
     }
-    if let Some(filter) = header.get_string("FILTER") {
-        let filter = filter.trim();
-        if !filter.is_empty() {
-            let _ = writeln!(out, "  Filter:      {filter}");
-        }
-    }
-    if let Some(instrument) = header.get_string("INSTRUME") {
-        let instrument = instrument.trim();
-        if !instrument.is_empty() {
-            let _ = writeln!(out, "  Instrument:  {instrument}");
-        }
-    }
+    push_field(&mut out, "Filter", header.get_string("FILTER"));
+    push_field(&mut out, "Instrument", header.get_string("INSTRUME"));
     if let Some(telescope) = telescope_label(header) {
         let _ = writeln!(out, "  Telescope:   {telescope}");
     }
-    if let Some(date) = header.get_string("DATE-OBS") {
-        let date = date.trim();
-        if !date.is_empty() {
-            let _ = writeln!(out, "  Date-obs:    {date}");
-        }
-    }
+    push_field(&mut out, "Date-obs", header.get_string("DATE-OBS"));
 
     // Pixel statistics are only computed on request (`--pixel`), since they
     // require reading and decompressing the full pixel array. They only make
@@ -250,6 +226,23 @@ fn telescope_label(header: &Header) -> Option<String> {
     }
 }
 
+/// Column width (including the trailing colon) reserved for a field's label, so
+/// values across different fields line up (e.g. `"  Resolution:  1024 x 768"`).
+const FIELD_LABEL_WIDTH: usize = 13;
+
+/// Append a labeled header field to `out` if the string keyword is present and
+/// non-blank once trimmed, e.g. `push_field(out, "Object", header.get_string("OBJECT"))`.
+fn push_field(out: &mut String, label: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|s| !s.is_empty()) {
+        let _ = writeln!(
+            out,
+            "  {:<1$}{value}",
+            format!("{label}:"),
+            FIELD_LABEL_WIDTH
+        );
+    }
+}
+
 /// Which sky axis a coordinate is, selecting its sexagesimal convention: right
 /// ascension is expressed in hours (`h m s`, 360° = 24h), declination in signed
 /// degrees (`° ' "`).
@@ -280,16 +273,19 @@ fn push_coordinate(
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let _ = match (deg, sexagesimal) {
-        (Some(d), _) => writeln!(
-            out,
-            "  {label}:{}{}",
-            pad(label),
-            format_coordinate(axis, d)
-        ),
-        (None, Some(s)) => writeln!(out, "  {label}:{}{s}", pad(label)),
-        (None, None) => Ok(()),
+    let value = match (deg, sexagesimal) {
+        (Some(d), _) => Some(format_coordinate(axis, d)),
+        (None, Some(s)) => Some(s.to_string()),
+        (None, None) => None,
     };
+    if let Some(value) = value {
+        let _ = writeln!(
+            out,
+            "  {:<1$}{value}",
+            format!("{label}:"),
+            FIELD_LABEL_WIDTH
+        );
+    }
 }
 
 /// Format a decimal-degree coordinate in sexagesimal form with the decimal value
@@ -322,15 +318,6 @@ fn sexagesimal(value: f64) -> (u64, u64, f64) {
     let minutes = (rem / 60.0).trunc();
     let seconds = rem - minutes * 60.0;
     (whole as u64, minutes as u64, seconds)
-}
-
-/// Pad after a coordinate label so values line up with the other fields, which
-/// use a 12-column label area (`"  Resolution:  "`).
-fn pad(label: &str) -> &'static str {
-    match label.len() {
-        2 => "          ", // "RA"
-        _ => "         ",  // "DEC"
-    }
 }
 
 /// Format a float without a trailing `.0` for whole numbers, keeping a compact
@@ -782,7 +769,7 @@ mod tests {
         let fits = FitsFile::from_file(&input).unwrap();
         let (header, img) = find_image_hdu(&fits, &input, false).unwrap();
         let img = img.as_ref();
-        let is_rgb_cube = get_bayerpat(header).is_none() && img.axes.len() == 3 && img.axes[2] == 3;
+        let is_rgb_cube = is_debayered_rgb_cube(header, img);
         assert!(!is_rgb_cube);
         assert_eq!(channel_label(1, header), "mosaic");
         assert_eq!(get_bayerpat(header).map(str::trim), Some("RGGB"));
@@ -797,7 +784,7 @@ mod tests {
         let fits = FitsFile::from_file(&input).unwrap();
         let (header, img) = find_image_hdu(&fits, &input, false).unwrap();
         let img = img.as_ref();
-        let is_rgb_cube = get_bayerpat(header).is_none() && img.axes.len() == 3 && img.axes[2] == 3;
+        let is_rgb_cube = is_debayered_rgb_cube(header, img);
         assert!(is_rgb_cube);
         assert_eq!(channel_label(3, header), "debayered RGB");
     }

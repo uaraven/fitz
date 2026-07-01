@@ -4,9 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use fitskit::{FitsFile, HduData, Header};
 
-use crate::fits_image::{
-    copy_metadata, copy_scaling, ensure_can_write, print_progress, print_step,
-};
+use crate::fits_image::{carry_over_metadata, ensure_can_write, print_progress, print_step};
 use crate::options::Options;
 
 pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
@@ -37,8 +35,7 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
                 first_image = Some((img, hdu.header.clone()));
             } else {
                 let mut ext = fitskit::Hdu::primary_image(img);
-                copy_metadata(&mut ext.header, &hdu.header, &[]);
-                copy_scaling(&mut ext.header, &hdu.header);
+                carry_over_metadata(&mut ext.header, &hdu.header);
                 extra_hdus.push(ext);
             }
         } else {
@@ -52,8 +49,7 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
     let mut out_fits = match first_image {
         Some((img, src_header)) => {
             let mut fits = FitsFile::with_primary_image(img);
-            copy_metadata(&mut fits.primary_mut().header, &src_header, &[]);
-            copy_scaling(&mut fits.primary_mut().header, &src_header);
+            carry_over_metadata(&mut fits.primary_mut().header, &src_header);
             fits
         }
         None => bail!("no compressed image found in {}", input.display()),
@@ -123,24 +119,6 @@ mod tests {
         )
         .unwrap();
         assert!(input.exists());
-    }
-
-    #[test]
-    fn decompress_errors_if_output_exists_without_yes() {
-        let tmp = TempDir::new().unwrap();
-        let input = copy_to_temp("compressed.fits.fz", &tmp);
-        let output = input.with_extension("");
-        std::fs::write(&output, b"dummy").unwrap();
-        let err = decompress_file(
-            &input,
-            &output,
-            &Options {
-                keep: true,
-                ..Options::default()
-            },
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]

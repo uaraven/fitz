@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use fitskit::{FitsFile, HeaderValue, ImageData, PixelData};
+use fitskit::{FitsFile, Header, HeaderValue, ImageData, PixelData};
 use tempfile::TempDir;
 
 use crate::fits_image::BAYERPAT;
@@ -13,6 +13,12 @@ pub(crate) fn test_data(filename: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("test-data")
         .join(filename)
+}
+
+/// Read back the primary HDU's header of a FITS file written by a test, for
+/// asserting on metadata a command's output should carry over or drop.
+pub(crate) fn output_header(path: &Path) -> Header {
+    FitsFile::from_file(path).unwrap().primary().header.clone()
 }
 
 /// Copy a bundled test-data file into `tmp`, returning the destination path.

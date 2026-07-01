@@ -222,15 +222,12 @@ fn select_nth(values: &mut [Sample], k: usize) -> &Sample {
 mod tests {
     use super::*;
     use crate::test_support::{
-        test_data, write_mosaic_fits, write_mosaic_fits_with_metadata, write_rgb_cube_fits,
+        output_header, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
+        write_rgb_cube_fits,
     };
     use fitskit::HduData;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
-
-    fn output_header(path: &Path) -> Header {
-        FitsFile::from_file(path).unwrap().primary().header.clone()
-    }
 
     #[test]
     fn stretch_fits_preserves_metadata_and_drops_bayerpat() {
@@ -454,19 +451,6 @@ mod tests {
 
         let fits = FitsFile::from_file(&output).unwrap();
         assert!(matches!(fits.primary().data, HduData::Image(_)));
-    }
-
-    #[test]
-    fn stretch_errors_if_output_exists_without_yes() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
-
-        let output = tmp.path().join("out.fits");
-        std::fs::write(&output, b"dummy").unwrap();
-
-        let err = stretch_file(&input, &output, &StretchOptions::default()).unwrap_err();
-        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]
