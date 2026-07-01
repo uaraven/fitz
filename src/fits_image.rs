@@ -205,10 +205,7 @@ pub(crate) fn load_rgb(
     force_demosaic: bool,
     verbose: bool,
 ) -> Result<(usize, usize, RgbBuffer)> {
-    let already_debayered = !force_demosaic
-        && get_bayerpat(header).is_none()
-        && img.axes.len() == 3
-        && img.axes[2] == 3;
+    let already_debayered = !force_demosaic && is_debayered_rgb_cube(header, img);
 
     if already_debayered {
         println!(
@@ -447,6 +444,28 @@ fn is_reserved_keyword(name: &str) -> bool {
 
 pub(crate) fn get_bayerpat(header: &Header) -> Option<&str> {
     header.get_string(BAYERPAT)
+}
+
+/// True if `img` has the shape of a debayered RGB cube: a 3-plane image
+/// (`NAXIS3=3`).
+pub(crate) fn is_rgb_cube_shape(img: &ImageData) -> bool {
+    img.axes.len() == 3 && img.axes[2] == 3
+}
+
+/// True if `img` should be treated as an already-debayered RGB cube rather
+/// than a Bayer mosaic: a 3-plane image with no `BAYERPAT` header. Shared by
+/// `load_rgb` (which uses it to skip demosaicing) and the `info` command
+/// (which uses it to decide the channel count).
+pub(crate) fn is_debayered_rgb_cube(header: &Header, img: &ImageData) -> bool {
+    get_bayerpat(header).is_none() && is_rgb_cube_shape(img)
+}
+
+/// Copy `src`'s metadata and pixel-scaling keywords onto `dest` (see
+/// [`copy_metadata`] and [`copy_scaling`]), the pairing the compress/decompress
+/// container paths use to carry a source HDU's header onto its rebuilt output.
+pub(crate) fn carry_over_metadata(dest: &mut Header, src: &Header) {
+    copy_metadata(dest, src, &[]);
+    copy_scaling(dest, src);
 }
 
 /// Serializes overwrite prompts so parallel batch runs don't interleave their

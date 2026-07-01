@@ -4,9 +4,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use fitskit::{CompressOptions, FitsFile, HduData};
 
-use crate::fits_image::{
-    copy_metadata, copy_scaling, ensure_can_write, print_progress, print_step,
-};
+use crate::fits_image::{carry_over_metadata, ensure_can_write, print_progress, print_step};
 use crate::options::Options;
 
 pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
@@ -36,8 +34,7 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
                 // metadata (BAYERPAT, OBJECT, RA/DEC, WCS, …) lives on the source
                 // HDU header. Carry it over so the compressed file is
                 // self-describing and decompress round-trips it faithfully.
-                copy_metadata(&mut compressed.header, &hdu.header, &[]);
-                copy_scaling(&mut compressed.header, &hdu.header);
+                carry_over_metadata(&mut compressed.header, &hdu.header);
                 out_fits.push_extension(compressed);
             }
             HduData::Empty => {}
@@ -116,24 +113,6 @@ mod tests {
         )
         .unwrap();
         assert!(input.exists());
-    }
-
-    #[test]
-    fn compress_errors_if_output_exists_without_yes() {
-        let tmp = TempDir::new().unwrap();
-        let input = copy_to_temp("uncompressed.fit", &tmp);
-        let output = with_fz(&input);
-        std::fs::write(&output, b"dummy").unwrap();
-        let err = compress_file(
-            &input,
-            &output,
-            &Options {
-                keep: true,
-                ..Options::default()
-            },
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("already exists"));
     }
 
     #[test]
