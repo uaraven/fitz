@@ -27,13 +27,15 @@ fitz [options] COMMAND [command-options]
 When a command is given several input files, they are processed in parallel across up to `--jobs` worker threads (defaulting to the number of CPU cores). Each file is independent, so a failure on one file is reported and the rest still run. Pass `-j 1` to force sequential processing.
 
 `COMMAND` - one of the following:
- - `compress` to compress the FITS file. Use `fitz compress --help` to see more options
- - `decompress` to decompress the compressed FITS file. Use `fitz decompress --help` to see more options
- - `debayer` to debayer a FITS mosaic image and save it as a FITS or TIFF file. Use `fitz debayer --help` to see more options
- - `stretch` to auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file. Use `fitz stretch --help` to see more options
- - `split` to debayer a FITS mosaic image (or split an already-debayered RGB image) and save each color channel as a separate FITS file. Use `fitz split --help` to see more options
- - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics). Use `fitz info --help` to see more options
- - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using maximal available quality mode. See [Preview section](#preview) for more details.
+ - `compress` to compress the FITS file;
+ - `decompress` to decompress the compressed FITS file;
+ - `debayer` to debayer a FITS mosaic image and save it as a FITS or TIFF file;
+ - `stretch` to auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file;
+ - `split` to debayer a FITS mosaic image (or split an already-debayered RGB image) and save each color channel as a separate FITS file;
+ - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics);
+ - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using the best quality mode available. See [Preview section](#preview) for more details.
+
+ Use `--help` parameter with any command to see more options.
 
 ### compress
 
@@ -200,7 +202,6 @@ Renders a FITS image directly in the terminal instead of writing a file. The ima
 The image is stretched before printing, same parameters as for `stretch` command apply here.
 
 Unlike the other commands, `preview` accepts exactly one file.
-
 
 `preview` requires terminal to support at least 216-color mode or better. If terminal is unable to render more than 16 colors, the preview will not work.
 
