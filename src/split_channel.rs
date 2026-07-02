@@ -128,7 +128,11 @@ fn channel_output_path(
         .ok_or_else(|| anyhow!("{}: path has no file name", input.display()))?;
 
     let path = match dir {
-        Some(dir) => dir.join(filename),
+        Some(dir) => {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("cannot create directory {}", dir.display()))?;
+            dir.join(filename)
+        }
         None => {
             let prefix = prefix.unwrap_or(default_prefix);
             let mut name = OsString::from(format!("{prefix}-"));
@@ -329,6 +333,68 @@ mod tests {
         split_channel_file(&input, &opts).unwrap();
 
         assert!(r_dir.join("raw.fits").exists());
+    }
+
+    #[test]
+    fn split_channel_creates_missing_dir() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits(&input, 8, 6, Some("RGGB"));
+
+        // Directory does not exist beforehand — it must be created automatically.
+        let r_dir = tmp.path().join("red");
+        assert!(!r_dir.exists());
+
+        let opts = SplitChannelOptions {
+            r_dir: Some(r_dir.clone()),
+            ..SplitChannelOptions::default()
+        };
+        split_channel_file(&input, &opts).unwrap();
+
+        assert!(r_dir.join("raw.fits").exists());
+    }
+
+    #[test]
+    fn split_channel_creates_missing_nested_dir() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits(&input, 8, 6, Some("RGGB"));
+
+        // Neither "out" nor "out/red" exist yet — both levels must be created.
+        let r_dir = tmp.path().join("out").join("red");
+        assert!(!r_dir.exists());
+
+        let opts = SplitChannelOptions {
+            r_dir: Some(r_dir.clone()),
+            ..SplitChannelOptions::default()
+        };
+        split_channel_file(&input, &opts).unwrap();
+
+        assert!(r_dir.join("raw.fits").exists());
+    }
+
+    #[test]
+    fn split_channel_creates_missing_dirs_for_all_channels() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("raw.fits");
+        write_mosaic_fits(&input, 8, 6, Some("RGGB"));
+
+        let r_dir = tmp.path().join("r");
+        let g_dir = tmp.path().join("g");
+        let b_dir = tmp.path().join("b");
+        assert!(!r_dir.exists() && !g_dir.exists() && !b_dir.exists());
+
+        let opts = SplitChannelOptions {
+            r_dir: Some(r_dir.clone()),
+            g_dir: Some(g_dir.clone()),
+            b_dir: Some(b_dir.clone()),
+            ..SplitChannelOptions::default()
+        };
+        split_channel_file(&input, &opts).unwrap();
+
+        assert!(r_dir.join("raw.fits").exists());
+        assert!(g_dir.join("raw.fits").exists());
+        assert!(b_dir.join("raw.fits").exists());
     }
 
     #[test]

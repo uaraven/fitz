@@ -475,6 +475,13 @@ fn main() -> ExitCode {
 /// each file being fully independent), printing per-file errors and mapping the
 /// overall outcome to an exit code. Errors don't abort the batch. A single
 /// input runs inline on the current thread, avoiding any thread-pool overhead.
+/// The batch-completion summary `process_files` prints, or `None` for a
+/// single-file run (which already reports its own progress/errors). Printed
+/// regardless of `--verbose`.
+fn processed_summary(count: usize) -> Option<String> {
+    (count > 1).then(|| format!("Processed {count} files"))
+}
+
 fn process_files(files: &[PathBuf], process: impl Fn(&Path) -> Result<()> + Sync) -> ExitCode {
     if files.is_empty() {
         eprintln!("fitz: no files given");
@@ -498,6 +505,10 @@ fn process_files(files: &[PathBuf], process: impl Fn(&Path) -> Result<()> + Sync
             .map(|p| run(p))
             .reduce(|| false, |a, b| a || b)
     };
+
+    if let Some(summary) = processed_summary(files.len()) {
+        println!("{summary}");
+    }
 
     if had_error {
         ExitCode::FAILURE
@@ -683,6 +694,18 @@ mod tests {
             multi_file,
             ..Options::default()
         }
+    }
+
+    #[test]
+    fn processed_summary_silent_for_zero_or_one_file() {
+        assert_eq!(processed_summary(0), None);
+        assert_eq!(processed_summary(1), None);
+    }
+
+    #[test]
+    fn processed_summary_reports_count_above_one() {
+        assert_eq!(processed_summary(2), Some("Processed 2 files".to_string()));
+        assert_eq!(processed_summary(5), Some("Processed 5 files".to_string()));
     }
 
     #[test]
