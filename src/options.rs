@@ -163,3 +163,11 @@ impl Default for SplitChannelOptions {
         }
     }
 }
+
+#[derive(Default)]
+pub struct CopyHeaderOptions {
+    pub yes: bool,
+    pub verbose: bool,
+    /// Write the result to this file instead of overwriting the target in place.
+    pub output: Option<PathBuf>,
+}
