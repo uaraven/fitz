@@ -1,4 +1,5 @@
 mod compress;
+mod copy_header;
 mod debayer;
 mod decompress;
 mod fits_image;
@@ -24,11 +25,13 @@ use fitskit::CompressionType;
 use rayon::prelude::*;
 
 use compress::compress_file;
+use copy_header::copy_header_file;
 use debayer::{OutputFormat, debayer_file, parse_output_format};
 use decompress::decompress_file;
 use info::info_file;
 use options::{
-    DebayerOptions, InfoOptions, Options, PreviewOptions, SplitChannelOptions, StretchOptions,
+    CopyHeaderOptions, DebayerOptions, InfoOptions, Options, PreviewOptions, SplitChannelOptions,
+    StretchOptions,
 };
 use preview::preview_file;
 use split_channel::{ChannelFormat, parse_channel_format, split_channel_file};
@@ -141,6 +144,9 @@ enum Command {
     Info(InfoArgs),
     /// Render a FITS image to the terminal as colored ANSI text (auto-stretched, debayered if needed)
     Preview(PreviewArgs),
+    /// Copy FITS header keywords from one image onto another, filling in only what the target is missing
+    #[command(name = "copy-header")]
+    CopyHeader(CopyHeaderArgs),
 }
 
 #[derive(clap::Args)]
@@ -352,6 +358,23 @@ struct PreviewArgs {
     file: PathBuf,
 }
 
+#[derive(clap::Args)]
+struct CopyHeaderArgs {
+    /// Assume yes to overwrite question
+    #[arg(short = 'y', long)]
+    yes: bool,
+
+    /// Write the result to this file instead of overwriting the target in place
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+
+    /// FITS file to copy header keywords from
+    source: PathBuf,
+
+    /// FITS file to copy header keywords into (modified in place unless --output is given)
+    target: PathBuf,
+}
+
 /// Derive an output path: explicit `--output` is used as-is (or joined with the
 /// input's stem when batching into a directory); otherwise the input's stem gets
 /// `suffix` and `.ext` appended, placed beside the input.
@@ -488,6 +511,7 @@ fn main() -> ExitCode {
         Command::SplitChannel(a) => run_split_channel(a, verbose),
         Command::Info(a) => run_info(a, verbose),
         Command::Preview(a) => run_preview(a, verbose),
+        Command::CopyHeader(a) => run_copy_header(a, verbose),
     }
 }
 
@@ -703,6 +727,29 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
 
     if let Err(e) = preview_file(&file, &opts) {
         eprintln!("fitz: {}: {e:#}", file.display());
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+/// Unlike the batch commands, `copy-header` operates on exactly one
+/// source/target pair (enforced by clap's two `PathBuf` arguments).
+fn run_copy_header(args: CopyHeaderArgs, verbose: bool) -> ExitCode {
+    let CopyHeaderArgs {
+        yes,
+        output,
+        source,
+        target,
+    } = args;
+
+    let opts = CopyHeaderOptions {
+        yes,
+        verbose,
+        output,
+    };
+
+    if let Err(e) = copy_header_file(&source, &target, &opts) {
+        eprintln!("fitz: {}: {e:#}", target.display());
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
