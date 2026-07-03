@@ -1,6 +1,6 @@
 [package]
 name = "fitz"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 
@@ -15,10 +15,10 @@ terminal_size = "0.4"
 supports-color = "3.0.2"
 base64 = "0.22"
 libc = "0.2"
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
-sha2 = "0.10"
 
 [profile.release]
 opt-level = 'z'       # Optimize for binary size (use 's' if 'z' hurts performance too much)
