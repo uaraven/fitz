@@ -483,7 +483,9 @@ mod tests {
                 .to_string();
 
             let actual_path = dir.join("uncompressed.fit");
-            let actual = format!("{:x}", Sha256::digest(std::fs::read(&actual_path).unwrap()));
+            let fits = FitsFile::from_file(&actual_path).unwrap();
+            let (_, img) = find_image_hdu(&fits, &actual_path, false).unwrap();
+            let actual = format!("{:x}", Sha256::digest(img.pixels.to_bytes()));
             assert_eq!(actual, expected);
         }
     }
