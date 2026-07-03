@@ -67,6 +67,16 @@ pub(crate) fn find_image_hdu<'a>(
     Err(anyhow!("no image data found in {}", input.display()))
 }
 
+/// Locate the index of the HDU holding image data (a plain image HDU, or a
+/// tile-compressed image extension), without decompressing it. Used by
+/// commands that only need to inspect or edit the HDU's header, not its pixel
+/// data (unlike [`find_image_hdu`], which decompresses eagerly).
+pub(crate) fn find_image_hdu_index(fits: &FitsFile) -> Option<usize> {
+    fits.hdus.iter().position(|hdu| {
+        matches!(hdu.data, HduData::Image(_)) || hdu.as_compressed_image().is_some()
+    })
+}
+
 pub(crate) fn resolve_cfa(header: &Header, cli_pattern: Option<CFA>) -> Result<CFA> {
     if let Some(p) = cli_pattern {
         return Ok(p);
@@ -417,6 +427,39 @@ pub(crate) fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]
     }
 }
 
+/// Copy every non-structural keyword from `src` onto `dest` that `dest`
+/// doesn't already carry a card for, returning the number of cards copied.
+/// Used by the `copy-header` command to fill in only what a target file is
+/// missing, rather than overwriting what it already has. `extra_drop` names
+/// additional keywords to skip, on top of the reserved ones (see
+/// [`copy_metadata`]) — `copy_header_file` uses this to keep a stale
+/// `BAYERPAT` from a mosaic source landing on an already-debayered RGB target.
+///
+/// Structural/reserved keywords (see [`is_reserved_keyword`]) — `dest`'s own
+/// resolution (`NAXIS*`), bit depth (`BITPIX`), pixel scaling
+/// (`BSCALE`/`BZERO`), and similar data-layout keywords — are never copied,
+/// since they describe `dest`'s own pixel data, not `src`'s. Commentary cards
+/// (`COMMENT`/`HISTORY`, whose value is `None`) are always appended: multiple
+/// independent annotations are normal, so they aren't deduplicated by name
+/// like a regular keyword would be.
+pub(crate) fn copy_missing_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) -> usize {
+    let mut copied = 0;
+    for kw in &src.keywords {
+        if is_reserved_keyword(&kw.name) {
+            continue;
+        }
+        if extra_drop.iter().any(|d| d.eq_ignore_ascii_case(&kw.name)) {
+            continue;
+        }
+        if kw.value.is_some() && dest.find(&kw.name).is_some() {
+            continue;
+        }
+        dest.push(kw.clone());
+        copied += 1;
+    }
+    copied
+}
+
 /// Pixel-scaling keywords that [`copy_metadata`] deliberately drops (the image
 /// commands let their writer own scaling), but which a lossless compress /
 /// decompress round-trip must preserve: the pixels are stored unchanged, so the
@@ -490,6 +533,15 @@ pub(crate) fn get_bayerpat(header: &Header) -> Option<&str> {
 /// (`NAXIS3=3`).
 pub(crate) fn is_rgb_cube_shape(img: &ImageData) -> bool {
     img.axes.len() == 3 && img.axes[2] == 3
+}
+
+/// True if `header` describes a 3-plane image (`NAXIS=3`, `NAXIS3=3`), reading
+/// straight from the header keywords rather than decoded pixel data. A
+/// tile-compressed HDU's header still carries the original `NAXIS*` alongside
+/// its own `ZNAXIS*`, so this works without decompressing — needed by
+/// `copy-header`, which edits headers only and never touches pixel data.
+pub(crate) fn header_is_rgb_cube_shape(header: &Header) -> bool {
+    header.get_int("NAXIS") == Some(3) && header.get_int("NAXIS3") == Some(3)
 }
 
 /// True if `img` should be treated as an already-debayered RGB cube rather
