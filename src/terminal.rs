@@ -211,6 +211,16 @@ pub fn terminal_color_mode() -> ColorMode {
     }
 }
 
+/// Print a `fitz: warning: <msg>` line to stderr, in yellow when the terminal
+/// supports color (respecting `NO_COLOR`/non-TTY output via `supports_color`).
+pub(crate) fn print_warning(msg: &str) {
+    if supports_color::on(Stream::Stderr).is_some() {
+        eprintln!("\x1b[33mfitz: warning: {msg}\x1b[0m");
+    } else {
+        eprintln!("fitz: warning: {msg}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

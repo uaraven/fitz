@@ -363,8 +363,31 @@ mod tests {
         write_mosaic_fits(&input, 4, 4, None);
 
         let output = tmp.path().join("raw.tiff");
-        let err = debayer_file(&input, &output, &DebayerOptions::default()).unwrap_err();
+        let opts = DebayerOptions {
+            force_demosaic: true,
+            ..DebayerOptions::default()
+        };
+        let err = debayer_file(&input, &output, &opts).unwrap_err();
         assert!(err.to_string().contains("Bayer pattern"));
+    }
+
+    #[test]
+    fn debayer_treats_1_channel_no_bayerpat_as_already_debayered_mono() {
+        // No BAYERPAT and no --pattern/--force-demosaic on a 2D image is assumed
+        // to already be a debayered monochrome image, not an undebayered mosaic.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mono.fits");
+        write_mosaic_fits(&input, 4, 4, None);
+
+        let output = tmp.path().join("mono.tiff");
+        let opts = DebayerOptions {
+            format: OutputFormat::Tiff,
+            ..DebayerOptions::default()
+        };
+        debayer_file(&input, &output, &opts).unwrap();
+
+        let data = std::fs::read(&output).unwrap();
+        assert!(data.starts_with(b"II") || data.starts_with(b"MM"));
     }
 
     #[test]

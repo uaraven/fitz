@@ -76,7 +76,7 @@ Decompression restores the original image header, keeping its metadata (includin
 
 ### debayer
 
-Debayers a FITS mosaic image and saves it as a FITS (3-channel) or TIFF file. The Bayer pattern is retrieved from the FITS headers and can be overwritten with `--pattern` parameter. If the input file is already a 3-plane RGB image, the demosaic step is skipped and a notice is printed to stdout. Pass `--force-demosaic` if an input is actually a raw mosaic that happens to have 3 planes for some other reason, so it isn't silently treated as RGB; this requires a Bayer pattern from either `--pattern` or the header.
+Debayers a FITS mosaic image and saves it as a FITS (3-channel) or TIFF file. The Bayer pattern is retrieved from the FITS headers and can be overwritten with `--pattern` parameter. If the input file is already a 3-plane RGB image, the demosaic step is skipped and a notice is printed to stdout. Likewise, a 1-channel image with no `BAYERPAT` header is assumed to already be a debayered monochrome image; a warning is printed and the demosaic step is skipped. Pass `--force-demosaic` if an input is actually raw sensor data that happens to look like one of these cases, so it isn't silently skipped; this requires a Bayer pattern from either `--pattern` or the header.
 
 When `-o`/`--output` is not given, the output file is named `{input-stem}_debayer.{ext}` next to the input, where `ext` is `fits` or `tiff` depending on `--format`.
 
@@ -107,6 +107,8 @@ Applies an automatic screen-transfer-function (STF/MTF) stretch to a FITS image 
 
 The stretch derives its shadows clip and midtones balance from each image's own statistics (median and median absolute deviation), pulling the background up to a consistent target brightness. By default each color channel is stretched independently, which also neutralizes the background color cast. Pass `--linked-channel` to apply one shared stretch to all channels instead, preserving the original color balance.
 
+The target background brightness defaults to `0.25` (of the full `[0, 1]` range); pass `--brightness` with a higher value (strictly between 0 and 1) if the stretched image still looks too dark, or a lower value to darken it.
+
 When `-o`/`--output` is not given, the output file is named `{input-stem}_stretch.{ext}` next to the input, where `ext` is `fits` or `tiff` depending on `--format`.
 
 ```
@@ -120,6 +122,8 @@ Options:
       --linked-channel     Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
       --pattern <PATTERN>  Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
       --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB image
+      --brightness <BRIGHTNESS>
+                           Target background brightness the auto-stretch pulls the image towards (strictly between 0 and 1); higher values produce a brighter image [default: 0.25]
   -f, --output-format <FORMAT>
                            Output file format [default: fits] (TIFF or FITS)
   -o, --output <OUTPUT>    Write output to this file, or to this folder if processing multiple files
@@ -163,7 +167,7 @@ Prints a human-readable summary of each FITS file without writing anything. Repo
 
  - **Resolution** — image width × height.
  - **Bit depth** — Number of bits per pixel.
- - **Channels** — `3` for an already-debayered RGB, otherwise `1` (a raw mosaic or monochrome frame).
+ - **Channels** — `3` for an already-debayered RGB, otherwise `1` (a raw mosaic, or an already-debayered monochrome frame when no `BAYERPAT` header is present).
  - **Bayer** — the Bayer/CFA pattern, shown for raw mosaics.
  - **RA / DEC** — image-center sky coordinates, when present. 
  - **Rotation** — object/camera rotation angle in degrees.
@@ -231,8 +235,11 @@ Options:
       --linked-channel     Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
       --pattern <PATTERN>  Bayer pattern of the sensor; if omitted, read from the FITS BAYERPAT header [possible values: RGGB, GBRG, BGGR, GRBG]
       --force-demosaic     Always demosaic, even if the input looks like an already-debayered RGB image
+      --brightness <BRIGHTNESS>
+                           Target background brightness the auto-stretch pulls the image towards (strictly between 0 and 1); higher values produce a brighter image [default: 0.25]
       --graphics           Force kitty graphics protocol rendering, skipping auto-detection
       --truecolor          Force true-color ANSI half-block rendering, skipping auto-detection
+      --fallback           Force compatibility fallback ASCII rendering using only 216 colours
   -v, --verbose            Print each file being processed
   -j, --jobs <JOBS>        Number of files to process in parallel (default: number of CPU cores)
   -h, --help               Print help

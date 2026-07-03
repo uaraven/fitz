@@ -52,6 +52,7 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
         opts.pattern,
         opts.force_demosaic,
         opts.linked,
+        opts.brightness,
         opts.verbose,
     )?;
 
@@ -289,7 +290,8 @@ fn resize_rgb(src: &[u16], src_w: usize, src_h: usize, dst_w: usize, dst_h: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::test_data;
+    use crate::test_support::{test_data, write_mosaic_fits};
+    use tempfile::TempDir;
 
     #[test]
     fn fit_dimensions_is_width_limited_for_landscape() {
@@ -420,7 +422,38 @@ mod tests {
         // Full pipeline on the bundled frame: it must complete and emit at
         // least one half-block cell.
         let input = test_data("uncompressed.fit");
-        let (w, h, stretched, _) = load_and_stretch(&input, None, false, false, false).unwrap();
+        let (w, h, stretched, _) = load_and_stretch(
+            &input,
+            None,
+            false,
+            false,
+            crate::stretch::DEFAULT_BRIGHTNESS,
+            false,
+        )
+        .unwrap();
+
+        let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
+        let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
+        assert!(text.contains('▄'));
+    }
+
+    #[test]
+    fn preview_treats_1_channel_no_bayerpat_as_already_debayered_mono() {
+        // Previewing a plain, already-debayered monochrome FITS file (no
+        // BAYERPAT header) must not fail demanding a Bayer pattern.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mono.fits");
+        write_mosaic_fits(&input, 8, 6, None);
+
+        let (w, h, stretched, _) = load_and_stretch(
+            &input,
+            None,
+            false,
+            false,
+            crate::stretch::DEFAULT_BRIGHTNESS,
+            false,
+        )
+        .unwrap();
 
         let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
         let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
@@ -432,7 +465,15 @@ mod tests {
         // Full pipeline on the bundled frame: load + stretch + scale to a small
         // terminal-sized box. The frame is square, so the preview must be too.
         let input = test_data("uncompressed.fit");
-        let (w, h, stretched, _) = load_and_stretch(&input, None, false, false, false).unwrap();
+        let (w, h, stretched, _) = load_and_stretch(
+            &input,
+            None,
+            false,
+            false,
+            crate::stretch::DEFAULT_BRIGHTNESS,
+            false,
+        )
+        .unwrap();
 
         let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
         assert!(pw <= 80 && ph <= 48);

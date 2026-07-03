@@ -84,6 +84,16 @@ fn parse_bpp(s: &str) -> Result<u32, String> {
     }
 }
 
+/// Validate `--brightness`: the auto-stretch's target background level must
+/// stay strictly inside `(0, 1)`, the range the MTF math requires.
+fn parse_brightness(s: &str) -> Result<f32, String> {
+    match s.parse::<f32>() {
+        Ok(v) if v > 0.0 && v < 1.0 => Ok(v),
+        Ok(_) => Err("brightness must be strictly between 0 and 1".to_string()),
+        Err(_) => Err(format!("{s:?} is not a valid number")),
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "fitz",
@@ -225,6 +235,11 @@ struct StretchArgs {
     #[arg(long)]
     force_demosaic: bool,
 
+    /// Target background brightness the auto-stretch pulls the image towards
+    /// (strictly between 0 and 1); higher values produce a brighter image
+    #[arg(long, default_value_t = stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
+    brightness: f32,
+
     /// Output file format
     #[arg(short = 'f', long = "output-format", default_value = "fits", value_parser = parse_output_format)]
     format: OutputFormat,
@@ -315,6 +330,11 @@ struct PreviewArgs {
     /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
     #[arg(long)]
     force_demosaic: bool,
+
+    /// Target background brightness the auto-stretch pulls the image towards
+    /// (strictly between 0 and 1); higher values produce a brighter image
+    #[arg(long, default_value_t = stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
+    brightness: f32,
 
     /// Force terminal graphics protocol rendering, skipping auto-detection
     #[arg(long, conflicts_with_all = ["truecolor", "fallback"])]
@@ -584,6 +604,7 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
         linked_channel,
         pattern,
         force_demosaic,
+        brightness,
         format,
         output,
         files,
@@ -595,6 +616,7 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
         linked: linked_channel,
         pattern: pattern.map(Into::into),
         force_demosaic,
+        brightness,
         format,
         output,
         multi_file: files.len() > 1,
@@ -661,6 +683,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         linked_channel,
         pattern,
         force_demosaic,
+        brightness,
         graphics,
         truecolor,
         file,
@@ -672,9 +695,10 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         linked: linked_channel,
         pattern: pattern.map(Into::into),
         force_demosaic,
+        brightness,
         force_kitty: graphics,
         force_truecolor: truecolor,
-        fallback: fallback,
+        fallback,
     };
 
     if let Err(e) = preview_file(&file, &opts) {
@@ -687,6 +711,21 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_brightness_accepts_open_interval() {
+        assert_eq!(parse_brightness("0.25"), Ok(0.25));
+        assert_eq!(parse_brightness("0.99"), Ok(0.99));
+    }
+
+    #[test]
+    fn parse_brightness_rejects_boundary_and_out_of_range() {
+        assert!(parse_brightness("0").is_err());
+        assert!(parse_brightness("1").is_err());
+        assert!(parse_brightness("-0.1").is_err());
+        assert!(parse_brightness("1.5").is_err());
+        assert!(parse_brightness("not-a-number").is_err());
+    }
 
     fn opts(output: Option<&str>, multi_file: bool) -> Options {
         Options {
