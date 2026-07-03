@@ -9,6 +9,7 @@ Fitz supports following operations on FITS files:
  - auto-stretching an image (debayering it first if needed) and saving it as a FITS or TIFF file
  - Split FITS file into separate per-channel R,G,B files, debayering if needed. 
  - Preview fits file in terminal window
+ - Copy FITS header keywords from one file onto another
 
 I started fitz to quickly uncompress files created by NINA, because some of the tools and Siril scripts have problems with compressed files, after couple of days the project expanded into what it is now.
 
@@ -34,6 +35,7 @@ When a command is given several input files, they are processed in parallel acro
  - `split` to debayer a FITS mosaic image (or split an already-debayered RGB image) and save each color channel as a separate FITS file;
  - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics);
  - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using the best quality mode available. See [Preview section](#preview) for more details.
+ - `copy-header` to copy FITS header keywords from a source file onto a target file, filling in only what the target doesn't already have.
 
  Use `--help` parameter with any command to see more options.
 
@@ -243,6 +245,27 @@ Options:
   -v, --verbose            Print each file being processed
   -j, --jobs <JOBS>        Number of files to process in parallel (default: number of CPU cores)
   -h, --help               Print help
+```
+
+### copy-header
+
+Copies FITS header keywords from `SOURCE` onto `TARGET`, filling in only the keywords `TARGET` doesn't already carry. `TARGET`'s own resolution, bit depth, channel count, pixel scaling, and any other keyword it already has are left untouched — only genuinely missing metadata (object name, sky coordinates, filter, gain, HISTORY/COMMENT cards, …) is added. If `TARGET` is already a debayered 3-plane image, `BAYERPAT` (and the related CFA offset keywords) from `SOURCE` is skipped even if missing, so `TARGET` doesn't start looking like undebayered raw sensor data again.
+
+By default `TARGET` is modified in place; pass `-o`/`--output` to write the result to a different file instead, leaving `TARGET` untouched.
+
+```
+Usage: fitz copy-header [OPTIONS] <SOURCE> <TARGET>
+
+Arguments:
+  <SOURCE>  FITS file to copy header keywords from
+  <TARGET>  FITS file to copy header keywords into (modified in place unless --output is given)
+
+Options:
+  -y, --yes              Assume yes to overwrite question
+  -o, --output <OUTPUT>  Write the result to this file instead of overwriting the target in place
+  -v, --verbose          Print each file being processed
+  -j, --jobs <JOBS>      Number of files to process in parallel (default: number of CPU cores)
+  -h, --help             Print help
 ```
 
 ## Note
