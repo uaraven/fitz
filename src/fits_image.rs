@@ -218,6 +218,18 @@ pub(crate) fn load_rgb(
         return Ok((width, height, rgb));
     }
 
+    if !force_demosaic && is_debayered_mono(header, img) {
+        crate::terminal::print_warning(&format!(
+            "{}: 1-channel image with no BAYERPAT header — treating it as an already-debayered \
+             monochrome image",
+            input.display()
+        ));
+        let width = img.axes[0];
+        let height = img.axes[1];
+        let rgb = rgb_from_mono(header, img, width, height);
+        return Ok((width, height, rgb));
+    }
+
     if img.axes.len() != 2 {
         bail!(
             "{}: expected a 2D mosaic image, found {} axes",
@@ -256,6 +268,34 @@ fn rgb_from_cube(header: &Header, img: &ImageData, width: usize, height: usize) 
         px[0] = round_to_u16(scaled[i]);
         px[1] = round_to_u16(scaled[plane_len + i]);
         px[2] = round_to_u16(scaled[2 * plane_len + i]);
+    });
+    RgbBuffer::U16(out)
+}
+
+/// Replicate a single-plane (monochrome) image's samples across all three
+/// channels, producing the same interleaved `RgbBuffer` shape [`rgb_from_cube`]
+/// builds from a 3-plane cube.
+fn rgb_from_mono(header: &Header, img: &ImageData, width: usize, height: usize) -> RgbBuffer {
+    let plane_len = width * height;
+
+    if let PixelData::U8(v) = &img.pixels {
+        let mut out = vec![0u8; plane_len * 3];
+        out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
+            px[0] = v[i];
+            px[1] = v[i];
+            px[2] = v[i];
+        });
+        return RgbBuffer::U8(out);
+    }
+
+    let scaled = scaled_pixels(header, img);
+
+    let mut out = vec![0u16; plane_len * 3];
+    out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
+        let v = round_to_u16(scaled[i]);
+        px[0] = v;
+        px[1] = v;
+        px[2] = v;
     });
     RgbBuffer::U16(out)
 }
@@ -460,6 +500,15 @@ pub(crate) fn is_debayered_rgb_cube(header: &Header, img: &ImageData) -> bool {
     get_bayerpat(header).is_none() && is_rgb_cube_shape(img)
 }
 
+/// True if `img` should be treated as an already-debayered monochrome image
+/// rather than an undebayered Bayer mosaic: a single-plane (2D) image with no
+/// `BAYERPAT` header. A genuine mosaic always carries `BAYERPAT` (or needs
+/// `--pattern`/`--force-demosaic`), so a 2D image without it is assumed to
+/// already be monochrome rather than raw sensor data.
+pub(crate) fn is_debayered_mono(header: &Header, img: &ImageData) -> bool {
+    get_bayerpat(header).is_none() && img.axes.len() == 2
+}
+
 /// Copy `src`'s metadata and pixel-scaling keywords onto `dest` (see
 /// [`copy_metadata`] and [`copy_scaling`]), the pairing the compress/decompress
 /// container paths use to carry a source HDU's header onto its rebuilt output.
@@ -540,6 +589,48 @@ mod tests {
 
         let cfa = resolve_cfa(&header, None).unwrap();
         assert_eq!(cfa, CFA::RGGB);
+    }
+
+    #[test]
+    fn is_debayered_mono_true_only_for_2d_without_bayerpat() {
+        let mut header = Header::default();
+        let img2d = ImageData::new(vec![4, 3], PixelData::I16(vec![0; 12]));
+        assert!(is_debayered_mono(&header, &img2d));
+
+        header.set(BAYERPAT, HeaderValue::String("RGGB".to_string()), None);
+        assert!(!is_debayered_mono(&header, &img2d));
+
+        let cube = ImageData::new(vec![4, 3, 3], PixelData::I16(vec![0; 36]));
+        assert!(!is_debayered_mono(&Header::default(), &cube));
+    }
+
+    #[test]
+    fn load_rgb_replicates_mono_channel_across_rgb_with_warning() {
+        let header = Header::default();
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0, 1, 2, 3]));
+
+        let (width, height, rgb) =
+            load_rgb(&header, &img, Path::new("mono.fits"), None, false, false).unwrap();
+
+        assert_eq!((width, height), (2, 2));
+        match rgb {
+            RgbBuffer::U16(v) => {
+                assert_eq!(v, vec![0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+            }
+            RgbBuffer::U8(_) => panic!("expected a u16 rgb buffer"),
+        }
+    }
+
+    #[test]
+    fn load_rgb_force_demosaic_rejects_mono_without_pattern() {
+        let header = Header::default();
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0, 1, 2, 3]));
+
+        let err = match load_rgb(&header, &img, Path::new("mono.fits"), None, true, false) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error"),
+        };
+        assert!(err.to_string().contains("Bayer pattern"));
     }
 
     #[test]

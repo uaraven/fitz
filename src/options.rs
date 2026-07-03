@@ -70,6 +70,9 @@ pub struct StretchOptions {
     /// Always demosaic, even if the input looks like an already-debayered
     /// RGB image. See `DebayerOptions::force_demosaic`.
     pub force_demosaic: bool,
+    /// Target background level (in `(0, 1)`) the auto-stretch pulls the
+    /// median towards; higher values brighten the result.
+    pub brightness: f32,
     pub format: OutputFormat,
     pub output: Option<PathBuf>,
     pub multi_file: bool,
@@ -83,6 +86,7 @@ impl Default for StretchOptions {
             linked: false,
             pattern: None,
             force_demosaic: false,
+            brightness: crate::stretch::DEFAULT_BRIGHTNESS,
             format: OutputFormat::Fits,
             output: None,
             multi_file: false,
@@ -114,6 +118,9 @@ pub struct PreviewOptions {
     /// Always demosaic, even if the input looks like an already-debayered
     /// RGB image. See `DebayerOptions::force_demosaic`.
     pub force_demosaic: bool,
+    /// Target background level (in `(0, 1)`) the auto-stretch pulls the
+    /// median towards; higher values brighten the result.
+    pub brightness: f32,
     /// Force kitty graphics protocol rendering, bypassing auto-detection.
     pub force_kitty: bool,
     /// Force true-color ASCII rendering, bypassing auto-detection.

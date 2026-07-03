@@ -21,8 +21,9 @@ type Sample = f32;
 
 /// Shadows clipping point, in units of (normalized) MAD below the median.
 const SHADOWS_CLIP: Sample = -2.8;
-/// Target mean background the stretched median is pulled towards.
-const TARGET_BG: Sample = 0.25;
+/// Default `--brightness`: the target background level the stretched median is
+/// pulled towards, absent user override. Must stay strictly inside `(0, 1)`.
+pub(crate) const DEFAULT_BRIGHTNESS: f32 = 0.25;
 /// Scale factor turning the median absolute deviation into a robust estimate of
 /// the standard deviation for a normal distribution.
 const MAD_NORM: Sample = 1.4826;
@@ -38,6 +39,7 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
         opts.pattern,
         opts.force_demosaic,
         opts.linked,
+        opts.brightness,
         opts.verbose,
     )?;
 
@@ -68,6 +70,7 @@ pub(crate) fn load_and_stretch(
     pattern: Option<CFA>,
     force_demosaic: bool,
     linked: bool,
+    brightness: f32,
     verbose: bool,
 ) -> Result<(usize, usize, Vec<u16>, Header)> {
     print_step(verbose, "reading");
@@ -80,7 +83,7 @@ pub(crate) fn load_and_stretch(
     let (width, height, rgb) = load_rgb(header, img, input, pattern, force_demosaic, verbose)?;
 
     print_step(verbose, "stretching");
-    let stretched = auto_stretch(&rgb, linked);
+    let stretched = auto_stretch(&rgb, linked, brightness);
     Ok((width, height, stretched, header.clone()))
 }
 
@@ -88,11 +91,13 @@ pub(crate) fn load_and_stretch(
 /// interleaved 16-bit samples in `[0, 65535]`. With `linked`, one set of stretch
 /// parameters (derived from all channels together) is applied to every channel;
 /// otherwise each channel is stretched from its own statistics, which also acts
-/// as an automatic background neutralization.
+/// as an automatic background neutralization. `brightness` is the target
+/// background level (in `(0, 1)`) the stretched median is pulled towards; higher
+/// values brighten the result (see `--brightness`).
 ///
 /// This is a pure, in-memory transform so callers can do something other than
 /// write the result to a file.
-pub fn auto_stretch(rgb: &RgbBuffer, linked: bool) -> Vec<u16> {
+pub fn auto_stretch(rgb: &RgbBuffer, linked: bool, brightness: f32) -> Vec<u16> {
     let mut samples = to_normalized(rgb);
 
     // Linked mode derives one stretch from all samples; otherwise the
@@ -103,7 +108,7 @@ pub fn auto_stretch(rgb: &RgbBuffer, linked: bool) -> Vec<u16> {
     // the transfer in a single parallel pass. The math (and thus the output) is
     // identical to processing the channels one after another.
     if linked {
-        let (shadows, midtones) = find_params(&mut samples.clone());
+        let (shadows, midtones) = find_params(&mut samples.clone(), brightness);
         samples
             .par_iter_mut()
             .for_each(|v| *v = transfer(*v, shadows, midtones));
@@ -113,7 +118,7 @@ pub fn auto_stretch(rgb: &RgbBuffer, linked: bool) -> Vec<u16> {
             .map(|start| {
                 let mut chan: Vec<Sample> =
                     samples.iter().skip(start).step_by(3).copied().collect();
-                find_params(&mut chan)
+                find_params(&mut chan, brightness)
             })
             .collect();
         samples.par_chunks_mut(3).for_each(|px| {
@@ -145,9 +150,11 @@ fn to_normalized(rgb: &RgbBuffer) -> Vec<Sample> {
 }
 
 /// Derive the `(shadows, midtones)` STF parameters from a set of normalized
-/// samples. `samples` is consumed as scratch: it's reordered by the median
-/// selection and then overwritten in place with absolute deviations.
-fn find_params(samples: &mut [Sample]) -> (Sample, Sample) {
+/// samples, targeting `target_bg` (in `(0, 1)`) as the background brightness the
+/// median should map to (see `--brightness`). `samples` is consumed as scratch:
+/// it's reordered by the median selection and then overwritten in place with
+/// absolute deviations.
+fn find_params(samples: &mut [Sample], target_bg: Sample) -> (Sample, Sample) {
     let med = median(samples);
 
     for v in samples.iter_mut() {
@@ -160,7 +167,7 @@ fn find_params(samples: &mut [Sample]) -> (Sample, Sample) {
     // inputs (a near-constant image, or one with a very large spread) can push
     // `med - shadows` to 0 or >= 1, where `mtf` would otherwise return exactly
     // 0 or 1 and collapse the whole stretch to solid white or black.
-    let midtones = mtf(TARGET_BG, med - shadows).clamp(Sample::EPSILON, 1.0 - Sample::EPSILON);
+    let midtones = mtf(target_bg, med - shadows).clamp(Sample::EPSILON, 1.0 - Sample::EPSILON);
 
     (shadows, midtones)
 }
@@ -301,7 +308,7 @@ mod tests {
         let samples: Vec<u16> = (0..width * height * 3)
             .map(|i| ((i % (width * height)) as Sample / max * OUT_MAX) as u16)
             .collect();
-        auto_stretch(&RgbBuffer::U16(samples), linked)
+        auto_stretch(&RgbBuffer::U16(samples), linked, DEFAULT_BRIGHTNESS)
     }
 
     #[test]
@@ -326,7 +333,7 @@ mod tests {
                 [v, v, v]
             })
             .collect();
-        let out = auto_stretch(&RgbBuffer::U16(samples), false);
+        let out = auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS);
         assert!(out.iter().any(|&v| v > 0), "output collapsed to all black");
         assert!(
             out.iter().any(|&v| v < u16::MAX),
@@ -340,7 +347,7 @@ mod tests {
         // keeps `mtf` away from its degenerate `m = 0` (solid white) case.
         let n = 256usize;
         let samples: Vec<u16> = (0..n).flat_map(|_| [20000u16, 20000, 20000]).collect();
-        let out = auto_stretch(&RgbBuffer::U16(samples), false);
+        let out = auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS);
         assert!(
             out.iter().any(|&v| v < u16::MAX),
             "flat image went all white"
@@ -358,7 +365,7 @@ mod tests {
                 [v, v, v]
             })
             .collect();
-        let out = auto_stretch(&RgbBuffer::U16(samples), false);
+        let out = auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS);
         let reds: Vec<u16> = out.iter().step_by(3).copied().collect();
         assert!(reds.windows(2).all(|w| w[1] >= w[0]));
     }
@@ -375,17 +382,43 @@ mod tests {
                 [v, v, v]
             })
             .collect();
-        let mut out: Vec<Sample> = auto_stretch(&RgbBuffer::U16(samples), false)
-            .iter()
-            .step_by(3)
-            .map(|&v| v as Sample)
-            .collect();
+        let mut out: Vec<Sample> =
+            auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS)
+                .iter()
+                .step_by(3)
+                .map(|&v| v as Sample)
+                .collect();
         let med = median(&mut out);
-        let target = TARGET_BG * OUT_MAX;
+        let target = DEFAULT_BRIGHTNESS * OUT_MAX;
         assert!(
             (med - target).abs() < 0.05 * OUT_MAX,
             "median {med} not near target {target}"
         );
+    }
+
+    #[test]
+    fn higher_brightness_pulls_median_higher() {
+        // Same faint image stretched at two different --brightness targets: the
+        // brighter target must produce a visibly higher output median.
+        let n = 4096usize;
+        let samples: Vec<u16> = (0..n)
+            .flat_map(|i| {
+                let v = 100 + (i % 256) as u16;
+                [v, v, v]
+            })
+            .collect();
+        let buf = RgbBuffer::U16(samples);
+
+        let median_at = |brightness: f32| {
+            let mut out: Vec<Sample> = auto_stretch(&buf, false, brightness)
+                .iter()
+                .step_by(3)
+                .map(|&v| v as Sample)
+                .collect();
+            median(&mut out)
+        };
+
+        assert!(median_at(0.6) > median_at(0.25));
     }
 
     #[test]
@@ -402,8 +435,8 @@ mod tests {
             })
             .collect();
         let buf = RgbBuffer::U16(samples);
-        let per_channel = auto_stretch(&buf, false);
-        let linked = auto_stretch(&buf, true);
+        let per_channel = auto_stretch(&buf, false, DEFAULT_BRIGHTNESS);
+        let linked = auto_stretch(&buf, true, DEFAULT_BRIGHTNESS);
         assert_ne!(per_channel, linked);
     }
 
@@ -478,8 +511,27 @@ mod tests {
         write_mosaic_fits(&input, 4, 4, None);
 
         let output = tmp.path().join("out.fits");
-        let err = stretch_file(&input, &output, &StretchOptions::default()).unwrap_err();
+        let opts = StretchOptions {
+            force_demosaic: true,
+            ..StretchOptions::default()
+        };
+        let err = stretch_file(&input, &output, &opts).unwrap_err();
         assert!(err.to_string().contains("Bayer pattern"));
+    }
+
+    #[test]
+    fn stretch_treats_1_channel_no_bayerpat_as_already_debayered_mono() {
+        // No BAYERPAT and no --pattern/--force-demosaic on a 2D image is assumed
+        // to already be a debayered monochrome image, not an undebayered mosaic.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mono.fits");
+        write_mosaic_fits(&input, 4, 4, None);
+
+        let output = tmp.path().join("out.fits");
+        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+
+        let fits = FitsFile::from_file(&output).unwrap();
+        assert!(matches!(fits.primary().data, HduData::Image(_)));
     }
 
     #[test]

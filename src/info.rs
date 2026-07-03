@@ -193,7 +193,7 @@ fn channel_label(channels: usize, header: &Header) -> String {
     }
     match get_bayerpat(header) {
         Some(_) => "mosaic".to_string(),
-        None => "monochrome / undebayered".to_string(),
+        None => "monochrome (debayered)".to_string(),
     }
 }
 
@@ -773,6 +773,17 @@ mod tests {
         assert!(!is_rgb_cube);
         assert_eq!(channel_label(1, header), "mosaic");
         assert_eq!(get_bayerpat(header).map(str::trim), Some("RGGB"));
+    }
+
+    #[test]
+    fn mono_without_bayerpat_reports_debayered_monochrome() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mono.fits");
+        write_mosaic_fits(&input, 4, 4, None);
+
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, _img) = find_image_hdu(&fits, &input, false).unwrap();
+        assert_eq!(channel_label(1, header), "monochrome (debayered)");
     }
 
     #[test]
