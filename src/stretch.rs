@@ -568,7 +568,16 @@ mod tests {
             .unwrap()
             .trim()
             .to_string();
-        let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
+        let actual = match format {
+            OutputFormat::Fits => {
+                let fits = FitsFile::from_file(&output).unwrap();
+                let (_, img) = find_image_hdu(&fits, &output, false).unwrap();
+                format!("{:x}", Sha256::digest(img.pixels.to_bytes()))
+            }
+            OutputFormat::Tiff => {
+                format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()))
+            }
+        };
         assert_eq!(actual, expected);
     }
 

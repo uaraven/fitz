@@ -3,6 +3,7 @@ mod copy_header;
 mod debayer;
 mod decompress;
 mod fits_image;
+mod hash;
 mod info;
 mod kitty;
 mod options;
@@ -26,6 +27,7 @@ use rayon::prelude::*;
 
 use compress::compress_file;
 use copy_header::copy_header_file;
+use hash::{HashTarget, hash_file};
 use debayer::{OutputFormat, debayer_file, parse_output_format};
 use decompress::decompress_file;
 use info::info_file;
@@ -147,6 +149,9 @@ enum Command {
     /// Copy FITS header keywords from one image onto another, filling in only what the target is missing
     #[command(name = "copy-header")]
     CopyHeader(CopyHeaderArgs),
+    /// Calculate SHA-256 hash of a FITS file
+    #[command(hide = true)]
+    Hash(HashArgs),
 }
 
 #[derive(clap::Args)]
@@ -359,6 +364,20 @@ struct PreviewArgs {
 }
 
 #[derive(clap::Args)]
+struct HashArgs {
+    /// Hash only the image pixel data (with transparent decompression for .fz files)
+    #[arg(long, conflicts_with = "header")]
+    image: bool,
+
+    /// Hash only the FITS header of the image HDU
+    #[arg(long, conflicts_with = "image")]
+    header: bool,
+
+    /// FITS files to hash
+    files: Vec<PathBuf>,
+}
+
+#[derive(clap::Args)]
 struct CopyHeaderArgs {
     /// Assume yes to overwrite question
     #[arg(short = 'y', long)]
@@ -512,6 +531,7 @@ fn main() -> ExitCode {
         Command::Info(a) => run_info(a, verbose),
         Command::Preview(a) => run_preview(a, verbose),
         Command::CopyHeader(a) => run_copy_header(a, verbose),
+        Command::Hash(a) => run_hash(a),
     }
 }
 
@@ -730,6 +750,18 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+fn run_hash(args: HashArgs) -> ExitCode {
+    let HashArgs { image, header, files } = args;
+    let target = if image {
+        HashTarget::Image
+    } else if header {
+        HashTarget::Header
+    } else {
+        HashTarget::File
+    };
+    process_files(&files, |path| hash_file(path, target))
 }
 
 /// Unlike the batch commands, `copy-header` operates on exactly one
