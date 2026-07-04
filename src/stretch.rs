@@ -474,6 +474,44 @@ mod tests {
     }
 
     #[test]
+    fn stretch_float_mono_fits_is_not_black() {
+        // Drizzle-processed images are often stored as F32 with values in [0, 1].
+        // round_to_u16 would clip all values < 0.5 to 0, producing an all-black
+        // result. scale_physical_to_u16 must rescale to [0, 65535] first.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mono_f32.fits");
+        crate::test_support::write_mono_f32_fits(&input, 8, 8);
+
+        let output = tmp.path().join("out.fits");
+        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+
+        let fits = FitsFile::from_file(&output).unwrap();
+        let (_, img) = find_image_hdu(&fits, &output, false).unwrap();
+        assert!(
+            img.pixels.to_bytes().iter().any(|&b| b > 0),
+            "float mono FITS produced an all-black stretched output"
+        );
+    }
+
+    #[test]
+    fn stretch_float_rgb_cube_fits_is_not_black() {
+        // Same as above but for a 3-plane F32 RGB cube (the rgb_from_cube path).
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("rgb_f32.fits");
+        crate::test_support::write_rgb_cube_f32_fits(&input, 8, 8);
+
+        let output = tmp.path().join("out.fits");
+        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+
+        let fits = FitsFile::from_file(&output).unwrap();
+        let (_, img) = find_image_hdu(&fits, &output, false).unwrap();
+        assert!(
+            img.pixels.to_bytes().iter().any(|&b| b > 0),
+            "float RGB cube FITS produced an all-black stretched output"
+        );
+    }
+
+    #[test]
     fn stretch_default_format_is_fits() {
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("raw.fits");
