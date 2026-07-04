@@ -85,3 +85,28 @@ pub(crate) fn write_rgb_cube_fits(path: &Path, width: usize, height: usize) {
     let fits = FitsFile::with_primary_image(img);
     fits.to_file(path).unwrap();
 }
+
+/// Write a 2D single-plane F32 monochrome FITS with values scaled to [0, 1].
+/// Simulates drizzle-processed output, which typically uses float pixels in a
+/// small range rather than the [0, 65535] range that `round_to_u16` assumes.
+pub(crate) fn write_mono_f32_fits(path: &Path, width: usize, height: usize) {
+    let n = width * height;
+    let pixels: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
+    let img = ImageData::new(vec![width, height], PixelData::F32(pixels));
+    let fits = FitsFile::with_primary_image(img);
+    fits.to_file(path).unwrap();
+}
+
+/// Write a 3-plane F32 RGB cube with values scaled to [0, 1] per channel.
+pub(crate) fn write_rgb_cube_f32_fits(path: &Path, width: usize, height: usize) {
+    let n = width * height;
+    let mut pixels = Vec::with_capacity(n * 3);
+    for c in 0..3usize {
+        for i in 0..n {
+            pixels.push((c * n + i) as f32 / (3 * n) as f32);
+        }
+    }
+    let img = ImageData::new(vec![width, height, 3], PixelData::F32(pixels));
+    let fits = FitsFile::with_primary_image(img);
+    fits.to_file(path).unwrap();
+}
