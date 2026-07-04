@@ -256,6 +256,34 @@ pub(crate) fn load_rgb(
         .with_context(|| format!("{}: debayering failed", input.display()))
 }
 
+/// Convert physical pixel values (obtained via [`scaled_pixels`]) to `u16`.
+///
+/// For float source data (`F32`/`F64`) the physical range can be anything — for
+/// example drizzle output often uses [0, 1] — so plain rounding would clip
+/// almost every value to 0.  In that case we scale linearly so the maximum
+/// maps to `u16::MAX`, preserving the relative distribution for the stretch.
+/// For integer sources the values already fit in [0, 65535], so we round directly.
+fn scale_physical_to_u16(pixels: &PixelData, values: &[f64]) -> Vec<u16> {
+    match pixels {
+        PixelData::F32(_) | PixelData::F64(_) => {
+            let max = values
+                .par_iter()
+                .copied()
+                .filter(|v| v.is_finite())
+                .reduce(|| 0.0_f64, f64::max);
+            if max <= 0.0 {
+                return vec![0u16; values.len()];
+            }
+            let factor = u16::MAX as f64 / max;
+            values
+                .par_iter()
+                .map(|&v| round_to_u16(v.max(0.0) * factor))
+                .collect()
+        }
+        _ => values.par_iter().map(|&v| round_to_u16(v)).collect(),
+    }
+}
+
 /// Interleave an already-debayered 3-plane RGB cube into an `RgbBuffer`,
 /// without running it through the demosaic algorithm.
 fn rgb_from_cube(header: &Header, img: &ImageData, width: usize, height: usize) -> RgbBuffer {
@@ -272,12 +300,13 @@ fn rgb_from_cube(header: &Header, img: &ImageData, width: usize, height: usize) 
     }
 
     let scaled = scaled_pixels(header, img);
+    let u16_vals = scale_physical_to_u16(&img.pixels, &scaled);
 
     let mut out = vec![0u16; plane_len * 3];
     out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
-        px[0] = round_to_u16(scaled[i]);
-        px[1] = round_to_u16(scaled[plane_len + i]);
-        px[2] = round_to_u16(scaled[2 * plane_len + i]);
+        px[0] = u16_vals[i];
+        px[1] = u16_vals[plane_len + i];
+        px[2] = u16_vals[2 * plane_len + i];
     });
     RgbBuffer::U16(out)
 }
@@ -299,10 +328,11 @@ fn rgb_from_mono(header: &Header, img: &ImageData, width: usize, height: usize) 
     }
 
     let scaled = scaled_pixels(header, img);
+    let u16_vals = scale_physical_to_u16(&img.pixels, &scaled);
 
     let mut out = vec![0u16; plane_len * 3];
     out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
-        let v = round_to_u16(scaled[i]);
+        let v = u16_vals[i];
         px[0] = v;
         px[1] = v;
         px[2] = v;
