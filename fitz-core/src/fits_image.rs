@@ -1,4 +1,4 @@
-//! FITS image helpers shared by the `debayer` and `split` commands: locating
+//! FITS image helpers shared by the `debayer`/`stretch`/`split` logic: locating
 //! the image HDU, resolving the Bayer pattern, demosaicing a mosaic into an
 //! interleaved RGB buffer, and writing pixel data back out as FITS.
 
@@ -14,9 +14,9 @@ use rayon::prelude::*;
 use tiff::encoder::{TiffEncoder, colortype};
 
 /// FITS header keywords used across the debayer/split commands.
-pub(crate) const BAYERPAT: &str = "BAYERPAT";
-pub(crate) const BSCALE: &str = "BSCALE";
-pub(crate) const BZERO: &str = "BZERO";
+pub const BAYERPAT: &str = "BAYERPAT";
+pub const BSCALE: &str = "BSCALE";
+pub const BZERO: &str = "BZERO";
 
 /// CFA-mosaic keywords that become meaningless once an image is debayered into
 /// an RGB image. Dropped by the image commands (debayer/stretch/split) when
@@ -24,8 +24,7 @@ pub(crate) const BZERO: &str = "BZERO";
 /// mosaic faithfully. `load_rgb` also relies on the absence of `BAYERPAT` to
 /// detect an already-debayered 3-plane cube, so leaving it would break
 /// re-processing the output.
-pub(crate) const CFA_KEYWORDS: &[&str] =
-    &["BAYERPAT", "XBAYROFF", "YBAYROFF", "BAYOFFX", "BAYOFFY"];
+pub const CFA_KEYWORDS: &[&str] = &["BAYERPAT", "XBAYROFF", "YBAYROFF", "BAYOFFX", "BAYOFFY"];
 
 #[cfg(target_endian = "little")]
 const NATIVE_BAYER_DEPTH16: BayerDepth = BayerDepth::Depth16LE;
@@ -34,7 +33,7 @@ const NATIVE_BAYER_DEPTH16: BayerDepth = BayerDepth::Depth16BE;
 
 /// An interleaved (R, G, B, R, G, B, …) image, either 8- or 16-bit per sample
 /// depending on the source's bit depth.
-pub(crate) enum RgbBuffer {
+pub enum RgbBuffer {
     U8(Vec<u8>),
     U16(Vec<u16>),
 }
@@ -47,17 +46,15 @@ pub(crate) enum RgbBuffer {
 /// compressed image the returned header is the compressed HDU's own header,
 /// which carries the original keywords (BAYERPAT, BSCALE/BZERO, RA/DEC, …)
 /// alongside the `Z*` compression keywords.
-pub(crate) fn find_image_hdu<'a>(
+pub fn find_image_hdu<'a>(
     fits: &'a FitsFile,
     input: &Path,
-    verbose: bool,
 ) -> Result<(&'a Header, Cow<'a, ImageData>)> {
     for hdu in &fits.hdus {
         if let HduData::Image(img) = &hdu.data {
             return Ok((&hdu.header, Cow::Borrowed(img)));
         }
         if let Some(cimg) = hdu.as_compressed_image() {
-            print_step(verbose, "decompressing");
             let img = cimg
                 .decompress()
                 .with_context(|| format!("{}: decompression failed", input.display()))?;
@@ -71,13 +68,13 @@ pub(crate) fn find_image_hdu<'a>(
 /// tile-compressed image extension), without decompressing it. Used by
 /// commands that only need to inspect or edit the HDU's header, not its pixel
 /// data (unlike [`find_image_hdu`], which decompresses eagerly).
-pub(crate) fn find_image_hdu_index(fits: &FitsFile) -> Option<usize> {
-    fits.hdus.iter().position(|hdu| {
-        matches!(hdu.data, HduData::Image(_)) || hdu.as_compressed_image().is_some()
-    })
+pub fn find_image_hdu_index(fits: &FitsFile) -> Option<usize> {
+    fits.hdus
+        .iter()
+        .position(|hdu| matches!(hdu.data, HduData::Image(_)) || hdu.as_compressed_image().is_some())
 }
 
-pub(crate) fn resolve_cfa(header: &Header, cli_pattern: Option<CFA>) -> Result<CFA> {
+pub fn resolve_cfa(header: &Header, cli_pattern: Option<CFA>) -> Result<CFA> {
     if let Some(p) = cli_pattern {
         return Ok(p);
     }
@@ -99,25 +96,25 @@ fn parse_cfa(s: &str) -> Option<CFA> {
 }
 
 /// Round a physical pixel value to the nearest u16, clamping to its range.
-pub(crate) fn round_to_u16(v: f64) -> u16 {
+pub fn round_to_u16(v: f64) -> u16 {
     v.round().clamp(0.0, 65535.0) as u16
 }
 
 /// Narrow a 16-bit sample to 8-bit by keeping its high byte. The single source
 /// of truth for the `>> 8` convention shared by 8-bpp debayer output and the
 /// terminal preview (kitty and ANSI renderers).
-pub(crate) fn high_byte(sample: u16) -> u8 {
+pub fn high_byte(sample: u16) -> u8 {
     (sample >> 8) as u8
 }
 
 /// [`high_byte`] applied across an interleaved 16-bit RGB buffer.
-pub(crate) fn rgb16_to_rgb8(src: &[u16]) -> Vec<u8> {
+pub fn rgb16_to_rgb8(src: &[u16]) -> Vec<u8> {
     src.par_iter().copied().map(high_byte).collect()
 }
 
 /// The BSCALE/BZERO scaling recorded in the header, defaulting to the FITS
 /// no-op values (1.0/0.0) when the keywords are absent.
-pub(crate) fn bscale_bzero(header: &Header) -> (f64, f64) {
+pub fn bscale_bzero(header: &Header) -> (f64, f64) {
     (
         header.get_float(BSCALE).unwrap_or(1.0),
         header.get_float(BZERO).unwrap_or(0.0),
@@ -126,7 +123,7 @@ pub(crate) fn bscale_bzero(header: &Header) -> (f64, f64) {
 
 /// Read the image's physical pixel values, applying the BSCALE/BZERO scaling
 /// recorded in the header (defaulting to 1.0/0.0 when absent).
-pub(crate) fn scaled_pixels(header: &Header, img: &ImageData) -> Vec<f64> {
+pub fn scaled_pixels(header: &Header, img: &ImageData) -> Vec<f64> {
     let (bscale, bzero) = bscale_bzero(header);
     img.scaled_values(bscale, bzero)
 }
@@ -163,7 +160,7 @@ fn scaled_u16_bytes(header: &Header, img: &ImageData) -> Vec<u8> {
     }
 }
 
-pub(crate) fn demosaic_to_rgb(
+pub fn demosaic_to_rgb(
     header: &Header,
     img: &ImageData,
     cfa: CFA,
@@ -203,57 +200,86 @@ pub(crate) fn demosaic_to_rgb(
     Ok((width, height, rgb))
 }
 
+/// What [`load_rgb`] had to do to produce its RGB buffer, so a caller can
+/// report or otherwise react to the "already debayered" cases without
+/// `load_rgb` itself doing any terminal I/O.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LoadRgbNotice {
+    /// The source was a raw Bayer mosaic and was demosaiced.
+    Demosaiced,
+    /// A 3-plane image with no `BAYERPAT` header was treated as already
+    /// debayered and reinterleaved as-is.
+    AlreadyDebayeredRgbCube,
+    /// A single-plane image with no `BAYERPAT` header was treated as an
+    /// already-debayered monochrome image and replicated across channels.
+    AlreadyDebayeredMono,
+}
+
+/// The result of [`load_rgb`]: the interleaved RGB buffer, its dimensions, and
+/// a [`LoadRgbNotice`] describing which path produced it.
+pub struct LoadedRgb {
+    pub width: usize,
+    pub height: usize,
+    pub rgb: RgbBuffer,
+    pub notice: LoadRgbNotice,
+}
+
 /// Load an image as an interleaved RGB buffer: demosaic a 2D Bayer mosaic, or
-/// reinterleave an already-debayered 3-plane RGB cube as-is. Detection mirrors
-/// the `debayer` command: a 3-plane image with no BAYERPAT header is treated as
-/// already debayered unless `force_demosaic` is set.
-pub(crate) fn load_rgb(
+/// reinterleave an already-debayered 3-plane RGB cube as-is. Detection: a
+/// 3-plane image with no BAYERPAT header is treated as already debayered
+/// unless `force_demosaic` is set. Callers decide whether/how to surface the
+/// returned [`LoadRgbNotice`] (a CLI prints a message, a GUI might show a
+/// badge) — this function itself performs no I/O beyond the FITS data.
+pub fn load_rgb(
     header: &Header,
     img: &ImageData,
-    input: &Path,
     pattern: Option<CFA>,
     force_demosaic: bool,
-    verbose: bool,
-) -> Result<(usize, usize, RgbBuffer)> {
+) -> Result<LoadedRgb> {
     let already_debayered = !force_demosaic && is_debayered_rgb_cube(header, img);
 
     if already_debayered {
-        println!(
-            "{}: already debayered — skipping debayer step",
-            input.display()
-        );
         let width = img.axes[0];
         let height = img.axes[1];
         let rgb = rgb_from_cube(header, img, width, height);
-        return Ok((width, height, rgb));
+        return Ok(LoadedRgb {
+            width,
+            height,
+            rgb,
+            notice: LoadRgbNotice::AlreadyDebayeredRgbCube,
+        });
     }
 
     if !force_demosaic && is_debayered_mono(header, img) {
-        crate::terminal::print_warning(&format!(
-            "{}: 1-channel image with no BAYERPAT header — treating it as an already-debayered \
-             monochrome image",
-            input.display()
-        ));
         let width = img.axes[0];
         let height = img.axes[1];
         let rgb = rgb_from_mono(header, img, width, height);
-        return Ok((width, height, rgb));
+        return Ok(LoadedRgb {
+            width,
+            height,
+            rgb,
+            notice: LoadRgbNotice::AlreadyDebayeredMono,
+        });
     }
 
     if img.axes.len() != 2 {
         bail!(
-            "{}: expected a 2D mosaic image, found {} axes",
-            input.display(),
+            "expected a 2D mosaic image, found {} axes",
             img.axes.len()
         );
     }
 
-    let cfa = resolve_cfa(header, pattern)
-        .with_context(|| format!("{}: cannot determine Bayer pattern", input.display()))?;
+    let cfa =
+        resolve_cfa(header, pattern).with_context(|| "cannot determine Bayer pattern".to_string())?;
 
-    print_step(verbose, "debayering");
-    demosaic_to_rgb(header, img, cfa)
-        .with_context(|| format!("{}: debayering failed", input.display()))
+    let (width, height, rgb) =
+        demosaic_to_rgb(header, img, cfa).with_context(|| "debayering failed".to_string())?;
+    Ok(LoadedRgb {
+        width,
+        height,
+        rgb,
+        notice: LoadRgbNotice::Demosaiced,
+    })
 }
 
 /// Convert physical pixel values (obtained via [`scaled_pixels`]) to `u16`.
@@ -342,7 +368,7 @@ fn rgb_from_mono(header: &Header, img: &ImageData, width: usize, height: usize) 
 
 /// Split an interleaved RGB sample buffer into concatenated R, G, B planes
 /// (the same plane order [`rgb_from_cube`] expects when reading one back).
-pub(crate) fn deinterleave_to_planes<T: Copy + Send + Sync>(v: &[T]) -> Vec<T> {
+pub fn deinterleave_to_planes<T: Copy + Send + Sync>(v: &[T]) -> Vec<T> {
     let n = v.len() / 3;
     let mut out: Vec<T> = (0..n).into_par_iter().map(|i| v[i * 3]).collect();
     out.par_extend((0..n).into_par_iter().map(|i| v[i * 3 + 1]));
@@ -351,12 +377,7 @@ pub(crate) fn deinterleave_to_planes<T: Copy + Send + Sync>(v: &[T]) -> Vec<T> {
 }
 
 /// Write an interleaved 16-bit RGB image as an RGB16 TIFF.
-pub(crate) fn write_rgb16_tiff(
-    output: &Path,
-    width: usize,
-    height: usize,
-    interleaved: &[u16],
-) -> Result<()> {
+pub fn write_rgb16_tiff(output: &Path, width: usize, height: usize, interleaved: &[u16]) -> Result<()> {
     let file =
         File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
     let mut enc = TiffEncoder::new(file)
@@ -373,7 +394,7 @@ pub(crate) fn write_rgb16_tiff(
 /// round-trip. Metadata from `src_header` (minus `drop` and structural keywords)
 /// is copied onto the output, and `history`, when present, is recorded as a
 /// HISTORY card.
-pub(crate) fn write_rgb16_fits(
+pub fn write_rgb16_fits(
     output: &Path,
     width: usize,
     height: usize,
@@ -405,7 +426,7 @@ pub(crate) fn write_rgb16_fits(
 /// `drop` naming extra keywords to skip. `history`, when present, is appended as
 /// a HISTORY provenance card.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn write_pixel_fits(
+pub fn write_pixel_fits(
     output: &Path,
     axes: Vec<usize>,
     pixels: PixelData,
@@ -445,7 +466,7 @@ pub(crate) fn write_pixel_fits(
 /// set); survivors are appended after them, preserving FITS keyword ordering.
 /// Commentary cards (COMMENT/HISTORY, whose value is `None`) are copied verbatim
 /// via `push` rather than `set`.
-pub(crate) fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) {
+pub fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) {
     for kw in &src.keywords {
         if is_reserved_keyword(&kw.name) {
             continue;
@@ -472,7 +493,7 @@ pub(crate) fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]
 /// (`COMMENT`/`HISTORY`, whose value is `None`) are always appended: multiple
 /// independent annotations are normal, so they aren't deduplicated by name
 /// like a regular keyword would be.
-pub(crate) fn copy_missing_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) -> usize {
+pub fn copy_missing_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) -> usize {
     let mut copied = 0;
     for kw in &src.keywords {
         if is_reserved_keyword(&kw.name) {
@@ -496,12 +517,12 @@ pub(crate) fn copy_missing_metadata(dest: &mut Header, src: &Header, extra_drop:
 /// original `BSCALE`/`BZERO`/`BLANK` are still the correct physical
 /// interpretation. Dropping `BZERO` would, for example, silently shift an
 /// unsigned-16 image (`BZERO = 32768`) by 32768.
-pub(crate) const SCALING_KEYWORDS: &[&str] = &[BSCALE, BZERO, "BLANK"];
+pub const SCALING_KEYWORDS: &[&str] = &[BSCALE, BZERO, "BLANK"];
 
 /// Copy the [`SCALING_KEYWORDS`] present on `src` onto `dest`, used by the
 /// compress/decompress container paths to keep the physical pixel scaling that
 /// [`copy_metadata`] strips.
-pub(crate) fn copy_scaling(dest: &mut Header, src: &Header) {
+pub fn copy_scaling(dest: &mut Header, src: &Header) {
     for &name in SCALING_KEYWORDS {
         if let Some(kw) = src.find(name) {
             dest.push(kw.clone());
@@ -510,7 +531,7 @@ pub(crate) fn copy_scaling(dest: &mut Header, src: &Header) {
 }
 
 /// Append a HISTORY provenance card to `dest`.
-pub(crate) fn add_history(dest: &mut Header, text: &str) {
+pub fn add_history(dest: &mut Header, text: &str) {
     dest.push(Keyword::commentary("HISTORY", text));
 }
 
@@ -555,13 +576,13 @@ fn is_reserved_keyword(name: &str) -> bool {
     INDEXED.iter().any(|p| is_indexed(name, p))
 }
 
-pub(crate) fn get_bayerpat(header: &Header) -> Option<&str> {
+pub fn get_bayerpat(header: &Header) -> Option<&str> {
     header.get_string(BAYERPAT)
 }
 
 /// True if `img` has the shape of a debayered RGB cube: a 3-plane image
 /// (`NAXIS3=3`).
-pub(crate) fn is_rgb_cube_shape(img: &ImageData) -> bool {
+pub fn is_rgb_cube_shape(img: &ImageData) -> bool {
     img.axes.len() == 3 && img.axes[2] == 3
 }
 
@@ -570,7 +591,7 @@ pub(crate) fn is_rgb_cube_shape(img: &ImageData) -> bool {
 /// tile-compressed HDU's header still carries the original `NAXIS*` alongside
 /// its own `ZNAXIS*`, so this works without decompressing — needed by
 /// `copy-header`, which edits headers only and never touches pixel data.
-pub(crate) fn header_is_rgb_cube_shape(header: &Header) -> bool {
+pub fn header_is_rgb_cube_shape(header: &Header) -> bool {
     header.get_int("NAXIS") == Some(3) && header.get_int("NAXIS3") == Some(3)
 }
 
@@ -578,7 +599,7 @@ pub(crate) fn header_is_rgb_cube_shape(header: &Header) -> bool {
 /// than a Bayer mosaic: a 3-plane image with no `BAYERPAT` header. Shared by
 /// `load_rgb` (which uses it to skip demosaicing) and the `info` command
 /// (which uses it to decide the channel count).
-pub(crate) fn is_debayered_rgb_cube(header: &Header, img: &ImageData) -> bool {
+pub fn is_debayered_rgb_cube(header: &Header, img: &ImageData) -> bool {
     get_bayerpat(header).is_none() && is_rgb_cube_shape(img)
 }
 
@@ -587,68 +608,16 @@ pub(crate) fn is_debayered_rgb_cube(header: &Header, img: &ImageData) -> bool {
 /// `BAYERPAT` header. A genuine mosaic always carries `BAYERPAT` (or needs
 /// `--pattern`/`--force-demosaic`), so a 2D image without it is assumed to
 /// already be monochrome rather than raw sensor data.
-pub(crate) fn is_debayered_mono(header: &Header, img: &ImageData) -> bool {
+pub fn is_debayered_mono(header: &Header, img: &ImageData) -> bool {
     get_bayerpat(header).is_none() && img.axes.len() == 2
 }
 
 /// Copy `src`'s metadata and pixel-scaling keywords onto `dest` (see
 /// [`copy_metadata`] and [`copy_scaling`]), the pairing the compress/decompress
 /// container paths use to carry a source HDU's header onto its rebuilt output.
-pub(crate) fn carry_over_metadata(dest: &mut Header, src: &Header) {
+pub fn carry_over_metadata(dest: &mut Header, src: &Header) {
     copy_metadata(dest, src, &[]);
     copy_scaling(dest, src);
-}
-
-/// Serializes overwrite prompts so parallel batch runs don't interleave their
-/// questions and answers on the shared terminal.
-static PROMPT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Ensure `output` may be written. If it already exists and the user didn't
-/// pass `--yes`, ask whether to overwrite it (when running interactively) and
-/// bail if the answer is no.
-pub(crate) fn ensure_can_write(output: &Path, assume_yes: bool) -> Result<()> {
-    if !output.exists() || assume_yes {
-        return Ok(());
-    }
-    if confirm_overwrite(output)? {
-        Ok(())
-    } else {
-        bail!("{} already exists — skipped", output.display());
-    }
-}
-
-/// Prompt on the terminal whether to overwrite an existing `output`. When stdin
-/// isn't a terminal there's no one to ask, so refuse and point at `--yes`
-/// (matching the old non-interactive guard).
-fn confirm_overwrite(output: &Path) -> Result<bool> {
-    use std::io::{BufRead, IsTerminal, Write};
-
-    if !std::io::stdin().is_terminal() {
-        bail!("{} already exists — use -y to overwrite", output.display());
-    }
-
-    // Hold the lock across the whole prompt/answer exchange.
-    let _guard = PROMPT_LOCK.lock().unwrap();
-    print!("{} already exists — overwrite? [y/N] ", output.display());
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().lock().read_line(&mut answer)?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES"))
-}
-
-/// Print the `input -> output` mapping when verbose mode is enabled.
-pub(crate) fn print_progress(verbose: bool, input: &Path, output: &Path) {
-    if verbose {
-        println!("{} -> {}", input.display(), output.display());
-    }
-}
-
-/// Print the name of an operation (reading, debayering, …) when verbose mode is
-/// enabled.
-pub(crate) fn print_step(verbose: bool, step: &str) {
-    if verbose {
-        println!("  {step}");
-    }
 }
 
 #[cfg(test)]
@@ -687,15 +656,15 @@ mod tests {
     }
 
     #[test]
-    fn load_rgb_replicates_mono_channel_across_rgb_with_warning() {
+    fn load_rgb_replicates_mono_channel_across_rgb_with_notice() {
         let header = Header::default();
         let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0, 1, 2, 3]));
 
-        let (width, height, rgb) =
-            load_rgb(&header, &img, Path::new("mono.fits"), None, false, false).unwrap();
+        let loaded = load_rgb(&header, &img, None, false).unwrap();
 
-        assert_eq!((width, height), (2, 2));
-        match rgb {
+        assert_eq!((loaded.width, loaded.height), (2, 2));
+        assert_eq!(loaded.notice, LoadRgbNotice::AlreadyDebayeredMono);
+        match loaded.rgb {
             RgbBuffer::U16(v) => {
                 assert_eq!(v, vec![0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
             }
@@ -708,7 +677,7 @@ mod tests {
         let header = Header::default();
         let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0, 1, 2, 3]));
 
-        let err = match load_rgb(&header, &img, Path::new("mono.fits"), None, true, false) {
+        let err = match load_rgb(&header, &img, None, true) {
             Err(e) => e,
             Ok(_) => panic!("expected an error"),
         };
