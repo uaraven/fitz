@@ -4,6 +4,9 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
+use fitz_core::fits_image::LoadRgbNotice;
+
+use crate::terminal::print_warning;
 
 /// Serializes overwrite prompts so parallel batch runs don't interleave their
 /// questions and answers on the shared terminal.
@@ -54,5 +57,30 @@ pub fn print_progress(verbose: bool, input: &Path, output: &Path) {
 pub fn print_step(verbose: bool, step: &str) {
     if verbose {
         println!("  {step}");
+    }
+}
+
+/// Report how `load_rgb` handled demosaicing for `input`: a plain verbose step
+/// when it demosaiced, or a note/warning when it decided the image was
+/// already debayered. Shared by the `debayer` and `stretch` commands, which
+/// both call `load_rgb` under the hood.
+pub fn print_load_rgb_notice(verbose: bool, input: &Path, notice: LoadRgbNotice) {
+    match notice {
+        LoadRgbNotice::AlreadyDebayeredRgbCube => {
+            println!(
+                "{}: already debayered — skipping debayer step",
+                input.display()
+            );
+        }
+        LoadRgbNotice::AlreadyDebayeredMono => {
+            print_warning(&format!(
+                "{}: 1-channel image with no BAYERPAT header — treating it as an already-debayered \
+                 monochrome image",
+                input.display()
+            ));
+        }
+        LoadRgbNotice::Demosaiced => {
+            print_step(verbose, "debayering");
+        }
     }
 }

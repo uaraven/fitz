@@ -4,6 +4,9 @@
 //! CLI parsing, terminal output, or interactive prompts — those live in the
 //! `fitz` binary crate, which is a thin wrapper over this library.
 
+pub use bayer;
+pub use fitskit;
+
 pub mod compress;
 pub mod copy_header;
 pub mod debayer;

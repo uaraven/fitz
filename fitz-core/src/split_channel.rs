@@ -13,6 +13,7 @@ use crate::fits_image::{
     scaled_pixels,
 };
 
+/// Pixel sample type used when writing each split-out channel to FITS.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChannelFormat {
     I8,

@@ -53,7 +53,15 @@ Go through the code with these lenses, in priority order:
    could be hoisted, allocating in hot loops, reading whole files when streaming would do.
    Image buffers are large; copies matter. Don't micro-optimize cold paths.
 
-5. **Idiom & consistency** — match the surrounding style (naming, error handling with
+5. **Doc comments (`cargo doc`)** — every `pub` function, struct, and field should have a
+   doc comment explaining *what it's for and how to use it* (purpose, arguments, return
+   value, notable invariants like "untrusted input" or "panics if..."), not a restatement of
+   the implementation ("loops over pixels and calls resolve_cfa" is not useful; "resolves the
+   Bayer pattern from the header or an override" is). Flag: missing docs on public API,
+   docs that describe the how instead of the why/what, and docs that have drifted from what
+   the function actually does.
+
+6. **Idiom & consistency** — match the surrounding style (naming, error handling with
    `anyhow`, `Cow` usage, verbose-gating via `print_progress`/`print_step`). Run
    `cargo clippy` and treat its warnings as findings.
 

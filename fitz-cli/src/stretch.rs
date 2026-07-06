@@ -5,11 +5,10 @@ use std::path::Path;
 
 use anyhow::Result;
 use fitz_core::debayer::OutputFormat;
-use fitz_core::fits_image::{CFA_KEYWORDS, LoadRgbNotice, write_rgb16_fits, write_rgb16_tiff};
+use fitz_core::fits_image::{CFA_KEYWORDS, write_rgb16_fits, write_rgb16_tiff};
 
-use crate::io_prompt::{ensure_can_write, print_progress, print_step};
+use crate::io_prompt::{ensure_can_write, print_load_rgb_notice, print_progress, print_step};
 use crate::options::StretchOptions;
-use crate::terminal::print_warning;
 
 pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
     ensure_can_write(output, opts.yes)?;
@@ -18,24 +17,7 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
     print_step(opts.verbose, "reading");
     let stretched = fitz_core::stretch::load_and_stretch(input, &opts.core)?;
 
-    match stretched.notice {
-        LoadRgbNotice::AlreadyDebayeredRgbCube => {
-            println!(
-                "{}: already debayered — skipping debayer step",
-                input.display()
-            );
-        }
-        LoadRgbNotice::AlreadyDebayeredMono => {
-            print_warning(&format!(
-                "{}: 1-channel image with no BAYERPAT header — treating it as an already-debayered \
-                 monochrome image",
-                input.display()
-            ));
-        }
-        LoadRgbNotice::Demosaiced => {
-            print_step(opts.verbose, "debayering");
-        }
-    }
+    print_load_rgb_notice(opts.verbose, input, stretched.notice);
     print_step(opts.verbose, "stretching");
 
     print_step(opts.verbose, "writing");

@@ -14,6 +14,7 @@ use crate::fits_image::{
     LoadRgbNotice, RgbBuffer, bscale_bzero, find_image_hdu, load_rgb, rgb16_to_rgb8,
 };
 
+/// Output container for a debayered (or stretched) image.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Tiff,
@@ -21,6 +22,7 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
+    /// The default file extension (without a leading dot) for this format.
     pub fn extension(self) -> &'static str {
         match self {
             OutputFormat::Tiff => "tiff",
@@ -43,12 +45,15 @@ impl FromStr for OutputFormat {
 
 /// Domain options controlling how an image is debayered.
 pub struct DebayerOptions {
+    /// Bits per sample for TIFF output (8/16/32); ignored for FITS output,
+    /// which always keeps the source's own bit depth.
     pub bpp: u32,
     /// Bayer pattern override; takes precedence over the FITS headers.
     pub pattern: Option<CFA>,
     /// Always demosaic, even if the input looks like an already-debayered
     /// RGB image.
     pub force_demosaic: bool,
+    /// Output container to write (FITS or TIFF).
     pub format: OutputFormat,
 }
 
@@ -63,6 +68,7 @@ impl Default for DebayerOptions {
     }
 }
 
+/// Interleaved RGB pixel samples at the bit depth requested for output.
 pub enum OutputSamples {
     U8(Vec<u8>),
     U16(Vec<u16>),

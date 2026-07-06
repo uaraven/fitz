@@ -133,7 +133,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 /// padding trimmed. Each keyword is serialized back to its 80-column card image
 /// (so commentary cards and CONTINUE-split long strings are shown as they appear
 /// in the file), giving an unformatted dump rather than the curated summary.
-fn push_raw_headers(out: &mut String, header: &fitskit::Header) {
+fn push_raw_headers(out: &mut String, header: &fitz_core::fitskit::Header) {
     for keyword in header.iter() {
         for card in keyword.to_cards() {
             // Cards are fixed-width ASCII; `from_utf8_lossy` is only a guard

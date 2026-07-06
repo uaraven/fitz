@@ -267,9 +267,7 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "base64",
- "bayer",
  "clap",
- "fitskit",
  "fitz-core",
  "libc",
  "rayon 1.12.0",
