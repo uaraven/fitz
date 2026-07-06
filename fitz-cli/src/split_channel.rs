@@ -89,7 +89,7 @@ fn write_channel_fits(
     height: usize,
     values: &[f64],
     format: ChannelFormat,
-    src_header: &fitskit::Header,
+    src_header: &fitz_core::fitskit::Header,
     channel: &str,
 ) -> Result<()> {
     let (pixels, bzero) = encode_channel(values, format);

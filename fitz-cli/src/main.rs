@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use bayer::CFA;
 use clap::{Parser, Subcommand, ValueEnum};
-use fitskit::CompressionType;
+use fitz_core::bayer::CFA;
+use fitz_core::fitskit::CompressionType;
 use rayon::prelude::*;
 
 use compress::compress_file;

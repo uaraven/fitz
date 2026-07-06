@@ -4,12 +4,11 @@ use std::path::Path;
 use anyhow::{Context, Result};
 pub use fitz_core::debayer::OutputFormat;
 use fitz_core::debayer::{DebayeredImage, OutputSamples, encode_rgb_as_source, to_output_samples};
-use fitz_core::fits_image::{CFA_KEYWORDS, LoadRgbNotice, write_pixel_fits};
+use fitz_core::fits_image::{CFA_KEYWORDS, write_pixel_fits};
 use tiff::encoder::{TiffEncoder, colortype};
 
-use crate::io_prompt::{ensure_can_write, print_progress, print_step};
+use crate::io_prompt::{ensure_can_write, print_load_rgb_notice, print_progress, print_step};
 use crate::options::DebayerOptions;
-use crate::terminal::print_warning;
 
 pub fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
     s.parse()
@@ -22,24 +21,7 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
     print_step(opts.verbose, "reading");
     let d = fitz_core::debayer::debayer(input, &opts.core)?;
 
-    match d.notice {
-        LoadRgbNotice::AlreadyDebayeredRgbCube => {
-            println!(
-                "{}: already debayered — skipping debayer step",
-                input.display()
-            );
-        }
-        LoadRgbNotice::AlreadyDebayeredMono => {
-            print_warning(&format!(
-                "{}: 1-channel image with no BAYERPAT header — treating it as an already-debayered \
-                 monochrome image",
-                input.display()
-            ));
-        }
-        LoadRgbNotice::Demosaiced => {
-            print_step(opts.verbose, "debayering");
-        }
-    }
+    print_load_rgb_notice(opts.verbose, input, d.notice);
 
     print_step(opts.verbose, "writing");
     match opts.core.format {

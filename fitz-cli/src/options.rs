@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use fitskit::CompressionType;
+use fitz_core::fitskit::CompressionType;
 
 pub struct Options {
     pub keep: bool,

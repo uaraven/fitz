@@ -576,6 +576,8 @@ fn is_reserved_keyword(name: &str) -> bool {
     INDEXED.iter().any(|p| is_indexed(name, p))
 }
 
+/// The raw `BAYERPAT` header string, if present, without validating it as a
+/// known CFA pattern (see [`resolve_cfa`] for that).
 pub fn get_bayerpat(header: &Header) -> Option<&str> {
     header.get_string(BAYERPAT)
 }
