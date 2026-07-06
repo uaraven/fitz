@@ -1,24 +1,6 @@
-[package]
-name = "fitz"
-version = "0.1.3"
-edition = "2024"
-license = "MIT"
-
-[dependencies]
-fitskit = { version = "0.2.0", features = ["gzip"] }
-clap = { version = "4", features = ["derive"] }
-anyhow = "1"
-bayer = "0.1.5"
-rayon = "1"
-tiff = "0.11"
-terminal_size = "0.4"
-supports-color = "3.0.2"
-base64 = "0.22"
-libc = "0.2"
-sha2 = "0.10"
-
-[dev-dependencies]
-tempfile = "3"
+[workspace]
+resolver = "2"
+members = ["fitz-core", "fitz-cli"]
 
 [profile.release]
 opt-level = 'z'       # Optimize for binary size (use 's' if 'z' hurts performance too much)
@@ -27,11 +9,11 @@ codegen-units = 1     # Slower compilation, but allows for much better optimizat
 strip = true          # NB: panic = 'abort' is incompatible with the `bayer` dep, which
                       # is published with a `dylib` crate-type that requires unwinding.
 
-# The size-optimized 'z' above hurts our own tight per-pixel loops (stretch math,
-# scaling, resize). Compile just this crate at a speed-oriented opt-level while the
-# dependencies — which dominate the binary size — stay at 'z'. This roughly halves
-# single-file stretch time, at the cost of a larger binary.
-[profile.release.package.fitz]
+# The size-optimized 'z' above hurts fitz-core's own tight per-pixel loops (stretch
+# math, scaling, resize, demosaic). Compile just that crate at a speed-oriented
+# opt-level while the dependencies — which dominate the binary size — stay at 'z'.
+# This roughly halves single-file stretch time, at the cost of a larger binary.
+[profile.release.package.fitz-core]
 opt-level = 2
 
 [profile.profiling]

@@ -1,16 +1,18 @@
-use std::fs::File;
+//! Debayer a FITS image (demosaicing a raw mosaic, or reinterleaving an
+//! already-debayered cube) and produce the pixel samples ready to be written
+//! out as FITS or TIFF, in the source's own bit depth or a requested one.
+
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
+use bayer::CFA;
 use fitskit::{Bitpix, FitsFile, Header, ImageData, PixelData};
 use rayon::prelude::*;
-use tiff::encoder::{TiffEncoder, colortype};
 
 use crate::fits_image::{
-    CFA_KEYWORDS, RgbBuffer, bscale_bzero, deinterleave_to_planes, ensure_can_write,
-    find_image_hdu, load_rgb, print_progress, print_step, rgb16_to_rgb8, write_pixel_fits,
+    LoadRgbNotice, RgbBuffer, bscale_bzero, find_image_hdu, load_rgb, rgb16_to_rgb8,
 };
-use crate::options::DebayerOptions;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -27,15 +29,41 @@ impl OutputFormat {
     }
 }
 
-pub fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
-    match s.to_ascii_lowercase().as_str() {
-        "tiff" => Ok(OutputFormat::Tiff),
-        "fits" => Ok(OutputFormat::Fits),
-        _ => Err("format must be one of: TIFF, FITS".to_string()),
+impl FromStr for OutputFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "tiff" => Ok(OutputFormat::Tiff),
+            "fits" => Ok(OutputFormat::Fits),
+            _ => Err("format must be one of: TIFF, FITS".to_string()),
+        }
     }
 }
 
-enum OutputSamples {
+/// Domain options controlling how an image is debayered.
+pub struct DebayerOptions {
+    pub bpp: u32,
+    /// Bayer pattern override; takes precedence over the FITS headers.
+    pub pattern: Option<CFA>,
+    /// Always demosaic, even if the input looks like an already-debayered
+    /// RGB image.
+    pub force_demosaic: bool,
+    pub format: OutputFormat,
+}
+
+impl Default for DebayerOptions {
+    fn default() -> Self {
+        DebayerOptions {
+            bpp: 16,
+            pattern: None,
+            force_demosaic: false,
+            format: OutputFormat::Fits,
+        }
+    }
+}
+
+pub enum OutputSamples {
     U8(Vec<u8>),
     U16(Vec<u16>),
     U32(Vec<u32>),
@@ -44,10 +72,10 @@ enum OutputSamples {
 /// The pixel storage format of a source FITS image, captured so a debayered
 /// FITS can be written back using the same BITPIX and BSCALE/BZERO scaling
 /// instead of a fixed bit depth.
-struct SourceFormat {
-    bitpix: Bitpix,
-    bscale: f64,
-    bzero: f64,
+pub struct SourceFormat {
+    pub bitpix: Bitpix,
+    pub bscale: f64,
+    pub bzero: f64,
 }
 
 impl SourceFormat {
@@ -61,44 +89,48 @@ impl SourceFormat {
     }
 }
 
-pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Result<()> {
-    ensure_can_write(output, opts.yes)?;
-    print_progress(opts.verbose, input, output);
+/// The result of debayering: the RGB buffer's dimensions, the source header
+/// (for a caller that wants to preserve metadata when writing FITS), the
+/// source's own pixel format (for a caller writing FITS in the source's bit
+/// depth rather than `opts.bpp`), the [`LoadRgbNotice`] describing how the
+/// buffer was obtained, and the raw demosaiced buffer itself.
+pub struct DebayeredImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgb: RgbBuffer,
+    pub header: Header,
+    pub source: SourceFormat,
+    pub notice: LoadRgbNotice,
+}
 
-    print_step(opts.verbose, "reading");
+/// Debayer `input` (demosaicing if needed) and return the result in memory.
+/// Performs no path derivation, prompting, or writing — callers decide how to
+/// turn the result into FITS or TIFF output (see [`to_output_samples`],
+/// [`encode_rgb_as_source`]).
+pub fn debayer(input: &Path, opts: &DebayerOptions) -> Result<DebayeredImage> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input, opts.verbose)?;
+    let (header, img) = find_image_hdu(&fits, input)?;
     let img = img.as_ref();
 
     let source = SourceFormat::from_image(header, img);
+    let loaded = load_rgb(header, img, opts.pattern, opts.force_demosaic)?;
 
-    let (width, height, rgb) = load_rgb(
-        header,
-        img,
-        input,
-        opts.pattern,
-        opts.force_demosaic,
-        opts.verbose,
-    )?;
-
-    print_step(opts.verbose, "writing");
-    match opts.format {
-        OutputFormat::Tiff => {
-            let samples = to_output_samples(rgb, opts.bpp);
-            write_tiff(output, width, height, samples)?;
-        }
-        OutputFormat::Fits => write_fits(output, width, height, rgb, &source, header)?,
-    }
-
-    Ok(())
+    Ok(DebayeredImage {
+        width: loaded.width,
+        height: loaded.height,
+        rgb: loaded.rgb,
+        header: header.clone(),
+        source,
+        notice: loaded.notice,
+    })
 }
 
 /// Scale a demosaiced RGB buffer to the requested output bit depth by bit
 /// replication (promoting) or truncation (demoting), so 0 and the maximum
 /// value always map to 0 and the new maximum.
-fn to_output_samples(buf: RgbBuffer, bpp: u32) -> OutputSamples {
+pub fn to_output_samples(buf: RgbBuffer, bpp: u32) -> OutputSamples {
     match (buf, bpp) {
         (RgbBuffer::U8(v), 8) => OutputSamples::U8(v),
         (RgbBuffer::U8(v), 16) => {
@@ -112,65 +144,23 @@ fn to_output_samples(buf: RgbBuffer, bpp: u32) -> OutputSamples {
         (RgbBuffer::U16(v), 32) => {
             OutputSamples::U32(v.par_iter().map(|&x| x as u32 * 65537).collect())
         }
-        (_, other) => unreachable!("bpp {other} should have been rejected by the CLI parser"),
+        (_, other) => unreachable!("bpp {other} should have been rejected by the caller"),
     }
 }
 
-fn write_tiff(output: &Path, width: usize, height: usize, samples: OutputSamples) -> Result<()> {
-    let file =
-        File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
-    let mut enc = TiffEncoder::new(file)
-        .with_context(|| format!("cannot create TIFF encoder for {}", output.display()))?;
-
-    let result = match samples {
-        OutputSamples::U8(v) => enc.write_image::<colortype::RGB8>(width as u32, height as u32, &v),
-        OutputSamples::U16(v) => {
-            enc.write_image::<colortype::RGB16>(width as u32, height as u32, &v)
-        }
-        OutputSamples::U32(v) => {
-            enc.write_image::<colortype::RGB32>(width as u32, height as u32, &v)
-        }
-    };
-
-    result.with_context(|| format!("cannot write {}", output.display()))?;
-
-    Ok(())
-}
-
-/// Write the debayered RGB cube as FITS using the same pixel format
-/// (BITPIX and BSCALE/BZERO scaling) as the source image, rather than a
-/// fixed bit depth — the `--bpp` option only governs TIFF output.
-fn write_fits(
-    output: &Path,
-    width: usize,
-    height: usize,
-    rgb: RgbBuffer,
-    source: &SourceFormat,
-    src_header: &Header,
-) -> Result<()> {
-    let pixels = encode_rgb_as_source(rgb, source);
-    let history = format!("debayered by fitz {}", env!("CARGO_PKG_VERSION"));
-    write_pixel_fits(
-        output,
-        vec![width, height, 3],
-        pixels,
-        source.bscale,
-        source.bzero,
-        Some(src_header),
-        CFA_KEYWORDS,
-        Some(&history),
-    )
-}
-
-/// Convert a demosaiced RGB buffer back into the source image's pixel format.
-fn encode_rgb_as_source(rgb: RgbBuffer, source: &SourceFormat) -> PixelData {
+/// Convert a demosaiced RGB buffer back into the source image's pixel format,
+/// for writing a debayered FITS in the same bit depth as the source (FITS
+/// output always keeps the source format; only TIFF honors `opts.bpp`).
+pub fn encode_rgb_as_source(rgb: RgbBuffer, source: &SourceFormat) -> PixelData {
     match rgb {
         // An 8-bit source is demosaiced in raw-sample space (no scaling
         // applied), so its samples can be stored back unchanged.
-        RgbBuffer::U8(v) => PixelData::U8(deinterleave_to_planes(&v)),
+        RgbBuffer::U8(v) => PixelData::U8(crate::fits_image::deinterleave_to_planes(&v)),
         // Wider sources are demosaiced in physical-value space; invert the
         // BSCALE/BZERO scaling to recover raw samples of the source type.
-        RgbBuffer::U16(v) => encode_physical_as_source(&deinterleave_to_planes(&v), source),
+        RgbBuffer::U16(v) => {
+            encode_physical_as_source(&crate::fits_image::deinterleave_to_planes(&v), source)
+        }
     }
 }
 
@@ -213,14 +203,61 @@ fn encode_physical_as_source(planes: &[u16], source: &SourceFormat) -> PixelData
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fits_image::{CFA_KEYWORDS, write_pixel_fits};
     use crate::test_support::{
         output_header, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
         write_rgb_cube_fits,
     };
-    use bayer::CFA;
     use fitskit::{HduData, HeaderValue};
     use sha2::{Digest, Sha256};
+    use std::fs::File;
     use tempfile::TempDir;
+    use tiff::encoder::{TiffEncoder, colortype};
+
+    fn write_tiff(output: &Path, width: usize, height: usize, samples: OutputSamples) {
+        let file = File::create(output).unwrap();
+        let mut enc = TiffEncoder::new(file).unwrap();
+        match samples {
+            OutputSamples::U8(v) => {
+                enc.write_image::<colortype::RGB8>(width as u32, height as u32, &v)
+            }
+            OutputSamples::U16(v) => {
+                enc.write_image::<colortype::RGB16>(width as u32, height as u32, &v)
+            }
+            OutputSamples::U32(v) => {
+                enc.write_image::<colortype::RGB32>(width as u32, height as u32, &v)
+            }
+        }
+        .unwrap();
+    }
+
+    fn write_fits(output: &Path, d: DebayeredImage) {
+        let pixels = encode_rgb_as_source(d.rgb, &d.source);
+        let history = "debayered by fitz-core tests".to_string();
+        write_pixel_fits(
+            output,
+            vec![d.width, d.height, 3],
+            pixels,
+            d.source.bscale,
+            d.source.bzero,
+            Some(&d.header),
+            CFA_KEYWORDS,
+            Some(&history),
+        )
+        .unwrap();
+    }
+
+    fn debayer_to_fits(input: &Path, output: &Path, opts: &DebayerOptions) {
+        let d = debayer(input, opts).unwrap();
+        write_fits(output, d);
+    }
+
+    fn debayer_to_tiff(input: &Path, output: &Path, opts: &DebayerOptions) {
+        let d = debayer(input, opts).unwrap();
+        let (width, height) = (d.width, d.height);
+        let samples = to_output_samples(d.rgb, opts.bpp);
+        write_tiff(output, width, height, samples);
+    }
 
     #[test]
     fn debayer_fits_preserves_metadata_and_drops_bayerpat() {
@@ -229,7 +266,7 @@ mod tests {
         write_mosaic_fits_with_metadata(&input, 8, 6, Some("RGGB"));
 
         let output = tmp.path().join("out.fits");
-        debayer_file(&input, &output, &DebayerOptions::default()).unwrap();
+        debayer_to_fits(&input, &output, &DebayerOptions::default());
 
         let header = output_header(&output);
         assert_eq!(header.get_string("OBJECT"), Some("M31"));
@@ -252,12 +289,11 @@ mod tests {
     fn debayer_fz_output_does_not_leak_container_keywords() {
         let tmp = TempDir::new().unwrap();
         let output = tmp.path().join("out.fits");
-        debayer_file(
+        debayer_to_fits(
             &test_data("compressed.fits.fz"),
             &output,
             &DebayerOptions::default(),
-        )
-        .unwrap();
+        );
 
         let header = output_header(&output);
         for kw in [
@@ -278,30 +314,13 @@ mod tests {
             format: OutputFormat::Tiff,
             ..DebayerOptions::default()
         };
-        debayer_file(&input, &output, &opts).unwrap();
+        debayer_to_tiff(&input, &output, &opts);
 
         let data = std::fs::read(&output).unwrap();
         // Cheap sanity check: a real TIFF file, and bigger than the raw pixel data
         // (it's now 3 channels at 16bpp instead of 1 channel at 16bpp).
         assert!(data.starts_with(b"II") || data.starts_with(b"MM"));
         assert!(data.len() as usize > 8 * 6 * 2);
-    }
-
-    #[test]
-    fn debayer_default_format_is_fits() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 8, 6, Some("RGGB"));
-
-        let output = tmp.path().join("raw_debayer.fits");
-        debayer_file(&input, &output, &DebayerOptions::default()).unwrap();
-
-        let fits = FitsFile::from_file(&output).unwrap();
-        if let HduData::Image(img) = &fits.primary().data {
-            assert_eq!(img.axes, vec![8, 6, 3]);
-        } else {
-            panic!("expected image data");
-        }
     }
 
     fn write_typed_fits(path: &Path, width: usize, height: usize, pixels: PixelData) {
@@ -316,7 +335,7 @@ mod tests {
     fn debayer_to_fits_bitpix(input: &Path) -> Bitpix {
         let tmp = TempDir::new().unwrap();
         let output = tmp.path().join("out.fits");
-        debayer_file(input, &output, &DebayerOptions::default()).unwrap();
+        debayer_to_fits(input, &output, &DebayerOptions::default());
 
         let fits = FitsFile::from_file(&output).unwrap();
         match &fits.primary().data {
@@ -362,12 +381,14 @@ mod tests {
         let input = tmp.path().join("raw.fits");
         write_mosaic_fits(&input, 4, 4, None);
 
-        let output = tmp.path().join("raw.tiff");
         let opts = DebayerOptions {
             force_demosaic: true,
             ..DebayerOptions::default()
         };
-        let err = debayer_file(&input, &output, &opts).unwrap_err();
+        let err = match debayer(&input, &opts) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error"),
+        };
         assert!(err.to_string().contains("Bayer pattern"));
     }
 
@@ -379,15 +400,12 @@ mod tests {
         let input = tmp.path().join("mono.fits");
         write_mosaic_fits(&input, 4, 4, None);
 
-        let output = tmp.path().join("mono.tiff");
         let opts = DebayerOptions {
             format: OutputFormat::Tiff,
             ..DebayerOptions::default()
         };
-        debayer_file(&input, &output, &opts).unwrap();
-
-        let data = std::fs::read(&output).unwrap();
-        assert!(data.starts_with(b"II") || data.starts_with(b"MM"));
+        let d = debayer(&input, &opts).unwrap();
+        assert_eq!(d.notice, LoadRgbNotice::AlreadyDebayeredMono);
     }
 
     #[test]
@@ -396,30 +414,13 @@ mod tests {
         let input = tmp.path().join("raw.fits");
         write_mosaic_fits(&input, 4, 4, None);
 
-        let output = tmp.path().join("raw.tiff");
         let opts = DebayerOptions {
             pattern: Some(CFA::BGGR),
+            force_demosaic: true,
             ..DebayerOptions::default()
         };
-        debayer_file(&input, &output, &opts).unwrap();
-        assert!(output.exists());
-    }
-
-    #[test]
-    fn debayer_yes_overwrites_existing_output() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
-
-        let output = tmp.path().join("raw.tiff");
-        std::fs::write(&output, b"dummy").unwrap();
-
-        let opts = DebayerOptions {
-            yes: true,
-            ..DebayerOptions::default()
-        };
-        debayer_file(&input, &output, &opts).unwrap();
-        assert!(output.metadata().unwrap().len() > 5);
+        let d = debayer(&input, &opts).unwrap();
+        assert_eq!(d.notice, LoadRgbNotice::Demosaiced);
     }
 
     #[test]
@@ -428,15 +429,8 @@ mod tests {
         let input = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&input, 4, 3);
 
-        let output = tmp.path().join("rgb.tiff");
-        let opts = DebayerOptions {
-            format: OutputFormat::Tiff,
-            ..DebayerOptions::default()
-        };
-        debayer_file(&input, &output, &opts).unwrap();
-
-        let data = std::fs::read(&output).unwrap();
-        assert!(data.starts_with(b"II") || data.starts_with(b"MM"));
+        let d = debayer(&input, &DebayerOptions::default()).unwrap();
+        assert_eq!(d.notice, LoadRgbNotice::AlreadyDebayeredRgbCube);
     }
 
     #[test]
@@ -445,13 +439,14 @@ mod tests {
         let input = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&input, 4, 3);
 
-        let output = tmp.path().join("rgb.tiff");
         let opts = DebayerOptions {
-            format: OutputFormat::Tiff,
             force_demosaic: true,
             ..DebayerOptions::default()
         };
-        let err = debayer_file(&input, &output, &opts).unwrap_err();
+        let err = match debayer(&input, &opts) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error"),
+        };
         assert!(err.to_string().contains("2D mosaic image"));
     }
 
@@ -464,7 +459,7 @@ mod tests {
         let out8 = tmp.path().join("out8.tiff");
         let out16 = tmp.path().join("out16.tiff");
 
-        debayer_file(
+        debayer_to_tiff(
             &input,
             &out8,
             &DebayerOptions {
@@ -472,9 +467,8 @@ mod tests {
                 format: OutputFormat::Tiff,
                 ..DebayerOptions::default()
             },
-        )
-        .unwrap();
-        debayer_file(
+        );
+        debayer_to_tiff(
             &input,
             &out16,
             &DebayerOptions {
@@ -482,8 +476,7 @@ mod tests {
                 format: OutputFormat::Tiff,
                 ..DebayerOptions::default()
             },
-        )
-        .unwrap();
+        );
 
         let len8 = std::fs::metadata(&out8).unwrap().len();
         let len16 = std::fs::metadata(&out16).unwrap().len();
@@ -499,7 +492,7 @@ mod tests {
             format: OutputFormat::Tiff,
             ..DebayerOptions::default()
         };
-        debayer_file(&test_data("uncompressed.fit"), &output, &opts).unwrap();
+        debayer_to_tiff(&test_data("uncompressed.fit"), &output, &opts);
 
         let expected = std::fs::read_to_string(test_data(hash_file))
             .unwrap()
@@ -517,12 +510,11 @@ mod tests {
         // debayer must decompress it transparently and produce a 3-plane cube.
         let tmp = TempDir::new().unwrap();
         let output = tmp.path().join("out.fits");
-        debayer_file(
+        debayer_to_fits(
             &test_data("compressed.fits.fz"),
             &output,
             &DebayerOptions::default(),
-        )
-        .unwrap();
+        );
 
         let fits = FitsFile::from_file(&output).unwrap();
         match &fits.primary().data {

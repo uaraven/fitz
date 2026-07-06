@@ -8,9 +8,10 @@ use tempfile::TempDir;
 
 use crate::fits_image::BAYERPAT;
 
-/// Absolute path to a file under the crate's `test-data/` directory.
+/// Absolute path to a file under the workspace's `test-data/` directory.
 pub(crate) fn test_data(filename: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
         .join("test-data")
         .join(filename)
 }
