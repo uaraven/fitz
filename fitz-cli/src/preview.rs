@@ -5,12 +5,12 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use rayon::prelude::*;
+use fitz_core::fits_image::{high_byte, rgb16_to_rgb8};
+use fitz_core::resize::resize_to_fit;
 
-use crate::fits_image::{high_byte, print_step, rgb16_to_rgb8};
+use crate::io_prompt::print_step;
 use crate::kitty;
 use crate::options::PreviewOptions;
-use crate::stretch::load_and_stretch;
 use crate::terminal::{
     self, ColorMode, supports_kitty_graphics, terminal_cell_pixels, terminal_color_mode,
 };
@@ -47,14 +47,9 @@ fn choose_renderer(opts: &PreviewOptions) -> Renderer {
 /// auto-stretch it, downscale it to fit the terminal, and print it as ANSI
 /// half-block "pixels" colored with either 256-color or true-color codes.
 pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
-    let (width, height, stretched, _header) = load_and_stretch(
-        input,
-        opts.pattern,
-        opts.force_demosaic,
-        opts.linked,
-        opts.brightness,
-        opts.verbose,
-    )?;
+    let stretched = fitz_core::stretch::load_and_stretch(input, &opts.core)?;
+    let (width, height) = (stretched.width, stretched.height);
+    let stretched = stretched.pixels;
 
     print_step(opts.verbose, "scaling");
     let (cols, rows) = terminal::terminal_dimensions();
@@ -67,7 +62,7 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
             let (cw, ch) = terminal_cell_pixels().unwrap_or(FALLBACK_CELL);
             let max_w = (cols.saturating_sub(1)) as usize * cw as usize;
             let max_h = rows as usize * ch as usize;
-            let (pw, ph, preview) = scale_rgb_to_fit(&stretched, width, height, max_w, max_h);
+            let (pw, ph, preview) = resize_to_fit(&stretched, width, height, max_w, max_h);
             let rgb8 = rgb16_to_rgb8(&preview);
             print!("{}", kitty::encode_image(&rgb8, pw, ph));
             println!();
@@ -83,7 +78,7 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
             // half-block rendering each cell stacks two pixels vertically, so the
             // usable pixel canvas is `cols` wide and `rows * 2` tall. Fit the
             // stretched image into that box, preserving its aspect ratio.
-            let (pw, ph, preview) = scale_rgb_to_fit(
+            let (pw, ph, preview) = resize_to_fit(
                 &stretched,
                 width,
                 height,
@@ -171,8 +166,8 @@ fn color_to_ansi256(r: u16, g: u16, b: u16) -> u8 {
     let cube_rgb = (CUBE_LEVELS[ri], CUBE_LEVELS[gi], CUBE_LEVELS[bi]);
     let cube_idx = (16 + 36 * ri + 6 * gi + bi) as u8;
 
-    // // Nearest gray from the 24-step ramp (values 8, 18, ..., 238; indices
-    // // 232..=255), which fills in the neutral tones the coarse cube can't.
+    // Nearest gray from the 24-step ramp (values 8, 18, ..., 238; indices
+    // 232..=255), which fills in the neutral tones the coarse cube can't.
     let avg = (r as i32 + g as i32 + b as i32) / 3;
     let gray_i = ((avg - 8 + 5) / 10).clamp(0, 23);
     let gray_val = (8 + gray_i * 10) as u8;
@@ -216,132 +211,12 @@ fn push_color_ansi(out: &mut String, is_bg: bool, r: u16, g: u16, b: u16, mode: 
     }
 }
 
-/// Scale an interleaved 16-bit RGB image so it fits within `max_w` x `max_h`
-/// while preserving its aspect ratio, returning the new `(width, height,
-/// samples)`. Uses box (area-average) sampling, the right filter for the large
-/// down-scales a terminal preview needs.
-pub(crate) fn scale_rgb_to_fit(
-    src: &[u16],
-    src_w: usize,
-    src_h: usize,
-    max_w: usize,
-    max_h: usize,
-) -> (usize, usize, Vec<u16>) {
-    let (dst_w, dst_h) = fit_dimensions(src_w, src_h, max_w, max_h);
-    let scaled = resize_rgb(src, src_w, src_h, dst_w, dst_h);
-    (dst_w, dst_h, scaled)
-}
-
-/// The largest `(width, height)` that fits inside `max_w` x `max_h` with the
-/// same aspect ratio as `src_w` x `src_h`. Both dimensions are kept at least 1
-/// for any non-empty source; an empty source or box maps to `(0, 0)`.
-fn fit_dimensions(src_w: usize, src_h: usize, max_w: usize, max_h: usize) -> (usize, usize) {
-    if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
-        return (0, 0);
-    }
-    let scale = (max_w as f64 / src_w as f64).min(max_h as f64 / src_h as f64);
-    let w = ((src_w as f64 * scale).round() as usize).max(1);
-    let h = ((src_h as f64 * scale).round() as usize).max(1);
-    (w, h)
-}
-
-/// Resample an interleaved RGB image from `src_w` x `src_h` to `dst_w` x
-/// `dst_h`. Each destination pixel is the average of the block of source pixels
-/// it maps to (a box filter); the integer source spans partition the image
-/// exactly when down-scaling, with no gaps or overlap. Returns an empty buffer
-/// for a zero-sized target.
-fn resize_rgb(src: &[u16], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Vec<u16> {
-    if dst_w == 0 || dst_h == 0 {
-        return Vec::new();
-    }
-    let mut out = vec![0u16; dst_w * dst_h * 3];
-    // Each destination row reads a disjoint span of source rows and writes its
-    // own output row, so rows are independent and processed in parallel.
-    out.par_chunks_mut(dst_w * 3)
-        .enumerate()
-        .for_each(|(dy, out_row)| {
-            let sy0 = dy * src_h / dst_h;
-            let sy1 = (((dy + 1) * src_h) / dst_h).max(sy0 + 1);
-            for dx in 0..dst_w {
-                let sx0 = dx * src_w / dst_w;
-                let sx1 = (((dx + 1) * src_w) / dst_w).max(sx0 + 1);
-
-                let (mut r, mut g, mut b, mut count) = (0u64, 0u64, 0u64, 0u64);
-                for sy in sy0..sy1 {
-                    let row = sy * src_w;
-                    for sx in sx0..sx1 {
-                        let i = (row + sx) * 3;
-                        r += src[i] as u64;
-                        g += src[i + 1] as u64;
-                        b += src[i + 2] as u64;
-                        count += 1;
-                    }
-                }
-
-                let o = dx * 3;
-                out_row[o] = (r / count) as u16;
-                out_row[o + 1] = (g / count) as u16;
-                out_row[o + 2] = (b / count) as u16;
-            }
-        });
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_mosaic_fits};
-    use tempfile::TempDir;
+    use fitz_core::stretch::{StretchOptions, load_and_stretch};
 
-    #[test]
-    fn fit_dimensions_is_width_limited_for_landscape() {
-        // 3:2 image into a square box: width fills, height scales to match.
-        assert_eq!(fit_dimensions(300, 200, 60, 60), (60, 40));
-    }
-
-    #[test]
-    fn fit_dimensions_is_height_limited_for_portrait() {
-        // tall image into a wide box: height fills, width scales to match.
-        assert_eq!(fit_dimensions(200, 400, 100, 50), (25, 50));
-    }
-
-    #[test]
-    fn fit_dimensions_keeps_at_least_one_pixel() {
-        // an extreme aspect ratio must not round a dimension down to zero.
-        let (w, h) = fit_dimensions(3008, 4, 80, 48);
-        assert!(w >= 1 && h >= 1);
-    }
-
-    #[test]
-    fn fit_dimensions_handles_empty_source() {
-        assert_eq!(fit_dimensions(0, 0, 80, 24), (0, 0));
-    }
-
-    #[test]
-    fn resize_rgb_averages_block_to_single_pixel() {
-        // 2x2 distinct pixels averaged into one: per-channel arithmetic mean.
-        let src: Vec<u16> = vec![
-            0, 1, 2, 10, 11, 12, //
-            20, 21, 22, 30, 31, 32,
-        ];
-        assert_eq!(resize_rgb(&src, 2, 2, 1, 1), vec![15, 16, 17]);
-    }
-
-    #[test]
-    fn resize_rgb_preserves_solid_color() {
-        let src: Vec<u16> = std::iter::repeat([7u16, 8, 9]).take(16).flatten().collect();
-        let out = resize_rgb(&src, 4, 4, 2, 3);
-        assert_eq!(out.len(), 2 * 3 * 3);
-        assert!(out.chunks_exact(3).all(|c| c == [7, 8, 9]));
-    }
-
-    #[test]
-    fn resize_rgb_upscales_without_panicking() {
-        // 1x1 source replicated across a larger target.
-        let out = resize_rgb(&[1, 2, 3], 1, 1, 3, 2);
-        assert_eq!(out.len(), 3 * 2 * 3);
-        assert!(out.chunks_exact(3).all(|c| c == [1, 2, 3]));
-    }
+    use crate::test_support::test_data;
 
     /// Build a 16-bit channel value whose high byte is `v` (the byte the
     /// quantizer actually sees), mirroring `high_byte`.
@@ -422,40 +297,9 @@ mod tests {
         // Full pipeline on the bundled frame: it must complete and emit at
         // least one half-block cell.
         let input = test_data("uncompressed.fit");
-        let (w, h, stretched, _) = load_and_stretch(
-            &input,
-            None,
-            false,
-            false,
-            crate::stretch::DEFAULT_BRIGHTNESS,
-            false,
-        )
-        .unwrap();
+        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
 
-        let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
-        let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
-        assert!(text.contains('▄'));
-    }
-
-    #[test]
-    fn preview_treats_1_channel_no_bayerpat_as_already_debayered_mono() {
-        // Previewing a plain, already-debayered monochrome FITS file (no
-        // BAYERPAT header) must not fail demanding a Bayer pattern.
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("mono.fits");
-        write_mosaic_fits(&input, 8, 6, None);
-
-        let (w, h, stretched, _) = load_and_stretch(
-            &input,
-            None,
-            false,
-            false,
-            crate::stretch::DEFAULT_BRIGHTNESS,
-            false,
-        )
-        .unwrap();
-
-        let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
+        let (pw, ph, preview) = resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
         let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
         assert!(text.contains('▄'));
     }
@@ -465,17 +309,9 @@ mod tests {
         // Full pipeline on the bundled frame: load + stretch + scale to a small
         // terminal-sized box. The frame is square, so the preview must be too.
         let input = test_data("uncompressed.fit");
-        let (w, h, stretched, _) = load_and_stretch(
-            &input,
-            None,
-            false,
-            false,
-            crate::stretch::DEFAULT_BRIGHTNESS,
-            false,
-        )
-        .unwrap();
+        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
 
-        let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 80, 48);
+        let (pw, ph, preview) = resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
         assert!(pw <= 80 && ph <= 48);
         assert_eq!(preview.len(), pw * ph * 3);
         assert_eq!(pw, ph, "square source should yield a square preview");

@@ -2,9 +2,9 @@ mod compress;
 mod copy_header;
 mod debayer;
 mod decompress;
-mod fits_image;
 mod hash;
 mod info;
+mod io_prompt;
 mod kitty;
 mod options;
 mod preview;
@@ -20,16 +20,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use bayer::CFA;
 use clap::{Parser, Subcommand, ValueEnum};
-use fitskit::CompressionType;
+use fitz_core::bayer::CFA;
+use fitz_core::fitskit::CompressionType;
 use rayon::prelude::*;
 
 use compress::compress_file;
 use copy_header::copy_header_file;
-use hash::{HashTarget, hash_file};
 use debayer::{OutputFormat, debayer_file, parse_output_format};
 use decompress::decompress_file;
+use hash::{HashTarget, hash_file};
 use info::info_file;
 use options::{
     CopyHeaderOptions, DebayerOptions, InfoOptions, Options, PreviewOptions, SplitChannelOptions,
@@ -248,7 +248,7 @@ struct StretchArgs {
 
     /// Target background brightness the auto-stretch pulls the image towards
     /// (strictly between 0 and 1); higher values produce a brighter image
-    #[arg(long, default_value_t = stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
+    #[arg(long, default_value_t = fitz_core::stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
     brightness: f32,
 
     /// Output file format
@@ -344,7 +344,7 @@ struct PreviewArgs {
 
     /// Target background brightness the auto-stretch pulls the image towards
     /// (strictly between 0 and 1); higher values produce a brighter image
-    #[arg(long, default_value_t = stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
+    #[arg(long, default_value_t = fitz_core::stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
     brightness: f32,
 
     /// Force terminal graphics protocol rendering, skipping auto-detection
@@ -427,7 +427,7 @@ fn debayer_output_path(input: &Path, opts: &DebayerOptions) -> Result<PathBuf> {
         input,
         opts.output.as_deref(),
         opts.multi_file,
-        opts.format.extension(),
+        opts.core.format.extension(),
         "_debayer",
     )
 }
@@ -626,12 +626,14 @@ fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = DebayerOptions {
+        core: fitz_core::debayer::DebayerOptions {
+            bpp,
+            pattern: pattern.map(Into::into),
+            force_demosaic,
+            format,
+        },
         yes,
         verbose,
-        bpp,
-        pattern: pattern.map(Into::into),
-        force_demosaic,
-        format,
         output,
         multi_file: files.len() > 1,
     };
@@ -655,12 +657,14 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = StretchOptions {
+        core: fitz_core::stretch::StretchOptions {
+            pattern: pattern.map(Into::into),
+            force_demosaic,
+            linked: linked_channel,
+            brightness,
+        },
         yes,
         verbose,
-        linked: linked_channel,
-        pattern: pattern.map(Into::into),
-        force_demosaic,
-        brightness,
         format,
         output,
         multi_file: files.len() > 1,
@@ -688,11 +692,13 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = SplitChannelOptions {
+        core: fitz_core::split_channel::SplitChannelOptions {
+            pattern: pattern.map(Into::into),
+            force_demosaic,
+        },
         yes,
         verbose,
         format,
-        pattern: pattern.map(Into::into),
-        force_demosaic,
         r_prefix,
         r_dir,
         g_prefix,
@@ -736,10 +742,12 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
 
     let opts = PreviewOptions {
         verbose,
-        linked: linked_channel,
-        pattern: pattern.map(Into::into),
-        force_demosaic,
-        brightness,
+        core: fitz_core::stretch::StretchOptions {
+            pattern: pattern.map(Into::into),
+            force_demosaic,
+            linked: linked_channel,
+            brightness,
+        },
         force_kitty: graphics,
         force_truecolor: truecolor,
         fallback,
@@ -753,7 +761,11 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
 }
 
 fn run_hash(args: HashArgs) -> ExitCode {
-    let HashArgs { image, header, files } = args;
+    let HashArgs {
+        image,
+        header,
+        files,
+    } = args;
     let target = if image {
         HashTarget::Image
     } else if header {
@@ -900,7 +912,10 @@ mod tests {
         multi_file: bool,
     ) -> DebayerOptions {
         DebayerOptions {
-            format,
+            core: fitz_core::debayer::DebayerOptions {
+                format,
+                ..fitz_core::debayer::DebayerOptions::default()
+            },
             output: output.map(PathBuf::from),
             multi_file,
             ..DebayerOptions::default()

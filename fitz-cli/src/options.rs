@@ -1,10 +1,6 @@
 use std::path::PathBuf;
 
-use bayer::CFA;
-use fitskit::CompressionType;
-
-use crate::debayer::OutputFormat;
-use crate::split_channel::ChannelFormat;
+use fitz_core::fitskit::CompressionType;
 
 pub struct Options {
     pub keep: bool,
@@ -28,52 +24,20 @@ impl Default for Options {
     }
 }
 
+#[derive(Default)]
 pub struct DebayerOptions {
+    pub core: fitz_core::debayer::DebayerOptions,
     pub yes: bool,
     pub verbose: bool,
-    pub bpp: u32,
-    /// Bayer pattern override; takes precedence over the FITS headers.
-    pub pattern: Option<CFA>,
-    /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB image. Use this when an input is a genuine raw mosaic that
-    /// happens to have 3 channels for some other reason, so it isn't
-    /// silently misread as RGB.
-    pub force_demosaic: bool,
-    pub format: OutputFormat,
     pub output: Option<PathBuf>,
     pub multi_file: bool,
 }
 
-impl Default for DebayerOptions {
-    fn default() -> Self {
-        DebayerOptions {
-            yes: false,
-            verbose: false,
-            bpp: 16,
-            pattern: None,
-            force_demosaic: false,
-            format: OutputFormat::Fits,
-            output: None,
-            multi_file: false,
-        }
-    }
-}
-
 pub struct StretchOptions {
+    pub core: fitz_core::stretch::StretchOptions,
     pub yes: bool,
     pub verbose: bool,
-    /// Apply one shared set of stretch parameters to all channels instead of
-    /// stretching each channel independently.
-    pub linked: bool,
-    /// Bayer pattern override; takes precedence over the FITS headers.
-    pub pattern: Option<CFA>,
-    /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB image. See `DebayerOptions::force_demosaic`.
-    pub force_demosaic: bool,
-    /// Target background level (in `(0, 1)`) the auto-stretch pulls the
-    /// median towards; higher values brighten the result.
-    pub brightness: f32,
-    pub format: OutputFormat,
+    pub format: fitz_core::debayer::OutputFormat,
     pub output: Option<PathBuf>,
     pub multi_file: bool,
 }
@@ -81,13 +45,10 @@ pub struct StretchOptions {
 impl Default for StretchOptions {
     fn default() -> Self {
         StretchOptions {
+            core: fitz_core::stretch::StretchOptions::default(),
             yes: false,
             verbose: false,
-            linked: false,
-            pattern: None,
-            force_demosaic: false,
-            brightness: crate::stretch::DEFAULT_BRIGHTNESS,
-            format: OutputFormat::Fits,
+            format: fitz_core::debayer::OutputFormat::Fits,
             output: None,
             multi_file: false,
         }
@@ -110,17 +71,7 @@ pub struct InfoOptions {
 
 pub struct PreviewOptions {
     pub verbose: bool,
-    /// Apply one shared set of stretch parameters to all channels instead of
-    /// stretching each channel independently.
-    pub linked: bool,
-    /// Bayer pattern override; takes precedence over the FITS headers.
-    pub pattern: Option<CFA>,
-    /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB image. See `DebayerOptions::force_demosaic`.
-    pub force_demosaic: bool,
-    /// Target background level (in `(0, 1)`) the auto-stretch pulls the
-    /// median towards; higher values brighten the result.
-    pub brightness: f32,
+    pub core: fitz_core::stretch::StretchOptions,
     /// Force kitty graphics protocol rendering, bypassing auto-detection.
     pub force_kitty: bool,
     /// Force true-color ASCII rendering, bypassing auto-detection.
@@ -130,14 +81,10 @@ pub struct PreviewOptions {
 }
 
 pub struct SplitChannelOptions {
+    pub core: fitz_core::split_channel::SplitChannelOptions,
     pub yes: bool,
     pub verbose: bool,
-    pub format: ChannelFormat,
-    /// Bayer pattern override; takes precedence over the FITS headers.
-    pub pattern: Option<CFA>,
-    /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB image. See `DebayerOptions::force_demosaic`.
-    pub force_demosaic: bool,
+    pub format: fitz_core::split_channel::ChannelFormat,
     pub r_prefix: Option<String>,
     pub r_dir: Option<PathBuf>,
     pub g_prefix: Option<String>,
@@ -149,11 +96,10 @@ pub struct SplitChannelOptions {
 impl Default for SplitChannelOptions {
     fn default() -> Self {
         SplitChannelOptions {
+            core: fitz_core::split_channel::SplitChannelOptions::default(),
             yes: false,
             verbose: false,
-            format: ChannelFormat::I16,
-            pattern: None,
-            force_demosaic: false,
+            format: fitz_core::split_channel::ChannelFormat::I16,
             r_prefix: None,
             r_dir: None,
             g_prefix: None,
