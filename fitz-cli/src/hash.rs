@@ -2,10 +2,9 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use fitskit::FitsFile;
+use fitz_core::fits_image::find_image_hdu;
+use fitz_core::fitskit::FitsFile;
 use sha2::{Digest, Sha256};
-
-use crate::fits_image::find_image_hdu;
 
 #[derive(Clone, Copy)]
 pub(crate) enum HashTarget {
@@ -24,7 +23,7 @@ pub(crate) fn hash_file(input: &Path, target: HashTarget) -> Result<()> {
         HashTarget::Header => {
             let fits = FitsFile::from_file(input)
                 .with_context(|| format!("cannot read {}", input.display()))?;
-            let (header, _) = find_image_hdu(&fits, input, false)?;
+            let (header, _) = find_image_hdu(&fits, input)?;
             let mut buf = Vec::new();
             header
                 .write_to(&mut buf)
@@ -34,7 +33,7 @@ pub(crate) fn hash_file(input: &Path, target: HashTarget) -> Result<()> {
         HashTarget::Image => {
             let fits = FitsFile::from_file(input)
                 .with_context(|| format!("cannot read {}", input.display()))?;
-            let (_, img) = find_image_hdu(&fits, input, false)?;
+            let (_, img) = find_image_hdu(&fits, input)?;
             hex(Sha256::digest(img.pixels.to_bytes()))
         }
     };

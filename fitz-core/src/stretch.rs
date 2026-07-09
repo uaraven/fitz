@@ -1,5 +1,5 @@
-//! The `stretch` command: load a FITS image (debayering it first if needed),
-//! apply an MTF/STF auto-stretch, and save the 16-bit result as FITS or TIFF.
+//! Load a FITS image (debayering it first if needed) and apply an MTF/STF
+//! auto-stretch, returning the stretched 16-bit result in memory.
 
 use std::path::Path;
 
@@ -8,12 +8,9 @@ use bayer::CFA;
 use fitskit::{FitsFile, Header};
 use rayon::prelude::*;
 
-use crate::debayer::OutputFormat;
 use crate::fits_image::{
-    CFA_KEYWORDS, RgbBuffer, ensure_can_write, find_image_hdu, load_rgb, print_progress,
-    print_step, round_to_u16, write_rgb16_fits, write_rgb16_tiff,
+    LoadRgbNotice, RgbBuffer, find_image_hdu, load_rgb, round_to_u16,
 };
-use crate::options::StretchOptions;
 
 /// Working sample type for the stretch math. `f32` is more than precise enough
 /// for a 16-bit result and halves the normalized-image buffer versus `f64`.
@@ -23,68 +20,71 @@ type Sample = f32;
 const SHADOWS_CLIP: Sample = -2.8;
 /// Default `--brightness`: the target background level the stretched median is
 /// pulled towards, absent user override. Must stay strictly inside `(0, 1)`.
-pub(crate) const DEFAULT_BRIGHTNESS: f32 = 0.25;
+pub const DEFAULT_BRIGHTNESS: f32 = 0.25;
 /// Scale factor turning the median absolute deviation into a robust estimate of
 /// the standard deviation for a normal distribution.
 const MAD_NORM: Sample = 1.4826;
 
 const OUT_MAX: Sample = u16::MAX as Sample;
 
-pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
-    ensure_can_write(output, opts.yes)?;
-    print_progress(opts.verbose, input, output);
+/// Domain options controlling how an image is loaded and stretched.
+pub struct StretchOptions {
+    /// Bayer pattern override; takes precedence over the FITS headers.
+    pub pattern: Option<CFA>,
+    /// Always demosaic, even if the input looks like an already-debayered
+    /// RGB image.
+    pub force_demosaic: bool,
+    /// Apply one shared set of stretch parameters to all channels instead of
+    /// stretching each channel independently.
+    pub linked: bool,
+    /// Target background level (in `(0, 1)`) the auto-stretch pulls the
+    /// median towards; higher values brighten the result.
+    pub brightness: f32,
+}
 
-    let (width, height, stretched, header) = load_and_stretch(
-        input,
-        opts.pattern,
-        opts.force_demosaic,
-        opts.linked,
-        opts.brightness,
-        opts.verbose,
-    )?;
-
-    print_step(opts.verbose, "writing");
-    match opts.format {
-        OutputFormat::Tiff => write_rgb16_tiff(output, width, height, &stretched),
-        OutputFormat::Fits => {
-            let history = format!("stretched by fitz {}", env!("CARGO_PKG_VERSION"));
-            write_rgb16_fits(
-                output,
-                width,
-                height,
-                &stretched,
-                Some(&header),
-                CFA_KEYWORDS,
-                Some(&history),
-            )
+impl Default for StretchOptions {
+    fn default() -> Self {
+        StretchOptions {
+            pattern: None,
+            force_demosaic: false,
+            linked: false,
+            brightness: DEFAULT_BRIGHTNESS,
         }
     }
 }
 
-/// Load a FITS image (debayering if needed) and apply the auto-stretch, returning
-/// the interleaved 16-bit result and its `(width, height)`. Shared by the
-/// `stretch` and `preview` commands, which differ only in what they do with the
-/// stretched buffer (write it to a file vs. render it to the terminal).
-pub(crate) fn load_and_stretch(
-    input: &Path,
-    pattern: Option<CFA>,
-    force_demosaic: bool,
-    linked: bool,
-    brightness: f32,
-    verbose: bool,
-) -> Result<(usize, usize, Vec<u16>, Header)> {
-    print_step(verbose, "reading");
+/// The result of [`load_and_stretch`]: the interleaved 16-bit stretched image,
+/// its dimensions, the source header (for a caller that wants to write it back
+/// out), and the [`LoadRgbNotice`] describing how the RGB buffer was obtained.
+pub struct StretchedImage {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<u16>,
+    pub header: Header,
+    pub notice: LoadRgbNotice,
+}
+
+/// Load a FITS image (debayering if needed) and apply the auto-stretch.
+/// Shared by the `stretch` and `preview` commands, which differ only in what
+/// they do with the stretched buffer (write it to a file vs. render it to the
+/// terminal).
+pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<StretchedImage> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input, verbose)?;
+    let (header, img) = find_image_hdu(&fits, input)?;
     let img = img.as_ref();
 
-    let (width, height, rgb) = load_rgb(header, img, input, pattern, force_demosaic, verbose)?;
+    let loaded = load_rgb(header, img, opts.pattern, opts.force_demosaic)?;
 
-    print_step(verbose, "stretching");
-    let stretched = auto_stretch(&rgb, linked, brightness);
-    Ok((width, height, stretched, header.clone()))
+    let pixels = auto_stretch(&loaded.rgb, opts.linked, opts.brightness);
+    Ok(StretchedImage {
+        width: loaded.width,
+        height: loaded.height,
+        pixels,
+        header: header.clone(),
+        notice: loaded.notice,
+    })
 }
 
 /// Apply an MTF/STF auto-stretch to an interleaved RGB image, returning
@@ -232,9 +232,24 @@ mod tests {
         output_header, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
         write_rgb_cube_fits,
     };
+    use crate::fits_image::write_rgb16_fits;
     use fitskit::HduData;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;
+
+    fn stretch_to_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
+        let stretched = load_and_stretch(input, opts)?;
+        let history = "stretched by fitz-core tests".to_string();
+        write_rgb16_fits(
+            output,
+            stretched.width,
+            stretched.height,
+            &stretched.pixels,
+            Some(&stretched.header),
+            crate::fits_image::CFA_KEYWORDS,
+            Some(&history),
+        )
+    }
 
     #[test]
     fn stretch_fits_preserves_metadata_and_drops_bayerpat() {
@@ -243,25 +258,19 @@ mod tests {
         write_mosaic_fits_with_metadata(&input, 8, 6, Some("RGGB"));
 
         let output = tmp.path().join("out.fits");
-        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
 
         let header = output_header(&output);
         assert_eq!(header.get_string("OBJECT"), Some("M31"));
         assert_eq!(header.get_float("CRVAL1"), Some(10.68));
         assert!(header.find("BAYERPAT").is_none());
-        assert!(header.iter().any(|k| {
-            k.name == "HISTORY"
-                && k.comment
-                    .as_deref()
-                    .is_some_and(|c| c.contains("stretched by fitz"))
-        }));
     }
 
     #[test]
     fn stretch_fz_output_does_not_leak_container_keywords() {
         let tmp = TempDir::new().unwrap();
         let output = tmp.path().join("out.fits");
-        stretch_file(
+        stretch_to_file(
             &test_data("compressed.fits.fz"),
             &output,
             &StretchOptions::default(),
@@ -447,30 +456,13 @@ mod tests {
         write_mosaic_fits(&input, 8, 6, Some("RGGB"));
 
         let output = tmp.path().join("out.fits");
-        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
 
         let fits = FitsFile::from_file(&output).unwrap();
         match &fits.primary().data {
             HduData::Image(img) => assert_eq!(img.axes, vec![8, 6, 3]),
             _ => panic!("expected image data"),
         }
-    }
-
-    #[test]
-    fn stretch_already_debayered_cube_produces_tiff() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb.fits");
-        write_rgb_cube_fits(&input, 4, 3);
-
-        let output = tmp.path().join("out.tiff");
-        let opts = StretchOptions {
-            format: OutputFormat::Tiff,
-            ..StretchOptions::default()
-        };
-        stretch_file(&input, &output, &opts).unwrap();
-
-        let data = std::fs::read(&output).unwrap();
-        assert!(data.starts_with(b"II") || data.starts_with(b"MM"));
     }
 
     #[test]
@@ -483,10 +475,10 @@ mod tests {
         crate::test_support::write_mono_f32_fits(&input, 8, 8);
 
         let output = tmp.path().join("out.fits");
-        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
 
         let fits = FitsFile::from_file(&output).unwrap();
-        let (_, img) = find_image_hdu(&fits, &output, false).unwrap();
+        let (_, img) = find_image_hdu(&fits, &output).unwrap();
         assert!(
             img.pixels.to_bytes().iter().any(|&b| b > 0),
             "float mono FITS produced an all-black stretched output"
@@ -501,45 +493,14 @@ mod tests {
         crate::test_support::write_rgb_cube_f32_fits(&input, 8, 8);
 
         let output = tmp.path().join("out.fits");
-        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
 
         let fits = FitsFile::from_file(&output).unwrap();
-        let (_, img) = find_image_hdu(&fits, &output, false).unwrap();
+        let (_, img) = find_image_hdu(&fits, &output).unwrap();
         assert!(
             img.pixels.to_bytes().iter().any(|&b| b > 0),
             "float RGB cube FITS produced an all-black stretched output"
         );
-    }
-
-    #[test]
-    fn stretch_default_format_is_fits() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
-
-        let output = tmp.path().join("out.fits");
-        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
-
-        let fits = FitsFile::from_file(&output).unwrap();
-        assert!(matches!(fits.primary().data, HduData::Image(_)));
-    }
-
-    #[test]
-    fn stretch_yes_overwrites_existing_output() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, Some("RGGB"));
-
-        let output = tmp.path().join("out.fits");
-        std::fs::write(&output, b"dummy").unwrap();
-
-        let opts = StretchOptions {
-            yes: true,
-            ..StretchOptions::default()
-        };
-        stretch_file(&input, &output, &opts).unwrap();
-        // A real FITS file is far bigger than the 5-byte dummy.
-        assert!(output.metadata().unwrap().len() > 5);
     }
 
     #[test]
@@ -553,7 +514,7 @@ mod tests {
             force_demosaic: true,
             ..StretchOptions::default()
         };
-        let err = stretch_file(&input, &output, &opts).unwrap_err();
+        let err = stretch_to_file(&input, &output, &opts).unwrap_err();
         assert!(err.to_string().contains("Bayer pattern"));
     }
 
@@ -566,7 +527,7 @@ mod tests {
         write_mosaic_fits(&input, 4, 4, None);
 
         let output = tmp.path().join("out.fits");
-        stretch_file(&input, &output, &StretchOptions::default()).unwrap();
+        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
 
         let fits = FitsFile::from_file(&output).unwrap();
         assert!(matches!(fits.primary().data, HduData::Image(_)));
@@ -578,7 +539,7 @@ mod tests {
         // 3-plane cube just like its uncompressed equivalent.
         let tmp = TempDir::new().unwrap();
         let output = tmp.path().join("out.fits");
-        stretch_file(
+        stretch_to_file(
             &test_data("compressed.fits.fz"),
             &output,
             &StretchOptions::default(),
@@ -592,40 +553,38 @@ mod tests {
         }
     }
 
-    fn assert_stretch_matches_known_hash(format: OutputFormat, hash_file: &str) {
+    fn assert_stretch_matches_known_hash(hash_file: &str) {
         let tmp = TempDir::new().unwrap();
-        let output = tmp.path().join("out");
-
-        let opts = StretchOptions {
-            format,
-            ..StretchOptions::default()
-        };
-        stretch_file(&test_data("uncompressed.fit"), &output, &opts).unwrap();
+        let output = tmp.path().join("out.fits");
+        stretch_to_file(
+            &test_data("uncompressed.fit"),
+            &output,
+            &StretchOptions::default(),
+        )
+        .unwrap();
 
         let expected = std::fs::read_to_string(test_data(hash_file))
             .unwrap()
             .trim()
             .to_string();
-        let actual = match format {
-            OutputFormat::Fits => {
-                let fits = FitsFile::from_file(&output).unwrap();
-                let (_, img) = find_image_hdu(&fits, &output, false).unwrap();
-                format!("{:x}", Sha256::digest(img.pixels.to_bytes()))
-            }
-            OutputFormat::Tiff => {
-                format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()))
-            }
-        };
+        let fits = FitsFile::from_file(&output).unwrap();
+        let (_, img) = find_image_hdu(&fits, &output).unwrap();
+        let actual = format!("{:x}", Sha256::digest(img.pixels.to_bytes()));
         assert_eq!(actual, expected);
     }
 
     #[test]
-    fn stretch_uncompressed_fit_tiff_matches_known_hash() {
-        assert_stretch_matches_known_hash(OutputFormat::Tiff, "stretch/uncompressed.tiff.sha256");
+    fn stretch_uncompressed_fit_matches_known_hash() {
+        assert_stretch_matches_known_hash("stretch/uncompressed.fits.sha256");
     }
 
     #[test]
-    fn stretch_uncompressed_fit_fits_matches_known_hash() {
-        assert_stretch_matches_known_hash(OutputFormat::Fits, "stretch/uncompressed.fits.sha256");
+    fn stretch_already_debayered_cube_produces_pixels() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("rgb.fits");
+        write_rgb_cube_fits(&input, 4, 3);
+
+        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
+        assert_eq!(stretched.pixels.len(), 4 * 3 * 3);
     }
 }

@@ -48,9 +48,10 @@ pub fn encode_image(rgb8: &[u8], width: usize, height: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fits_image::rgb16_to_rgb8;
-    use crate::preview::scale_rgb_to_fit;
-    use crate::stretch::load_and_stretch;
+    use fitz_core::fits_image::rgb16_to_rgb8;
+    use fitz_core::resize::resize_to_fit;
+    use fitz_core::stretch::{StretchOptions, load_and_stretch};
+
     use crate::test_support::test_data;
 
     fn frames(seq: &str) -> Vec<&str> {
@@ -101,16 +102,9 @@ mod tests {
         // Full pipeline on a bundled frame: load -> stretch -> scale -> encode,
         // then decode the payload back and confirm it equals the 8-bit RGB.
         let input = test_data("uncompressed.fit");
-        let (w, h, stretched, _) = load_and_stretch(
-            &input,
-            None,
-            false,
-            false,
-            crate::stretch::DEFAULT_BRIGHTNESS,
-            false,
-        )
-        .unwrap();
-        let (pw, ph, preview) = scale_rgb_to_fit(&stretched, w, h, 120, 120);
+        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
+        let (pw, ph, preview) =
+            resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 120, 120);
 
         let rgb8 = rgb16_to_rgb8(&preview);
         let seq = encode_image(&rgb8, pw, ph);

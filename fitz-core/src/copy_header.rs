@@ -1,10 +1,5 @@
-//! The `copy-header` command: copy FITS header keywords from a source image
-//! onto a target image, filling in only the keywords the target doesn't
-//! already carry (its own resolution, bit depth, channel count, pixel
-//! scaling, and any other keyword it already has are left untouched). A
-//! `BAYERPAT` (and related CFA keywords) from the source is also skipped when
-//! the target is already a debayered 3-plane cube, so it doesn't start looking
-//! like undebayered raw sensor data again.
+//! Copy FITS header keywords from a source image onto a target image, filling
+//! in only the keywords the target doesn't already carry.
 
 use std::path::Path;
 
@@ -12,13 +7,18 @@ use anyhow::{Context, Result, anyhow};
 use fitskit::FitsFile;
 
 use crate::fits_image::{
-    CFA_KEYWORDS, copy_missing_metadata, ensure_can_write, find_image_hdu_index,
-    header_is_rgb_cube_shape, print_progress, print_step,
+    CFA_KEYWORDS, copy_missing_metadata, find_image_hdu_index, header_is_rgb_cube_shape,
 };
-use crate::options::CopyHeaderOptions;
 
-pub fn copy_header_file(source: &Path, target: &Path, opts: &CopyHeaderOptions) -> Result<()> {
-    print_step(opts.verbose, "reading");
+/// Merge `source`'s header onto `target`'s, filling in only what `target`
+/// doesn't already carry — its own resolution, bit depth, channel count,
+/// pixel scaling, and any other keyword it already has are left untouched. A
+/// `BAYERPAT` (and related CFA keywords) from `source` is skipped when
+/// `target` is already a debayered 3-plane cube, so it doesn't start looking
+/// like undebayered raw sensor data again. Returns `target`'s `FitsFile` with
+/// the merged header already applied (ready for the caller to write out) and
+/// the number of keywords copied.
+pub fn copy_header(source: &Path, target: &Path) -> Result<(FitsFile, usize)> {
     let src_fits =
         FitsFile::from_file(source).with_context(|| format!("cannot read {}", source.display()))?;
     let mut dst_fits =
@@ -39,55 +39,32 @@ pub fn copy_header_file(source: &Path, target: &Path, opts: &CopyHeaderOptions) 
         &[]
     };
 
-    print_step(opts.verbose, "copying header");
     let copied = copy_missing_metadata(
         &mut dst_fits.hdus[dst_idx].header,
         &src_fits.hdus[src_idx].header,
         extra_drop,
     );
 
-    let output = opts.output.clone().unwrap_or_else(|| target.to_path_buf());
-    // Overwriting the target in place is the whole point of this command and
-    // must not trip the "already exists" guard, the same way decompress
-    // handles its default in-place output.
-    if output != target {
-        ensure_can_write(&output, opts.yes)?;
-    }
-    print_progress(opts.verbose, source, &output);
-
-    print_step(opts.verbose, "writing");
-    dst_fits
-        .to_file(&output)
-        .with_context(|| format!("cannot write {}", output.display()))?;
-
-    if opts.verbose {
-        println!("copied {copied} header keyword(s)");
-    }
-
-    Ok(())
+    Ok((dst_fits, copied))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::write_mosaic_fits_with_metadata;
-    use fitskit::{Header, HeaderValue, ImageData, Keyword, PixelData};
+    use fitskit::{FitsFile, HeaderValue, ImageData, Keyword, PixelData};
     use tempfile::TempDir;
 
     /// Write a plain 2D FITS file with no metadata beyond the mandatory
-    /// keywords, for asserting on what `copy_header_file` fills in.
+    /// keywords, for asserting on what `copy_header` fills in.
     fn write_bare_fits(path: &Path, width: usize, height: usize) {
         let pixels: Vec<i16> = (0..(width * height) as i16).collect();
         let img = ImageData::new(vec![width, height], PixelData::I16(pixels));
         FitsFile::with_primary_image(img).to_file(path).unwrap();
     }
 
-    fn header_of(path: &Path) -> Header {
-        FitsFile::from_file(path).unwrap().primary().header.clone()
-    }
-
     #[test]
-    fn copy_header_fills_in_missing_metadata_in_place() {
+    fn copy_header_fills_in_missing_metadata() {
         let tmp = TempDir::new().unwrap();
         let source = tmp.path().join("source.fits");
         write_mosaic_fits_with_metadata(&source, 8, 6, Some("RGGB"));
@@ -95,9 +72,9 @@ mod tests {
         let target = tmp.path().join("target.fits");
         write_bare_fits(&target, 8, 6);
 
-        copy_header_file(&source, &target, &CopyHeaderOptions::default()).unwrap();
-
-        let header = header_of(&target);
+        let (fits, copied) = copy_header(&source, &target).unwrap();
+        assert!(copied > 0);
+        let header = &fits.primary().header;
         assert_eq!(header.get_string("OBJECT"), Some("M31"));
         assert_eq!(header.get_float("CRVAL1"), Some(10.68));
         assert_eq!(header.get_string("BAYERPAT").map(str::trim), Some("RGGB"));
@@ -115,9 +92,8 @@ mod tests {
         let target = tmp.path().join("target.fits");
         write_rgb_cube_fits(&target, 8, 6);
 
-        copy_header_file(&source, &target, &CopyHeaderOptions::default()).unwrap();
-
-        let header = header_of(&target);
+        let (fits, _) = copy_header(&source, &target).unwrap();
+        let header = &fits.primary().header;
         // Metadata still comes across...
         assert_eq!(header.get_string("OBJECT"), Some("M31"));
         // ...but BAYERPAT must not, or `info`/`debayer`/`stretch` would mistake
@@ -134,9 +110,8 @@ mod tests {
         let target = tmp.path().join("target.fits");
         write_bare_fits(&target, 4, 3);
 
-        copy_header_file(&source, &target, &CopyHeaderOptions::default()).unwrap();
-
-        let header = header_of(&target);
+        let (fits, _) = copy_header(&source, &target).unwrap();
+        let header = &fits.primary().header;
         // The target's own resolution/bit depth must survive unchanged, not be
         // clobbered by the (differently sized) source's.
         assert_eq!(header.get_int("NAXIS1"), Some(4));
@@ -161,9 +136,8 @@ mod tests {
             fits.to_file(&target).unwrap();
         }
 
-        copy_header_file(&source, &target, &CopyHeaderOptions::default()).unwrap();
-
-        assert_eq!(header_of(&target).get_string("OBJECT"), Some("keep-me"));
+        let (fits, _) = copy_header(&source, &target).unwrap();
+        assert_eq!(fits.primary().header.get_string("OBJECT"), Some("keep-me"));
     }
 
     #[test]
@@ -189,35 +163,13 @@ mod tests {
             fits.to_file(&target).unwrap();
         }
 
-        copy_header_file(&source, &target, &CopyHeaderOptions::default()).unwrap();
-
-        let header = header_of(&target);
-        let history: Vec<&str> = header
+        let (fits, _) = copy_header(&source, &target).unwrap();
+        let history: Vec<&str> = fits.primary().header
             .iter()
             .filter(|k| k.name == "HISTORY")
             .filter_map(|k| k.comment.as_deref())
             .collect();
         assert_eq!(history, vec!["second", "first"]);
-    }
-
-    #[test]
-    fn copy_header_with_output_leaves_target_untouched() {
-        let tmp = TempDir::new().unwrap();
-        let source = tmp.path().join("source.fits");
-        write_mosaic_fits_with_metadata(&source, 8, 6, Some("RGGB"));
-
-        let target = tmp.path().join("target.fits");
-        write_bare_fits(&target, 8, 6);
-
-        let output = tmp.path().join("out.fits");
-        let opts = CopyHeaderOptions {
-            output: Some(output.clone()),
-            ..CopyHeaderOptions::default()
-        };
-        copy_header_file(&source, &target, &opts).unwrap();
-
-        assert!(header_of(&target).get_string("OBJECT").is_none());
-        assert_eq!(header_of(&output).get_string("OBJECT"), Some("M31"));
     }
 
     #[test]
@@ -232,7 +184,7 @@ mod tests {
         let target = tmp.path().join("target.fits");
         write_bare_fits(&target, 4, 3);
 
-        let err = match copy_header_file(&source, &target, &CopyHeaderOptions::default()) {
+        let err = match copy_header(&source, &target) {
             Err(e) => e,
             Ok(_) => panic!("expected an error"),
         };
