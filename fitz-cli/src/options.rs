@@ -78,6 +78,9 @@ pub struct PreviewOptions {
     pub force_truecolor: bool,
     /// Fallback to most compatible ASCII rendering mode, with only 216 colours.
     pub fallback: bool,
+    /// Skip debayering a raw mosaic, showing it as a stretched grayscale
+    /// image instead; ignored (with a warning) if already debayered.
+    pub no_debayer: bool,
 }
 
 pub struct SplitChannelOptions {
