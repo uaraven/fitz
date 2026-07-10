@@ -11,9 +11,3 @@
 **Stretch goals**
  - [ ] Add hcompress compression with float quantization
 
-
-## Bugs
-
- - [ ] preview: Stretching already stretched images produces bad results ![](bad-stretch.png). Two options:
-   - assume non-linear. stretch only if `--stretch` is passed
-   - assume linear, don't stretch if `--no-stretch` passed

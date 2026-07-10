@@ -4,15 +4,21 @@ use std::fmt::Write;
 use std::io::Write as _;
 use std::path::Path;
 
-use anyhow::{Result, bail};
-use fitz_core::fits_image::{high_byte, rgb16_to_rgb8};
+use anyhow::{Context, Result, bail};
+use fitz_core::fits_image::{
+    find_image_hdu, high_byte, is_debayered_mono, is_debayered_rgb_cube, load_mono_raw, load_rgb,
+    rgb16_to_rgb8,
+};
+use fitz_core::fitskit::FitsFile;
 use fitz_core::resize::resize_to_fit;
+use fitz_core::stretch::auto_stretch;
 
 use crate::io_prompt::print_step;
 use crate::kitty;
 use crate::options::PreviewOptions;
 use crate::terminal::{
-    self, ColorMode, supports_kitty_graphics, terminal_cell_pixels, terminal_color_mode,
+    self, ColorMode, print_warning, supports_kitty_graphics, terminal_cell_pixels,
+    terminal_color_mode,
 };
 
 /// Assumed character-cell size in pixels when the terminal doesn't report one,
@@ -47,9 +53,7 @@ fn choose_renderer(opts: &PreviewOptions) -> Renderer {
 /// auto-stretch it, downscale it to fit the terminal, and print it as ANSI
 /// half-block "pixels" colored with either 256-color or true-color codes.
 pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
-    let stretched = fitz_core::stretch::load_and_stretch(input, &opts.core)?;
-    let (width, height) = (stretched.width, stretched.height);
-    let stretched = stretched.pixels;
+    let (width, height, stretched) = load_preview_pixels(input, opts)?;
 
     print_step(opts.verbose, "scaling");
     let (cols, rows) = terminal::terminal_dimensions();
@@ -89,6 +93,38 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Load and stretch `input` for preview: normally debayers a raw mosaic like
+/// the `stretch` command does. With `--no-debayer`, a raw (not-yet-debayered)
+/// mosaic is instead shown as a stretched grayscale image using its raw sensor
+/// values, skipping color interpolation entirely; an already-debayered image
+/// has nothing to skip, so the flag is ignored with a warning.
+fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, usize, Vec<u16>)> {
+    if !opts.no_debayer {
+        let stretched = fitz_core::stretch::load_and_stretch(input, &opts.core)?;
+        return Ok((stretched.width, stretched.height, stretched.pixels));
+    }
+
+    let fits =
+        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let (header, img) = find_image_hdu(&fits, input)?;
+    let img = img.as_ref();
+
+    if is_debayered_rgb_cube(header, img) || is_debayered_mono(header, img) {
+        print_warning(&format!(
+            "{}: already debayered — ignoring --no-debayer",
+            input.display()
+        ));
+        let loaded = load_rgb(header, img, opts.core.pattern, opts.core.force_demosaic)?;
+        let pixels = auto_stretch(&loaded.rgb, opts.core.linked, opts.core.brightness);
+        return Ok((loaded.width, loaded.height, pixels));
+    }
+
+    print_step(opts.verbose, "loading raw (no debayer)");
+    let (width, height, rgb) = load_mono_raw(header, img)?;
+    let pixels = auto_stretch(&rgb, true, opts.core.brightness);
+    Ok((width, height, pixels))
 }
 
 /// Render an interleaved 16-bit RGB image as ANSI text. Each character cell
