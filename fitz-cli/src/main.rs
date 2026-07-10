@@ -359,6 +359,12 @@ struct PreviewArgs {
     #[arg(long, conflicts_with_all = ["truecolor", "graphics"])]
     fallback: bool,
 
+    /// Skip debayering: show a raw, not-yet-debayered mosaic as a stretched
+    /// grayscale image instead of color-interpolating it. Ignored (with a
+    /// warning) if the image is already debayered.
+    #[arg(long)]
+    no_debayer: bool,
+
     /// FITS file to preview (only a single file is accepted)
     file: PathBuf,
 }
@@ -738,6 +744,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         truecolor,
         file,
         fallback,
+        no_debayer,
     } = args;
 
     let opts = PreviewOptions {
@@ -751,6 +758,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         force_kitty: graphics,
         force_truecolor: truecolor,
         fallback,
+        no_debayer,
     };
 
     if let Err(e) = preview_file(&file, &opts) {
