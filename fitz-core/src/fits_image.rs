@@ -366,6 +366,22 @@ fn rgb_from_mono(header: &Header, img: &ImageData, width: usize, height: usize) 
     RgbBuffer::U16(out)
 }
 
+/// Load a 2D image's raw pixel values as a grayscale `RgbBuffer` (the sample
+/// replicated across all three channels), without running the demosaic
+/// algorithm. Used by `fitz preview --no-debayer` to show a raw, not-yet-
+/// debayered mosaic as-is rather than color-interpolating it.
+pub fn load_mono_raw(header: &Header, img: &ImageData) -> Result<(usize, usize, RgbBuffer)> {
+    if img.axes.len() != 2 {
+        bail!(
+            "expected a 2D mosaic image for a grayscale preview, found {} axes",
+            img.axes.len()
+        );
+    }
+    let width = img.axes[0];
+    let height = img.axes[1];
+    Ok((width, height, rgb_from_mono(header, img, width, height)))
+}
+
 /// Split an interleaved RGB sample buffer into concatenated R, G, B planes
 /// (the same plane order [`rgb_from_cube`] expects when reading one back).
 pub fn deinterleave_to_planes<T: Copy + Send + Sync>(v: &[T]) -> Vec<T> {
@@ -684,6 +700,38 @@ mod tests {
             Ok(_) => panic!("expected an error"),
         };
         assert!(err.to_string().contains("Bayer pattern"));
+    }
+
+    #[test]
+    fn load_mono_raw_replicates_raw_samples_without_demosaicing() {
+        // Even with a BAYERPAT header present (a genuine raw mosaic),
+        // `load_mono_raw` must skip demosaicing and just replicate the raw
+        // per-pixel value across channels, unlike `load_rgb`.
+        let mut header = Header::default();
+        header.set(BAYERPAT, HeaderValue::String("RGGB".to_string()), None);
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0, 1, 2, 3]));
+
+        let (width, height, rgb) = load_mono_raw(&header, &img).unwrap();
+
+        assert_eq!((width, height), (2, 2));
+        match rgb {
+            RgbBuffer::U16(v) => {
+                assert_eq!(v, vec![0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+            }
+            RgbBuffer::U8(_) => panic!("expected a u16 rgb buffer"),
+        }
+    }
+
+    #[test]
+    fn load_mono_raw_rejects_non_2d_image() {
+        let header = Header::default();
+        let cube = ImageData::new(vec![2, 2, 3], PixelData::I16(vec![0; 12]));
+
+        let err = match load_mono_raw(&header, &cube) {
+            Err(e) => e,
+            Ok(_) => panic!("expected an error"),
+        };
+        assert!(err.to_string().contains("2D"));
     }
 
     #[test]

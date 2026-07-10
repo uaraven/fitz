@@ -226,6 +226,7 @@ Two flags override the default behaviour:
 
 These two flags are mutually exclusive.
 
+`--no-debayer` skips debayering: a raw, not-yet-debayered mosaic is shown as a stretched grayscale image using its raw sensor values instead of being color-interpolated. If the image is already debayered (or already monochrome), there's nothing to skip, so the flag is ignored and a warning is printed instead.
 
 ```
 Usage: fitz preview [OPTIONS] <FILE>
@@ -242,6 +243,7 @@ Options:
       --graphics           Force kitty graphics protocol rendering, skipping auto-detection
       --truecolor          Force true-color ANSI half-block rendering, skipping auto-detection
       --fallback           Force compatibility fallback ASCII rendering using only 216 colours
+      --no-debayer         Skip debayering, showing a raw mosaic as a stretched grayscale image instead; ignored (with a warning) if already debayered
   -v, --verbose            Print each file being processed
   -j, --jobs <JOBS>        Number of files to process in parallel (default: number of CPU cores)
   -h, --help               Print help
