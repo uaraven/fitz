@@ -1,0 +1,17 @@
+[package]
+name = "fitsmith"
+version = "0.1.5"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "fitsmith"
+path = "src/main.rs"
+
+[dependencies]
+fitz-core = { path = "../fitz-core" }
+slint = "1"
+anyhow = "1"
+
+[build-dependencies]
+slint-build = "1"

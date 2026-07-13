@@ -1,13 +1,13 @@
-# QuickFit — Implementation Plan
+# FitSmith — Implementation Plan
 
-A GUI frontend (`quickfit`) for the `fitz` toolset: a desktop app built with
+A GUI frontend (`fitsmith`) for the `fitz` toolset: a desktop app built with
 [Slint] (Fluent widget style) that reuses `fitz-core` for every FITS operation.
 This plan follows the project's stated split: **`fitz-core` owns all FITS/image
 logic; the binary owns UI/UX only.** Any new operation on FITS files goes into
 `fitz-core`, not the GUI.
 
 The good news from surveying the code: `fitz-core`'s API is already GUI-friendly.
-Most of what QuickFit needs (`find_image_hdu`, `load_rgb`, `load_mono_raw`,
+Most of what FitSmith needs (`find_image_hdu`, `load_rgb`, `load_mono_raw`,
 `auto_stretch`, `pixel_stats`/`histogram`, `resize_rgb`, `compress`/`decompress`,
 `copy_missing_metadata`, `write_rgb16_fits`) is already `pub` and operates on
 in-memory `(Header, ImageData)`. The core additions below are small.
@@ -40,10 +40,10 @@ Keep parity with `fitz-cli` plus the interactive niceties (blink, live toggles).
 Add a third workspace member. In the root `Cargo.toml`:
 
 ```toml
-members = ["fitz-core", "fitz-cli", "quickfit"]
+members = ["fitz-core", "fitz-cli", "fitsmith"]
 ```
 
-New crate `quickfit/` (binary), depending on `fitz-core` via path, mirroring how
+New crate `fitsmith/` (binary), depending on `fitz-core` via path, mirroring how
 `fitz-cli` depends on it. Key deps:
 
 - `slint` — the UI runtime. **Renderer: default GPU backend (femtovg/skia) with
@@ -61,7 +61,7 @@ metadata key at runtime.
 
 **Release profile:** the root `[profile.release]` uses `opt-level = 'z'`, `lto`,
 `codegen-units = 1`, `strip`. Slint is pure Rust and links cleanly under these.
-Add a `[profile.release.package.quickfit]` `opt-level = 2` override only if the
+Add a `[profile.release.package.fitsmith]` `opt-level = 2` override only if the
 size-opt hurts UI responsiveness — decide empirically. Unlike the previous Qt
 plan, there is no cross-language LTO fragility to worry about.
 
@@ -81,10 +81,10 @@ Three layers, matching the existing CLI's discipline (no UI code in core):
  fitz-core  (no UI)                pure FITS/image functions + a new `preview` module
      ▲
      │ path dep
- quickfit/src  (Rust)              app state, models (VecModel/ModelRc), async loader,
+ fitsmith/src  (Rust)              app state, models (VecModel/ModelRc), async loader,
      ▲                             callback handlers wiring the .slint UI to fitz-core
      │ slint-build code-gen
- quickfit/ui/*.slint  (Slint)      declarative views: menu bar, toolbar, split panels,
+ fitsmith/ui/*.slint  (Slint)      declarative views: menu bar, toolbar, split panels,
                                     tab view, image w/ zoom, header table, stats panel
 ```
 
@@ -199,7 +199,7 @@ implementation — not a blocker.
 
 ---
 
-## 5. Rust GUI layer (`quickfit/src/`)
+## 5. Rust GUI layer (`fitsmith/src/`)
 
 Slint generates a root component struct (e.g. `AppWindow`) from the `.slint`
 files. The Rust `main` creates it, seeds properties/models, wires callbacks to
@@ -235,7 +235,7 @@ wants menu and toolbar mirrored).
 
 ---
 
-## 6. Slint UI (`quickfit/ui/`)
+## 6. Slint UI (`fitsmith/ui/`)
 
 Compose the spec's layout from `std-widgets` under the Fluent style:
 
@@ -337,7 +337,7 @@ from the display buffer. See §4.3 and the bit-depth question in §11.
 
 1. **Core preview module.** Add `fitz-core::preview::render_preview`, refactor
    `fitz-cli` onto it, tests green. *No UI yet — de-risks the reusable half.*
-2. **Walking skeleton.** New `quickfit` crate, `slint-build` with the Fluent
+2. **Walking skeleton.** New `fitsmith` crate, `slint-build` with the Fluent
    style, a `Window` that shows a hardcoded RGBA image via `Image::from_rgba8`.
    Trivial with Slint (no external toolchain), so this milestone is mostly
    scaffolding.
@@ -369,10 +369,12 @@ from the display buffer. See §4.3 and the bit-depth question in §11.
    displayed image (assumed) vs. batch-export the selected files.
 3. **Renderer:** decided — default GPU (femtovg/skia) with the software renderer
    as a documented fallback for headless CI / GPU-less machines.
-4. **Workspace membership:** `quickfit` in default `members` — safe here since
+4. **Workspace membership:** `fitsmith` in default `members` — safe here since
    Slint needs no external SDK, so `cargo build`/`cargo test --workspace` still
    run on a bare machine (plus winit's Linux headers).
-5. **Crate name:** spec calls it *QuickFit*; suggest crate `quickfit`
-   (binary `quickfit`). Confirm vs. `fitz-gui`.
+5. **Crate name:** decided — **FitSmith** (crate/binary `fitsmith`). The
+   original name *QuickFit* collided with existing software, so the project was
+   renamed; the spec file (`.plan/fitsmith-spec.md`) still predates the Slint
+   switch in places but carries the new name.
 
 [Slint]: https://slint.dev/
