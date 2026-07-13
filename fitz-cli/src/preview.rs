@@ -5,11 +5,9 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use fitz_core::fits_image::{
-    find_image_hdu, high_byte, is_debayered_mono, is_debayered_rgb_cube, load_mono_raw, load_rgb,
-    rgb16_to_rgb8,
-};
+use fitz_core::fits_image::{find_image_hdu, high_byte, rgb16_to_rgb8};
 use fitz_core::fitskit::FitsFile;
+use fitz_core::preview::{PreviewSource, preview_rgb};
 use fitz_core::resize::resize_to_fit;
 use fitz_core::stretch::auto_stretch;
 
@@ -101,30 +99,40 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
 /// values, skipping color interpolation entirely; an already-debayered image
 /// has nothing to skip, so the flag is ignored with a warning.
 fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, usize, Vec<u16>)> {
-    if !opts.no_debayer {
-        let stretched = fitz_core::stretch::load_and_stretch(input, &opts.core)?;
-        return Ok((stretched.width, stretched.height, stretched.pixels));
-    }
-
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
     let (header, img) = find_image_hdu(&fits, input)?;
     let img = img.as_ref();
 
-    if is_debayered_rgb_cube(header, img) || is_debayered_mono(header, img) {
-        print_warning(&format!(
-            "{}: already debayered — ignoring --no-debayer",
-            input.display()
-        ));
-        let loaded = load_rgb(header, img, opts.core.pattern, opts.core.force_demosaic)?;
-        let pixels = auto_stretch(&loaded.rgb, opts.core.linked, opts.core.brightness);
-        return Ok((loaded.width, loaded.height, pixels));
+    let pr = preview_rgb(
+        header,
+        img,
+        !opts.no_debayer,
+        opts.core.pattern,
+        opts.core.force_demosaic,
+    )?;
+
+    // Surface how the preview was produced, matching the previous messages;
+    // the plain demosaic path stays silent, as it did before.
+    match pr.source {
+        PreviewSource::RawMono => print_step(opts.verbose, "loading raw (no debayer)"),
+        // `--no-debayer` on an image that's already debayered: it had no effect.
+        PreviewSource::AlreadyDebayeredRgbCube | PreviewSource::AlreadyDebayeredMono
+            if opts.no_debayer =>
+        {
+            print_warning(&format!(
+                "{}: already debayered — ignoring --no-debayer",
+                input.display()
+            ));
+        }
+        _ => {}
     }
 
-    print_step(opts.verbose, "loading raw (no debayer)");
-    let (width, height, rgb) = load_mono_raw(header, img)?;
-    let pixels = auto_stretch(&rgb, true, opts.core.brightness);
-    Ok((width, height, pixels))
+    // A raw-mono preview stretches its (grayscale) channels together, matching
+    // the previous behavior; color previews honor the `--linked` option.
+    let linked = opts.core.linked || pr.source == PreviewSource::RawMono;
+    let pixels = auto_stretch(&pr.rgb, linked, opts.core.brightness);
+    Ok((pr.width, pr.height, pixels))
 }
 
 /// Render an interleaved 16-bit RGB image as ANSI text. Each character cell
