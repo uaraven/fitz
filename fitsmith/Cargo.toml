@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 fitz-core = { path = "../fitz-core" }
 slint = "1"
+rfd = "0.15"
 anyhow = "1"
 
 [build-dependencies]
