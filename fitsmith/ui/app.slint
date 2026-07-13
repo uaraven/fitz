@@ -1,0 +1,18 @@
+import { VerticalBox } from "std-widgets.slint";
+
+// Walking-skeleton window: shows a single preview image supplied by Rust.
+// Later milestones grow this into the full menu / toolbar / split layout.
+export component AppWindow inherits Window {
+    in property <image> preview-image;
+
+    title: "FitSmith";
+    preferred-width: 900px;
+    preferred-height: 640px;
+
+    VerticalBox {
+        Image {
+            source: root.preview-image;
+            image-fit: contain;
+        }
+    }
+}
