@@ -1,18 +1,180 @@
-import { VerticalBox } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, VerticalBox } from "std-widgets.slint";
 
-// Walking-skeleton window: shows a single preview image supplied by Rust.
-// Later milestones grow this into the full menu / toolbar / split layout.
+// A zoomable, pannable image surface. The natural (pixel) size is supplied by
+// Rust; the displayed size is that scaled by `zoom`. A `Flickable` provides
+// panning once the image is larger than the view.
+component ImageView inherits Rectangle {
+    in property <image> source;
+    in property <length> natural-width;
+    in property <length> natural-height;
+    in-out property <float> zoom: 1.0;
+
+    // The zoom that makes the image exactly fit the view, or 1.0 when empty.
+    property <float> fit-zoom: (root.natural-width > 0px && root.natural-height > 0px)
+        ? min(root.width / root.natural-width, root.height / root.natural-height)
+        : 1.0;
+
+    public function fit() {
+        root.zoom = root.fit-zoom;
+    }
+    public function actual-size() {
+        root.zoom = 1.0;
+    }
+    public function zoom-by(factor: float) {
+        root.zoom = clamp(root.zoom * factor, 0.02, 40.0);
+    }
+
+    // Reset to a fitted view whenever a new image (of a different size) loads;
+    // toggles that keep the dimensions leave the current zoom untouched.
+    changed natural-width => {
+        root.zoom = root.fit-zoom;
+    }
+
+    clip: true;
+    background: #202020;
+
+    Flickable {
+        viewport-width: root.natural-width * root.zoom;
+        viewport-height: root.natural-height * root.zoom;
+        Image {
+            width: root.natural-width * root.zoom;
+            height: root.natural-height * root.zoom;
+            source: root.source;
+            image-fit: fill;
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     in property <image> preview-image;
+    in property <length> image-width;
+    in property <length> image-height;
+    in-out property <bool> debayer-enabled: true;
+    in-out property <bool> stretch-enabled: true;
+    in property <bool> busy: false;
+    in property <string> status-text;
+
+    callback open();
+    callback request-exit();
+    // Fired when a view toggle changes so Rust can re-render the cached image.
+    callback toggles-changed();
+
+    changed debayer-enabled => {
+        root.toggles-changed();
+    }
+    changed stretch-enabled => {
+        root.toggles-changed();
+    }
 
     title: "FitSmith";
-    preferred-width: 900px;
-    preferred-height: 640px;
+    preferred-width: 1000px;
+    preferred-height: 680px;
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Open…";
+                activated => {
+                    root.open();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Exit";
+                activated => {
+                    root.request-exit();
+                }
+            }
+        }
+
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Debayer raw";
+                checkable: true;
+                checked <=> root.debayer-enabled;
+            }
+            MenuItem {
+                title: "Stretch preview";
+                checkable: true;
+                checked <=> root.stretch-enabled;
+            }
+        }
+    }
 
     VerticalBox {
-        Image {
+        padding: 0px;
+        spacing: 0px;
+
+        // Toolbar: file + view toggles on the left, zoom controls on the right.
+        HorizontalBox {
+            padding: 8px;
+            spacing: 8px;
+
+            Button {
+                text: "Open…";
+                clicked => {
+                    root.open();
+                }
+            }
+            Rectangle {
+                width: 1px;
+                background: #444444;
+            }
+            CheckBox {
+                text: "Debayer";
+                checked <=> root.debayer-enabled;
+            }
+            CheckBox {
+                text: "Stretch";
+                checked <=> root.stretch-enabled;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "Fit";
+                clicked => {
+                    image-view.fit();
+                }
+            }
+            Button {
+                text: "1:1";
+                clicked => {
+                    image-view.actual-size();
+                }
+            }
+            Button {
+                text: "−";
+                clicked => {
+                    image-view.zoom-by(0.8);
+                }
+            }
+            Button {
+                text: "+";
+                clicked => {
+                    image-view.zoom-by(1.25);
+                }
+            }
+        }
+
+        image-view := ImageView {
             source: root.preview-image;
-            image-fit: contain;
+            natural-width: root.image-width;
+            natural-height: root.image-height;
+            vertical-stretch: 1;
+        }
+
+        HorizontalBox {
+            padding: 6px;
+            Text {
+                text: root.busy ? "⏳  " + root.status-text : root.status-text;
+                overflow: elide;
+                vertical-alignment: center;
+            }
         }
     }
 }
