@@ -65,14 +65,20 @@ impl<K: PartialEq, V> LruCache<K, V> {
         self.total = 0;
     }
 
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.items.len()
+    /// Sum of the resident entries' costs, in bytes (drives the status-bar
+    /// memory readout).
+    pub fn total_bytes(&self) -> usize {
+        self.total
+    }
+
+    /// The configured capacity (maximum resident bytes).
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     #[cfg(test)]
-    pub fn total_bytes(&self) -> usize {
-        self.total
+    pub fn len(&self) -> usize {
+        self.items.len()
     }
 }
 

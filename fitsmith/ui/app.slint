@@ -36,10 +36,11 @@ export component AppWindow inherits Window {
     // Curated metadata summary (label/value pairs, as `fitz info` reports) for
     // the info panel.
     in property <[StatItem]> info;
-    // Status bar: left is the high-level activity (loading, blinking…), right is
-    // the fine-grained pipeline step (reading, debayering, stretching).
+    // Status bar: the high-level activity (loading, blinking…), the fine-grained
+    // pipeline step (reading, debayering, stretching), and the cache memory use.
     in property <string> status-text;
     in property <string> stage-text;
+    in property <string> memory-text;
 
     callback open();
     callback open-directory();
@@ -329,7 +330,9 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Status bar: global activity on the left, pipeline step on the right.
+        // Status bar: global activity on the left, then a separator and the
+        // pipeline step (only while one is running), and cache memory use pinned
+        // to the far right.
         HorizontalBox {
             padding: 6px;
             spacing: 8px;
@@ -337,12 +340,26 @@ export component AppWindow inherits Window {
                 text: root.busy ? "⏳  " + root.status-text : root.status-text;
                 overflow: elide;
                 vertical-alignment: center;
-                horizontal-stretch: 1;
             }
-            Text {
+            // Separator + action step, shown only while a pipeline step runs.
+            if root.stage-text != "": Rectangle {
+                width: 1px;
+                background: #444444;
+            }
+            if root.stage-text != "": Text {
                 text: root.stage-text;
                 color: #a0a0a0;
                 overflow: elide;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+            }
+            // Absorb the slack so memory use sits on the far right.
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.memory-text;
+                color: #a0a0a0;
                 vertical-alignment: center;
                 horizontal-alignment: right;
             }
