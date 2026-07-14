@@ -19,7 +19,25 @@ use slint::ComponentHandle;
 
 slint::include_modules!();
 
+/// On macOS, AppKit auto-populates a menu it recognizes as the "View" menu with
+/// "Show Tab Bar" / "Show All Tabs" whenever automatic window tabbing is enabled
+/// (the default). FitSmith doesn't use tabbed windows, so disable it — a
+/// process-global class setting that must be applied before the menu is built.
+/// "Enter Full Screen" (also auto-added to the View menu) is unaffected.
+#[cfg(target_os = "macos")]
+fn disable_automatic_window_tabbing() {
+    use objc2::runtime::Bool;
+    use objc2::{class, msg_send};
+    // Safety: a class message to the AppKit-provided NSWindow with a BOOL arg.
+    unsafe {
+        let _: () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: Bool::new(false)];
+    }
+}
+
 fn main() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    disable_automatic_window_tabbing();
+
     let app = AppWindow::new()?;
     app.set_status_text("No image — add files to view".into());
     controller::init(&app);

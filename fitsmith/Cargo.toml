@@ -14,6 +14,12 @@ slint = "1"
 rfd = "0.15"
 anyhow = "1"
 
+# macOS only: used to turn off automatic window tabbing so AppKit stops
+# injecting "Show Tab Bar"/"Show All Tabs" into our View menu. Already in the
+# dependency tree via Slint's winit backend, so this adds no build cost.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [build-dependencies]
 slint-build = "1"
 
