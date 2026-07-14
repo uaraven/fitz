@@ -39,6 +39,7 @@ fn main() -> Result<()> {
     disable_automatic_window_tabbing();
     let app = AppWindow::new()?;
     app.set_status_text("No image — add files to view".into());
+    app.set_app_version(env!("CARGO_PKG_VERSION").into());
     controller::init(&app);
 
     app.on_open({
