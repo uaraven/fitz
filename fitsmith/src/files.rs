@@ -55,6 +55,22 @@ pub fn next_index(current: usize, len: usize) -> usize {
     if len == 0 { 0 } else { (current + 1) % len }
 }
 
+/// Expand command-line arguments into a flat list of input files: directories
+/// are scanned for FITS files, existing files are kept as-is (a file named
+/// explicitly is honored regardless of extension), and missing paths are
+/// dropped.
+pub fn expand_inputs(args: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for arg in args {
+        if arg.is_dir() {
+            out.extend(scan_directory(&arg));
+        } else if arg.is_file() {
+            out.push(arg);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +122,26 @@ mod tests {
         assert_eq!(next_index(2, 3), 0);
         assert_eq!(next_index(0, 1), 0);
         assert_eq!(next_index(0, 0), 0);
+    }
+
+    #[test]
+    fn expand_inputs_scans_dirs_keeps_files_drops_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["b.fits", "a.fit", "notes.txt"] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        let loose = dir.path().join("notes.txt"); // a file named explicitly
+        let missing = dir.path().join("gone.fits");
+
+        let found: Vec<String> = expand_inputs(vec![
+            dir.path().to_path_buf(), // scanned → a.fit, b.fits (FITS only, sorted)
+            loose,                    // explicit file → kept despite .txt
+            missing,                  // does not exist → dropped
+        ])
+        .iter()
+        .map(|p| display_name(p))
+        .collect();
+
+        assert_eq!(found, vec!["a.fit", "b.fits", "notes.txt"]);
     }
 }
