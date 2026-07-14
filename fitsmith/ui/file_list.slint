@@ -9,7 +9,7 @@ export component FileList inherits Rectangle {
     in property <int> selected-index;
     callback select(int);
 
-    property <length> row-height: 44px;
+    property <length> row-height: 30px;
 
     background: #262626;
     width: 240px;
@@ -26,21 +26,24 @@ export component FileList inherits Rectangle {
                     root.select(idx);
                 }
             }
-            VerticalLayout {
-                padding: 5px;
+            // Name on the left, an optional status badge on the right — one line.
+            HorizontalLayout {
                 padding-left: 10px;
                 padding-right: 10px;
-                spacing: 2px;
+                spacing: 6px;
                 Text {
                     text: row.name;
                     overflow: elide;
                     color: white;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
                 }
                 Text {
                     text: row.status;
                     visible: row.status != "";
                     font-size: 11px;
                     color: row.status == "error" ? #ff8080 : #a0a0a0;
+                    vertical-alignment: center;
                 }
             }
         }
