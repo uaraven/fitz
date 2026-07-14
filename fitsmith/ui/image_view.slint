@@ -1,0 +1,87 @@
+import { Scrollbar } from "scrolling.slint";
+
+// A zoomable, scrollable image surface. The natural (pixel) size is supplied by
+// Rust; the displayed size is that scaled by `zoom`. When the scaled image is
+// larger than the view, draggable scrollbars appear and the image can be
+// panned; when it is smaller, the viewport is padded to the visible area so the
+// image stays centered.
+export component ImageView inherits Rectangle {
+    in property <image> source;
+    in property <length> natural-width;
+    in property <length> natural-height;
+    in-out property <float> zoom: 1.0;
+
+    // The displayed image size at the current zoom.
+    property <length> scaled-width: root.natural-width * root.zoom;
+    property <length> scaled-height: root.natural-height * root.zoom;
+
+    // The zoom that makes the image exactly fit the view, or 1.0 when empty.
+    property <float> fit-zoom: (root.natural-width > 0px && root.natural-height > 0px)
+        ? min(root.width / root.natural-width, root.height / root.natural-height)
+        : 1.0;
+
+    public function fit() {
+        root.zoom = root.fit-zoom;
+    }
+    public function actual-size() {
+        root.zoom = 1.0;
+    }
+    public function zoom-by(factor: float) {
+        root.zoom = clamp(root.zoom * factor, 0.02, 40.0);
+    }
+
+    // Reset to a fitted view whenever a new image (of a different size) loads;
+    // toggles that keep the dimensions leave the current zoom untouched.
+    changed natural-width => {
+        root.zoom = root.fit-zoom;
+    }
+
+    background: #202020;
+    clip: true;
+
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        // Pad the viewport out to the visible area when the image is smaller,
+        // so it centers; grow to the image when larger, so it can be panned.
+        viewport-width: max(root.scaled-width, self.width);
+        viewport-height: max(root.scaled-height, self.height);
+        Image {
+            x: (flick.viewport-width - root.scaled-width) / 2;
+            y: (flick.viewport-height - root.scaled-height) / 2;
+            width: root.scaled-width;
+            height: root.scaled-height;
+            source: root.source;
+            image-fit: fill;
+        }
+    }
+
+    // Scrollbars on the right / bottom edges, each shortened when the other is
+    // present so they don't overlap in the corner.
+    Scrollbar {
+        horizontal: false;
+        width: 6px;
+        x: parent.width - self.width - 2px;
+        y: 2px;
+        height: parent.height - 4px - (h-bar.visible ? 8px : 0px);
+        content: flick.viewport-height;
+        view: flick.height;
+        pos: -flick.viewport-y;
+        moved(p) => {
+            flick.viewport-y = -p;
+        }
+    }
+    h-bar := Scrollbar {
+        horizontal: true;
+        height: 6px;
+        x: 2px;
+        y: parent.height - self.height - 2px;
+        width: parent.width - 4px - (self.visible ? 8px : 0px);
+        content: flick.viewport-width;
+        view: flick.width;
+        pos: -flick.viewport-x;
+        moved(p) => {
+            flick.viewport-x = -p;
+        }
+    }
+}

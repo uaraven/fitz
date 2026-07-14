@@ -1,15 +1,16 @@
-//! FitSmith — a Slint GUI frontend for the `fitz` toolset. Milestone 4: a
-//! working set of files (open a file or a whole directory), click / blink to
-//! select, images decoded off the UI thread and kept in an LRU cache so
-//! re-selection and blink re-render from memory. The debayer/stretch toggles
-//! re-render the current frame live. Later milestones add header/stats tabs and
-//! export.
+//! FitSmith — a Slint GUI frontend for the `fitz` toolset. A working set of
+//! files (open a file or a whole directory), click / blink to select, images
+//! decoded off the UI thread and kept in an LRU cache so re-selection and blink
+//! re-render from memory. The debayer/stretch toggles re-render the current
+//! frame live; a Headers tab and a docked stats panel show the FITS metadata
+//! and pixel statistics. A later milestone adds export.
 
 mod cache;
 mod controller;
 mod doc;
 mod files;
 mod image;
+mod view;
 
 use anyhow::Result;
 use slint::ComponentHandle;
@@ -18,7 +19,7 @@ slint::include_modules!();
 
 fn main() -> Result<()> {
     let app = AppWindow::new()?;
-    app.set_status_text("No image — use File ▸ Open…".into());
+    app.set_status_text("No image — add files to view".into());
     controller::init(&app);
 
     app.on_open({

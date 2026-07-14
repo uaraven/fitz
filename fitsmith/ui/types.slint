@@ -1,0 +1,22 @@
+// Data structs shared between the Rust controller and the UI.
+
+// One entry in the file list: its display name, a short status badge
+// ("compressed" / "error" / ""), and the full path.
+export struct FileRow {
+    name: string,
+    status: string,
+    path: string,
+}
+
+// One FITS header card, split into the Headers tab's display columns.
+export struct HeaderRow {
+    keyword: string,
+    value: string,
+    comment: string,
+}
+
+// One labeled statistic in the stats panel (e.g. "mean" / "1234.5").
+export struct StatItem {
+    label: string,
+    value: string,
+}

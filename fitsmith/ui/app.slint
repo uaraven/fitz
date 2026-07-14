@@ -1,318 +1,12 @@
 import { Button, CheckBox, HorizontalBox, VerticalBox, TabWidget } from "std-widgets.slint";
+import { FileRow, HeaderRow, StatItem } from "types.slint";
+import { ImageView } from "image_view.slint";
+import { FileList } from "file_list.slint";
+import { StatsPanel } from "stats_panel.slint";
+import { HeaderView } from "header_view.slint";
 
-// A thick, clearly visible, draggable scrollbar — unlike the built-in Fluent
-// ScrollView's 2px hairline thumb, which vanishes against a noisy image. The
-// parent drives `pos` (a non-negative scroll offset) from the flickable and
-// applies the `moved` callback back onto it.
-component Scrollbar inherits Rectangle {
-    in property <bool> horizontal;
-    // Total content length and the visible length along this axis.
-    in property <length> content;
-    in property <length> view;
-    // Current scroll offset (0 .. content-view), driven by the parent.
-    in property <length> pos;
-    callback moved(length);
-
-    property <length> thickness: 6px;
-    property <length> max-pos: max(0px, root.content - root.view);
-    property <length> track: root.horizontal ? root.width : root.height;
-    property <length> thumb-len: min(root.track, max(32px, root.track * root.view / max(1px, root.content)));
-    property <length> travel: root.track - root.thumb-len;
-
-    visible: root.max-pos > 0px;
-    background: #00000055;
-    border-radius: root.thickness / 2;
-
-    thumb := Rectangle {
-        background: ta.pressed ? #ffffffdd : (ta.has-hover ? #ffffffb0 : #ffffff80);
-        border-radius: root.thickness / 2;
-        width: root.horizontal ? root.thumb-len : parent.width;
-        height: root.horizontal ? parent.height : root.thumb-len;
-        x: root.horizontal ? (root.max-pos > 0px ? root.travel * (root.pos / root.max-pos) : 0px) : 0px;
-        y: root.horizontal ? 0px : (root.max-pos > 0px ? root.travel * (root.pos / root.max-pos) : 0px);
-    }
-
-    ta := TouchArea {
-        property <length> start-pos;
-        property <length> start-mouse;
-
-        pointer-event(e) => {
-            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
-                self.start-pos = root.pos;
-                self.start-mouse = root.horizontal ? self.mouse-x : self.mouse-y;
-            }
-        }
-        moved => {
-            if (self.pressed && root.travel > 0px) {
-                root.moved(clamp(
-                    self.start-pos + ((root.horizontal ? self.mouse-x : self.mouse-y) - self.start-mouse) * (root.max-pos / root.travel),
-                    0px, root.max-pos));
-            }
-        }
-    }
-}
-
-// A vertically scrolling area with the same 6px draggable scrollbar as the
-// image view, so the file list and header list scroll consistently (the
-// built-in ListView's hairline scrollbar can't be restyled). The caller places
-// the rows as children and supplies their total `content-height`.
-component VScrollArea inherits Rectangle {
-    in property <length> content-height;
-    // Usable content width (excluding the scrollbar), for rows to bind to.
-    out property <length> content-width: flick.width;
-
-    clip: true;
-
-    flick := Flickable {
-        width: parent.width;
-        height: parent.height;
-        viewport-width: self.width;
-        viewport-height: max(root.content-height, self.height);
-        @children
-    }
-
-    Scrollbar {
-        horizontal: false;
-        width: 6px;
-        x: parent.width - self.width;
-        y: 0px;
-        height: parent.height;
-        content: flick.viewport-height;
-        view: flick.height;
-        pos: -flick.viewport-y;
-        moved(p) => {
-            flick.viewport-y = -p;
-        }
-    }
-}
-
-// One entry in the file list: its display name, a short status badge
-// ("compressed" / "error" / ""), and the full path (kept for tooltips).
-export struct FileRow {
-    name: string,
-    status: string,
-    path: string,
-}
-
-// One FITS header card for the Headers tab, split into display columns.
-export struct HeaderRow {
-    keyword: string,
-    value: string,
-    comment: string,
-}
-
-// A zoomable, scrollable image surface. The natural (pixel) size is supplied by
-// Rust; the displayed size is that scaled by `zoom`. When the scaled image is
-// larger than the view, thick draggable scrollbars appear and the image can be
-// panned; when it is smaller, the viewport is padded to the visible area so the
-// image stays centered.
-component ImageView inherits Rectangle {
-    in property <image> source;
-    in property <length> natural-width;
-    in property <length> natural-height;
-    in-out property <float> zoom: 1.0;
-
-    // The displayed image size at the current zoom.
-    property <length> scaled-width: root.natural-width * root.zoom;
-    property <length> scaled-height: root.natural-height * root.zoom;
-
-    // The zoom that makes the image exactly fit the view, or 1.0 when empty.
-    property <float> fit-zoom: (root.natural-width > 0px && root.natural-height > 0px)
-        ? min(root.width / root.natural-width, root.height / root.natural-height)
-        : 1.0;
-
-    public function fit() {
-        root.zoom = root.fit-zoom;
-    }
-    public function actual-size() {
-        root.zoom = 1.0;
-    }
-    public function zoom-by(factor: float) {
-        root.zoom = clamp(root.zoom * factor, 0.02, 40.0);
-    }
-
-    // Reset to a fitted view whenever a new image (of a different size) loads;
-    // toggles that keep the dimensions leave the current zoom untouched.
-    changed natural-width => {
-        root.zoom = root.fit-zoom;
-    }
-
-    background: #202020;
-    clip: true;
-
-    flick := Flickable {
-        width: parent.width;
-        height: parent.height;
-        // Pad the viewport out to the visible area when the image is smaller,
-        // so it centers; grow to the image when larger, so it can be panned.
-        viewport-width: max(root.scaled-width, self.width);
-        viewport-height: max(root.scaled-height, self.height);
-        Image {
-            x: (flick.viewport-width - root.scaled-width) / 2;
-            y: (flick.viewport-height - root.scaled-height) / 2;
-            width: root.scaled-width;
-            height: root.scaled-height;
-            source: root.source;
-            image-fit: fill;
-        }
-    }
-
-    // Vertical scrollbar on the right edge; shortened when the horizontal one
-    // is present so they don't overlap in the corner.
-    Scrollbar {
-        horizontal: false;
-        width: 6px;
-        x: parent.width - self.width - 2px;
-        y: 2px;
-        height: parent.height - 4px - (h-bar.visible ? 8px : 0px);
-        content: flick.viewport-height;
-        view: flick.height;
-        pos: -flick.viewport-y;
-        moved(p) => {
-            flick.viewport-y = -p;
-        }
-    }
-    h-bar := Scrollbar {
-        horizontal: true;
-        height: 6px;
-        y: parent.height - self.height - 2px;
-        x: 2px;
-        width: parent.width - 4px - (self.visible ? 8px : 0px);
-        content: flick.viewport-width;
-        view: flick.width;
-        pos: -flick.viewport-x;
-        moved(p) => {
-            flick.viewport-x = -p;
-        }
-    }
-}
-
-// The working-set file list. Rows are click-to-select; the selected row is
-// highlighted. Selection is driven by index so blink and arrow scrubbing share
-// one path.
-component FileList inherits Rectangle {
-    in property <[FileRow]> files;
-    in property <int> selected-index;
-    callback select(int);
-
-    property <length> row-height: 44px;
-
-    background: #262626;
-    width: 240px;
-
-    list := VScrollArea {
-        content-height: root.files.length * root.row-height;
-        for row[idx] in root.files: Rectangle {
-            y: idx * root.row-height;
-            width: list.content-width;
-            height: root.row-height;
-            background: idx == root.selected-index ? #0a5ea8 : (touch.has-hover ? #333333 : transparent);
-            touch := TouchArea {
-                clicked => {
-                    root.select(idx);
-                }
-            }
-            VerticalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-                padding-top: 5px;
-                padding-bottom: 5px;
-                spacing: 2px;
-                Text {
-                    text: row.name;
-                    overflow: elide;
-                    color: white;
-                }
-                Text {
-                    text: row.status;
-                    visible: row.status != "";
-                    font-size: 11px;
-                    color: row.status == "error" ? #ff8080 : #a0a0a0;
-                }
-            }
-        }
-    }
-}
-
-// A docked panel of image statistics: the numeric summary on the left, a
-// value histogram (256 normalized bar heights, 0..1) on the right. Shown below
-// the image when "Show stats" is on, shrinking the image area to fit.
-component StatsPanel inherits Rectangle {
-    in property <bool> has-stats;
-    in property <string> stat-min;
-    in property <string> stat-max;
-    in property <string> stat-mean;
-    in property <string> stat-median;
-    in property <string> stat-zeros;
-    in property <[float]> histogram;
-
-    height: 150px;
-    background: #1b1b1b;
-
-    HorizontalLayout {
-        padding: 10px;
-        spacing: 16px;
-
-        // Numeric summary.
-        VerticalLayout {
-            width: 200px;
-            spacing: 4px;
-            alignment: center;
-            Text {
-                text: root.has-stats ? "Statistics" : "No pixel statistics";
-                color: #d0d0d0;
-                font-weight: 700;
-            }
-            if root.has-stats: Text {
-                text: "min: " + root.stat-min;
-                color: #a0a0a0;
-                font-size: 12px;
-            }
-            if root.has-stats: Text {
-                text: "max: " + root.stat-max;
-                color: #a0a0a0;
-                font-size: 12px;
-            }
-            if root.has-stats: Text {
-                text: "mean: " + root.stat-mean;
-                color: #a0a0a0;
-                font-size: 12px;
-            }
-            if root.has-stats: Text {
-                text: "median: " + root.stat-median;
-                color: #a0a0a0;
-                font-size: 12px;
-            }
-            if root.has-stats: Text {
-                text: "zeros: " + root.stat-zeros;
-                color: #a0a0a0;
-                font-size: 12px;
-            }
-        }
-
-        // Histogram: one bottom-anchored bar per bucket.
-        Rectangle {
-            background: #101010;
-            border-color: #303030;
-            border-width: 1px;
-            horizontal-stretch: 1;
-            visible: root.has-stats;
-            HorizontalLayout {
-                padding: 4px;
-                spacing: 0px;
-                for h in root.histogram: Rectangle {
-                    horizontal-stretch: 1;
-                    Rectangle {
-                        width: parent.width;
-                        height: parent.height * h;
-                        y: parent.height - self.height;
-                        background: #6fbf73;
-                    }
-                }
-            }
-        }
-    }
-}
+// Re-export the shared structs so the generated Rust names them at the crate root.
+export { FileRow, HeaderRow, StatItem }
 
 export component AppWindow inherits Window {
     in property <image> preview-image;
@@ -325,20 +19,15 @@ export component AppWindow inherits Window {
     in-out property <bool> blinking: false;
     in-out property <bool> show-stats: false;
     in property <bool> busy: false;
-    // FITS header cards for the Headers tab (keyword / value / comment columns).
+    // FITS header cards for the Headers tab.
     in property <[HeaderRow]> header-rows;
-    // Pixel statistics for the docked stats panel.
-    in property <bool> has-stats: false;
-    in property <string> stat-min;
-    in property <string> stat-max;
-    in property <string> stat-mean;
-    in property <string> stat-median;
-    in property <string> stat-zeros;
-    // 256 normalized (0..1) histogram bar heights.
+    // Pixel statistics (empty for an already-debayered RGB cube) and the
+    // matching 0..1 histogram bar heights for the stats panel.
+    in property <[StatItem]> stats;
     in property <[float]> histogram;
-    // Left half of the status bar: the high-level activity (loading, blinking…).
+    // Status bar: left is the high-level activity (loading, blinking…), right is
+    // the fine-grained pipeline step (reading, debayering, stretching).
     in property <string> status-text;
-    // Right half: the fine-grained pipeline step (reading, debayering, stretching).
     in property <string> stage-text;
 
     callback open();
@@ -506,7 +195,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Left: file list. Right: the image view.
+        // Left: file list. Right: the image / headers tabs.
         HorizontalBox {
             padding: 0px;
             spacing: 0px;
@@ -535,12 +224,7 @@ export component AppWindow inherits Window {
                         // Docks below the image when "Show stats" is on,
                         // shrinking the image area to fit.
                         if root.show-stats: StatsPanel {
-                            has-stats: root.has-stats;
-                            stat-min: root.stat-min;
-                            stat-max: root.stat-max;
-                            stat-mean: root.stat-mean;
-                            stat-median: root.stat-median;
-                            stat-zeros: root.stat-zeros;
+                            stats: root.stats;
                             histogram: root.histogram;
                         }
                     }
@@ -548,98 +232,23 @@ export component AppWindow inherits Window {
 
                 Tab {
                     title: "Headers";
-                    // A plain, non-sortable table: a fixed column header over a
-                    // scrolling list of every header card, so the full set is
-                    // always shown (matching `fitz info --headers`).
-                    Rectangle {
-                        background: #1b1b1b;
-                        VerticalLayout {
-                            // Column titles.
-                            Rectangle {
-                                height: 26px;
-                                background: #2a2a2a;
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    spacing: 10px;
-                                    Text {
-                                        text: "Keyword";
-                                        width: 110px;
-                                        font-weight: 700;
-                                        color: #d0d0d0;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Value";
-                                        width: 220px;
-                                        font-weight: 700;
-                                        color: #d0d0d0;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Comment";
-                                        horizontal-stretch: 1;
-                                        font-weight: 700;
-                                        color: #d0d0d0;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                            hlist := VScrollArea {
-                                vertical-stretch: 1;
-                                content-height: root.header-rows.length * 24px;
-                                for row[idx] in root.header-rows: Rectangle {
-                                    y: idx * 24px;
-                                    width: hlist.content-width;
-                                    height: 24px;
-                                    background: mod(idx, 2) == 0 ? transparent : #ffffff08;
-                                    HorizontalLayout {
-                                        padding-left: 10px;
-                                        padding-right: 10px;
-                                        spacing: 10px;
-                                        Text {
-                                            text: row.keyword;
-                                            width: 110px;
-                                            font-family: "monospace";
-                                            color: #9ecbff;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-                                        Text {
-                                            text: row.value;
-                                            width: 220px;
-                                            font-family: "monospace";
-                                            color: white;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-                                        Text {
-                                            text: row.comment;
-                                            horizontal-stretch: 1;
-                                            color: #a0a0a0;
-                                            overflow: elide;
-                                            vertical-alignment: center;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    HeaderView {
+                        rows: root.header-rows;
                     }
                 }
             }
         }
 
+        // Status bar: global activity on the left, pipeline step on the right.
         HorizontalBox {
             padding: 6px;
             spacing: 8px;
-            // Left: global action.
             Text {
                 text: root.busy ? "⏳  " + root.status-text : root.status-text;
                 overflow: elide;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
             }
-            // Right: current pipeline step.
             Text {
                 text: root.stage-text;
                 color: #a0a0a0;

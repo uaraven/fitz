@@ -1,0 +1,85 @@
+// A thick, clearly visible, draggable scrollbar — unlike the built-in Fluent
+// ScrollView's 2px hairline thumb, which vanishes against a noisy image. The
+// parent drives `pos` (a non-negative scroll offset) from the flickable and
+// applies the `moved` callback back onto it.
+export component Scrollbar inherits Rectangle {
+    in property <bool> horizontal;
+    // Total content length and the visible length along this axis.
+    in property <length> content;
+    in property <length> view;
+    // Current scroll offset (0 .. content-view), driven by the parent.
+    in property <length> pos;
+    callback moved(length);
+
+    property <length> max-pos: max(0px, root.content - root.view);
+    property <length> track: root.horizontal ? root.width : root.height;
+    property <length> thumb-len: min(root.track, max(32px, root.track * root.view / max(1px, root.content)));
+    property <length> travel: root.track - root.thumb-len;
+    // Thumb offset along the track for the current scroll position.
+    property <length> thumb-pos: root.max-pos > 0px ? root.travel * (root.pos / root.max-pos) : 0px;
+
+    visible: root.max-pos > 0px;
+    background: #00000055;
+    border-radius: min(root.width, root.height) / 2;
+
+    thumb := Rectangle {
+        background: ta.pressed ? #ffffffdd : (ta.has-hover ? #ffffffb0 : #ffffff80);
+        border-radius: parent.border-radius;
+        width: root.horizontal ? root.thumb-len : parent.width;
+        height: root.horizontal ? parent.height : root.thumb-len;
+        x: root.horizontal ? root.thumb-pos : 0px;
+        y: root.horizontal ? 0px : root.thumb-pos;
+    }
+
+    ta := TouchArea {
+        property <length> start-pos;
+        property <length> start-mouse;
+
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                self.start-pos = root.pos;
+                self.start-mouse = root.horizontal ? self.mouse-x : self.mouse-y;
+            }
+        }
+        moved => {
+            if (self.pressed && root.travel > 0px) {
+                root.moved(clamp(
+                    self.start-pos + ((root.horizontal ? self.mouse-x : self.mouse-y) - self.start-mouse) * (root.max-pos / root.travel),
+                    0px, root.max-pos));
+            }
+        }
+    }
+}
+
+// A vertically scrolling area with the same draggable scrollbar as the image
+// view, so the file list and header list scroll consistently (the built-in
+// ListView's hairline scrollbar can't be restyled). The caller places the rows
+// as children and supplies their total `content-height`.
+export component VScrollArea inherits Rectangle {
+    in property <length> content-height;
+    // Usable content width (excluding the scrollbar), for rows to bind to.
+    out property <length> content-width: flick.width;
+
+    clip: true;
+
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-width: self.width;
+        viewport-height: max(root.content-height, self.height);
+        @children
+    }
+
+    Scrollbar {
+        horizontal: false;
+        width: 6px;
+        x: parent.width - self.width;
+        height: parent.height;
+        content: flick.viewport-height;
+        view: flick.height;
+        pos: -flick.viewport-y;
+        moved(p) => {
+            flick.viewport-y = -p;
+        }
+    }
+}

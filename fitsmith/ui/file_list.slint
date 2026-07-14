@@ -1,0 +1,48 @@
+import { VScrollArea } from "scrolling.slint";
+import { FileRow } from "types.slint";
+
+// The working-set file list. Rows are click-to-select; the selected row is
+// highlighted. Selection is driven by index so blink and manual clicks share
+// one path.
+export component FileList inherits Rectangle {
+    in property <[FileRow]> files;
+    in property <int> selected-index;
+    callback select(int);
+
+    property <length> row-height: 44px;
+
+    background: #262626;
+    width: 240px;
+
+    list := VScrollArea {
+        content-height: root.files.length * root.row-height;
+        for row[idx] in root.files: Rectangle {
+            y: idx * root.row-height;
+            width: list.content-width;
+            height: root.row-height;
+            background: idx == root.selected-index ? #0a5ea8 : (touch.has-hover ? #333333 : transparent);
+            touch := TouchArea {
+                clicked => {
+                    root.select(idx);
+                }
+            }
+            VerticalLayout {
+                padding: 5px;
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 2px;
+                Text {
+                    text: row.name;
+                    overflow: elide;
+                    color: white;
+                }
+                Text {
+                    text: row.status;
+                    visible: row.status != "";
+                    font-size: 11px;
+                    color: row.status == "error" ? #ff8080 : #a0a0a0;
+                }
+            }
+        }
+    }
+}
