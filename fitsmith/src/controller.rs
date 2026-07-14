@@ -12,6 +12,7 @@
 //! whenever the debayer/stretch settings change (which invalidate them).
 
 use std::cell::RefCell;
+use std::cmp::max;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -58,10 +59,16 @@ struct AppState {
 
 impl AppState {
     fn new() -> Self {
+
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_memory();
+        let max_mem = sys.available_memory();
+        let cache_capacity = max( CACHE_CAPACITY_BYTES, (max_mem / 8) as usize);
+
         Self {
             paths: Vec::new(),
             files_model: Rc::new(VecModel::default()),
-            cache: crate::cache::LruCache::new(CACHE_CAPACITY_BYTES),
+            cache: crate::cache::LruCache::new(cache_capacity),
             selected: None,
             generation: 0,
             blink_timer: Timer::default(),
@@ -78,6 +85,36 @@ pub fn init(app: &AppWindow) {
     STATE.with(|s| {
         app.set_files(ModelRc::from(s.borrow().files_model.clone()));
     });
+    update_memory(app);
+}
+
+/// Refresh the status bar's memory readout from the cache's resident bytes.
+/// Called after every cache mutation (load, clear, settings change).
+fn update_memory(app: &AppWindow) {
+    let (used, capacity) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.cache.total_bytes(), st.cache.capacity())
+    });
+    app.set_memory_text(
+        format!("Memory: {} / {}", format_bytes(used), format_bytes(capacity)).into(),
+    );
+}
+
+/// Human-readable byte size (B/KB/MB/GB) for the memory readout.
+fn format_bytes(n: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * KB;
+    const GB: f64 = 1024.0 * MB;
+    let n = n as f64;
+    if n >= GB {
+        format!("{:.1} GB", n / GB)
+    } else if n >= MB {
+        format!("{:.0} MB", n / MB)
+    } else if n >= KB {
+        format!("{:.0} KB", n / KB)
+    } else {
+        format!("{n:.0} B")
+    }
 }
 
 /// Snapshot the toggle state from the UI into preview parameters.
@@ -166,6 +203,7 @@ pub fn clear_files(app: &AppWindow) {
     app.set_status_text("No image — add files to view".into());
     app.set_stage_text("".into());
     view::clear(app);
+    update_memory(app);
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
@@ -269,6 +307,7 @@ pub fn rerender(app: &AppWindow) {
         st.cache.clear();
         st.selected
     });
+    update_memory(app);
     if let Some(index) = selected {
         select_file(app, index as i32);
     }
@@ -335,6 +374,7 @@ fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<LoadedDoc>, req: 
             let doc = Rc::new(doc);
             let cost = doc.preview.rgba8.len();
             STATE.with(|s| s.borrow_mut().cache.put(path.clone(), doc.clone(), cost));
+            update_memory(app);
             if is_current(req) {
                 display_doc(app, &path, &doc);
             }
@@ -426,5 +466,21 @@ fn advance_blink(app: &AppWindow) {
     });
     if let Some(index) = next {
         select_file(app, index as i32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_bytes_picks_a_sensible_unit() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2 * 1024), "2 KB");
+        assert_eq!(format_bytes(36 * 1024 * 1024), "36 MB");
+        // The 1 GiB cache budget reads as "1.0 GB".
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+        assert_eq!(format_bytes(1536 * 1024 * 1024), "1.5 GB");
     }
 }

@@ -13,6 +13,7 @@ fitz-core = { path = "../fitz-core" }
 slint = "1"
 rfd = "0.15"
 anyhow = "1"
+sysinfo = "0.39.6"
 
 # macOS only: used to turn off automatic window tabbing so AppKit stops
 # injecting "Show Tab Bar"/"Show All Tabs" into our View menu. Already in the

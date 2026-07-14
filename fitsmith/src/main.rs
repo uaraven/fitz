@@ -37,7 +37,6 @@ fn disable_automatic_window_tabbing() {
 fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     disable_automatic_window_tabbing();
-
     let app = AppWindow::new()?;
     app.set_status_text("No image — add files to view".into());
     controller::init(&app);
