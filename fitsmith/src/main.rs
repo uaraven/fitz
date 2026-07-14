@@ -42,86 +42,29 @@ fn main() -> Result<()> {
     app.set_app_version(env!("CARGO_PKG_VERSION").into());
     controller::init(&app);
 
-    app.on_open({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                controller::open_file(&app);
-            }
-        }
-    });
+    // Every callback below just re-acquires the window from a weak handle and
+    // forwards to a controller function; `forward!` wires one up without
+    // repeating that upgrade boilerplate each time.
+    macro_rules! forward {
+        ($setter:ident, |$app:ident $(, $arg:ident)*| $body:expr) => {{
+            let weak = app.as_weak();
+            app.$setter(move |$($arg),*| {
+                if let Some($app) = weak.upgrade() {
+                    $body;
+                }
+            });
+        }};
+    }
 
-    app.on_open_directory({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                controller::open_directory(&app);
-            }
-        }
-    });
-
-    app.on_clear_files({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                controller::clear_files(&app);
-            }
-        }
-    });
-
-    app.on_select_file({
-        let weak = app.as_weak();
-        move |index| {
-            if let Some(app) = weak.upgrade() {
-                controller::select_file(&app, index);
-            }
-        }
-    });
-
-    app.on_navigate({
-        let weak = app.as_weak();
-        move |delta| {
-            if let Some(app) = weak.upgrade() {
-                controller::navigate(&app, delta);
-            }
-        }
-    });
-
-    app.on_navigate_first({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                controller::navigate_edge(&app, false);
-            }
-        }
-    });
-
-    app.on_navigate_last({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                controller::navigate_edge(&app, true);
-            }
-        }
-    });
-
-    app.on_toggles_changed({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                controller::rerender(&app);
-            }
-        }
-    });
-
-    app.on_blink_toggled({
-        let weak = app.as_weak();
-        move || {
-            if let Some(app) = weak.upgrade() {
-                controller::set_blinking(&app, app.get_blinking());
-            }
-        }
-    });
+    forward!(on_open, |app| controller::open_file(&app));
+    forward!(on_open_directory, |app| controller::open_directory(&app));
+    forward!(on_clear_files, |app| controller::clear_files(&app));
+    forward!(on_select_file, |app, index| controller::select_file(&app, index));
+    forward!(on_navigate, |app, delta| controller::navigate(&app, delta));
+    forward!(on_navigate_first, |app| controller::navigate_edge(&app, false));
+    forward!(on_navigate_last, |app| controller::navigate_edge(&app, true));
+    forward!(on_toggles_changed, |app| controller::rerender(&app));
+    forward!(on_blink_toggled, |app| controller::set_blinking(&app, app.get_blinking()));
 
     app.on_request_exit(|| {
         let _ = slint::quit_event_loop();

@@ -10,6 +10,12 @@ import { AboutDialog } from "about.slint";
 // Re-export the shared structs so the generated Rust names them at the crate root.
 export { FileRow, HeaderRow, StatItem }
 
+// A thin vertical divider between toolbar / status-bar groups.
+component Separator inherits Rectangle {
+    width: 1px;
+    background: #444444;
+}
+
 export component AppWindow inherits Window {
     in property <image> preview-image;
     in property <length> image-width;
@@ -190,10 +196,7 @@ export component AppWindow inherits Window {
                     root.clear-files();
                 }
             }
-            Rectangle {
-                width: 1px;
-                background: #444444;
-            }
+            Separator { }
             CheckBox {
                 text: "Debayer";
                 checked <=> root.debayer-enabled;
@@ -202,10 +205,7 @@ export component AppWindow inherits Window {
                 text: "Stretch";
                 checked <=> root.stretch-enabled;
             }
-            Rectangle {
-                width: 1px;
-                background: #444444;
-            }
+            Separator { }
             CheckBox {
                 text: "Stats";
                 checked <=> root.show-stats;
@@ -214,10 +214,7 @@ export component AppWindow inherits Window {
                 text: "Info";
                 checked <=> root.show-info;
             }
-            Rectangle {
-                width: 1px;
-                background: #444444;
-            }
+            Separator { }
             Button {
                 text: "Blink";
                 checkable: true;
@@ -363,10 +360,7 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
             }
             // Separator + action step, shown only while a pipeline step runs.
-            if root.stage-text != "": Rectangle {
-                width: 1px;
-                background: #444444;
-            }
+            if root.stage-text != "": Separator { }
             if root.stage-text != "": Text {
                 text: root.stage-text;
                 color: #a0a0a0;
