@@ -23,7 +23,7 @@ use fitz_core::preview::{PreviewParams, PreviewStage, render_preview_with_progre
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 
 use crate::doc::LoadedDoc;
-use crate::files::{display_name, is_compressed, next_index, scan_directory};
+use crate::files::{display_name, expand_inputs, is_compressed, next_index, scan_directory};
 use crate::{AppWindow, FileRow, view};
 
 /// Maximum total size of rendered previews to keep cached. Sized so a handful
@@ -107,16 +107,12 @@ fn make_row(path: &Path) -> FileRow {
 
 /// Prompt for a single FITS file, add it to the working set, and select it.
 pub fn open_file(app: &AppWindow) {
-    let picked = rfd::FileDialog::new()
+    if let Some(path) = rfd::FileDialog::new()
         .add_filter("FITS images", &["fit", "fits", "fts", "fz"])
         .add_filter("All files", &["*"])
-        .pick_file();
-    let Some(path) = picked else {
-        return;
-    };
-    let target = add_paths(vec![path.clone()]).or_else(|| index_of(&path));
-    if let Some(index) = target {
-        select_file(app, index as i32);
+        .pick_file()
+    {
+        add_and_select(app, vec![path]);
     }
 }
 
@@ -131,7 +127,21 @@ pub fn open_directory(app: &AppWindow) {
         app.set_status_text(format!("No FITS files in {}", dir.display()).into());
         return;
     }
-    let first = paths[0].clone();
+    add_and_select(app, paths);
+}
+
+/// Add the files and directories passed on the command line to the working set
+/// and select the first (see [`expand_inputs`]). Called once at startup.
+pub fn open_args(app: &AppWindow, args: impl IntoIterator<Item = PathBuf>) {
+    add_and_select(app, expand_inputs(args));
+}
+
+/// Add `paths` to the working set and select the first of them (whether newly
+/// added or already present). A no-op for an empty list.
+fn add_and_select(app: &AppWindow, paths: Vec<PathBuf>) {
+    let Some(first) = paths.first().cloned() else {
+        return;
+    };
     let target = add_paths(paths).or_else(|| index_of(&first));
     if let Some(index) = target {
         select_file(app, index as i32);

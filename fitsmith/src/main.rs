@@ -12,6 +12,8 @@ mod files;
 mod image;
 mod view;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use slint::ComponentHandle;
 
@@ -79,6 +81,9 @@ fn main() -> Result<()> {
     app.on_request_exit(|| {
         let _ = slint::quit_event_loop();
     });
+
+    // Seed the working set from any files / folders given on the command line.
+    controller::open_args(&app, std::env::args_os().skip(1).map(PathBuf::from));
 
     app.run()?;
     Ok(())
