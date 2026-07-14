@@ -1,4 +1,90 @@
-import { Button, CheckBox, HorizontalBox, VerticalBox, ListView, TabWidget, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, VerticalBox, TabWidget } from "std-widgets.slint";
+
+// A thick, clearly visible, draggable scrollbar — unlike the built-in Fluent
+// ScrollView's 2px hairline thumb, which vanishes against a noisy image. The
+// parent drives `pos` (a non-negative scroll offset) from the flickable and
+// applies the `moved` callback back onto it.
+component Scrollbar inherits Rectangle {
+    in property <bool> horizontal;
+    // Total content length and the visible length along this axis.
+    in property <length> content;
+    in property <length> view;
+    // Current scroll offset (0 .. content-view), driven by the parent.
+    in property <length> pos;
+    callback moved(length);
+
+    property <length> thickness: 6px;
+    property <length> max-pos: max(0px, root.content - root.view);
+    property <length> track: root.horizontal ? root.width : root.height;
+    property <length> thumb-len: min(root.track, max(32px, root.track * root.view / max(1px, root.content)));
+    property <length> travel: root.track - root.thumb-len;
+
+    visible: root.max-pos > 0px;
+    background: #00000055;
+    border-radius: root.thickness / 2;
+
+    thumb := Rectangle {
+        background: ta.pressed ? #ffffffdd : (ta.has-hover ? #ffffffb0 : #ffffff80);
+        border-radius: root.thickness / 2;
+        width: root.horizontal ? root.thumb-len : parent.width;
+        height: root.horizontal ? parent.height : root.thumb-len;
+        x: root.horizontal ? (root.max-pos > 0px ? root.travel * (root.pos / root.max-pos) : 0px) : 0px;
+        y: root.horizontal ? 0px : (root.max-pos > 0px ? root.travel * (root.pos / root.max-pos) : 0px);
+    }
+
+    ta := TouchArea {
+        property <length> start-pos;
+        property <length> start-mouse;
+
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                self.start-pos = root.pos;
+                self.start-mouse = root.horizontal ? self.mouse-x : self.mouse-y;
+            }
+        }
+        moved => {
+            if (self.pressed && root.travel > 0px) {
+                root.moved(clamp(
+                    self.start-pos + ((root.horizontal ? self.mouse-x : self.mouse-y) - self.start-mouse) * (root.max-pos / root.travel),
+                    0px, root.max-pos));
+            }
+        }
+    }
+}
+
+// A vertically scrolling area with the same 6px draggable scrollbar as the
+// image view, so the file list and header list scroll consistently (the
+// built-in ListView's hairline scrollbar can't be restyled). The caller places
+// the rows as children and supplies their total `content-height`.
+component VScrollArea inherits Rectangle {
+    in property <length> content-height;
+    // Usable content width (excluding the scrollbar), for rows to bind to.
+    out property <length> content-width: flick.width;
+
+    clip: true;
+
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
+        viewport-width: self.width;
+        viewport-height: max(root.content-height, self.height);
+        @children
+    }
+
+    Scrollbar {
+        horizontal: false;
+        width: 6px;
+        x: parent.width - self.width;
+        y: 0px;
+        height: parent.height;
+        content: flick.viewport-height;
+        view: flick.height;
+        pos: -flick.viewport-y;
+        moved(p) => {
+            flick.viewport-y = -p;
+        }
+    }
+}
 
 // One entry in the file list: its display name, a short status badge
 // ("compressed" / "error" / ""), and the full path (kept for tooltips).
@@ -16,9 +102,10 @@ export struct HeaderRow {
 }
 
 // A zoomable, scrollable image surface. The natural (pixel) size is supplied by
-// Rust; the displayed size is that scaled by `zoom`. A `ScrollView` shows
-// scrollbars once the scaled image is larger than the view; when it is smaller,
-// the viewport is padded out to the visible area so the image stays centered.
+// Rust; the displayed size is that scaled by `zoom`. When the scaled image is
+// larger than the view, thick draggable scrollbars appear and the image can be
+// panned; when it is smaller, the viewport is padded to the visible area so the
+// image stays centered.
 component ImageView inherits Rectangle {
     in property <image> source;
     in property <length> natural-width;
@@ -51,19 +138,51 @@ component ImageView inherits Rectangle {
     }
 
     background: #202020;
+    clip: true;
 
-    scroll := ScrollView {
+    flick := Flickable {
+        width: parent.width;
+        height: parent.height;
         // Pad the viewport out to the visible area when the image is smaller,
-        // so it centers; grow to the image when larger, so scrollbars appear.
-        viewport-width: max(root.scaled-width, self.visible-width);
-        viewport-height: max(root.scaled-height, self.visible-height);
+        // so it centers; grow to the image when larger, so it can be panned.
+        viewport-width: max(root.scaled-width, self.width);
+        viewport-height: max(root.scaled-height, self.height);
         Image {
-            x: (scroll.viewport-width - root.scaled-width) / 2;
-            y: (scroll.viewport-height - root.scaled-height) / 2;
+            x: (flick.viewport-width - root.scaled-width) / 2;
+            y: (flick.viewport-height - root.scaled-height) / 2;
             width: root.scaled-width;
             height: root.scaled-height;
             source: root.source;
             image-fit: fill;
+        }
+    }
+
+    // Vertical scrollbar on the right edge; shortened when the horizontal one
+    // is present so they don't overlap in the corner.
+    Scrollbar {
+        horizontal: false;
+        width: 6px;
+        x: parent.width - self.width - 2px;
+        y: 2px;
+        height: parent.height - 4px - (h-bar.visible ? 8px : 0px);
+        content: flick.viewport-height;
+        view: flick.height;
+        pos: -flick.viewport-y;
+        moved(p) => {
+            flick.viewport-y = -p;
+        }
+    }
+    h-bar := Scrollbar {
+        horizontal: true;
+        height: 6px;
+        y: parent.height - self.height - 2px;
+        x: 2px;
+        width: parent.width - 4px - (self.visible ? 8px : 0px);
+        content: flick.viewport-width;
+        view: flick.width;
+        pos: -flick.viewport-x;
+        moved(p) => {
+            flick.viewport-x = -p;
         }
     }
 }
@@ -76,12 +195,17 @@ component FileList inherits Rectangle {
     in property <int> selected-index;
     callback select(int);
 
+    property <length> row-height: 44px;
+
     background: #262626;
     width: 240px;
 
-    ListView {
+    list := VScrollArea {
+        content-height: root.files.length * root.row-height;
         for row[idx] in root.files: Rectangle {
-            height: 44px;
+            y: idx * root.row-height;
+            width: list.content-width;
+            height: root.row-height;
             background: idx == root.selected-index ? #0a5ea8 : (touch.has-hover ? #333333 : transparent);
             touch := TouchArea {
                 clicked => {
@@ -461,8 +585,12 @@ export component AppWindow inherits Window {
                                     }
                                 }
                             }
-                            ListView {
+                            hlist := VScrollArea {
+                                vertical-stretch: 1;
+                                content-height: root.header-rows.length * 24px;
                                 for row[idx] in root.header-rows: Rectangle {
+                                    y: idx * 24px;
+                                    width: hlist.content-width;
                                     height: 24px;
                                     background: mod(idx, 2) == 0 ? transparent : #ffffff08;
                                     HorizontalLayout {
