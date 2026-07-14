@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::Result;
-use fitz_core::info::{HeaderInfo, header_info, header_info_with_pixels};
+use fitz_core::info::{header_info, header_info_with_pixels, trim_float};
 
 use crate::io_prompt::print_step;
 use crate::options::InfoOptions;
@@ -44,47 +44,17 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     // `Result`s are discarded.
     let mut out = String::new();
     let _ = writeln!(out, "{}", input.display());
-    let _ = writeln!(out, "  Resolution:  {} x {}", info.width, info.height);
-    let _ = writeln!(out, "  Bit depth:   {}", bit_depth_label(&info));
-    let _ = writeln!(
-        out,
-        "  Channels:    {} ({})",
-        info.channels,
-        channel_label(&info)
-    );
-
-    push_field(&mut out, "Bayer", info.bayerpat.as_deref());
-    push_field(&mut out, "Object", info.object.as_deref());
-
-    push_coordinate(&mut out, Axis::Ra, info.ra_deg, info.ra_sexagesimal.as_deref());
-    push_coordinate(
-        &mut out,
-        Axis::Dec,
-        info.dec_deg,
-        info.dec_sexagesimal.as_deref(),
-    );
-    if let Some(rot) = info.rotation_deg {
-        let _ = writeln!(out, "  Rotation:    {}°", trim_float(rot));
+    // The curated metadata fields come from `fitz-core` so the CLI report and
+    // the GUI info panel stay in sync; the CLI just pads the labels into a column.
+    for field in info.summary() {
+        let _ = writeln!(
+            out,
+            "  {:<1$}{value}",
+            format!("{}:", field.label),
+            FIELD_LABEL_WIDTH,
+            value = field.value,
+        );
     }
-
-    if let Some(exptime) = info.exptime_s {
-        let _ = writeln!(out, "  Exposure:    {} s", trim_float(exptime));
-    }
-    if let Some(gain) = info.gain {
-        let _ = writeln!(out, "  Gain:        {}", trim_float(gain));
-    }
-    if let Some(offset) = info.offset {
-        let _ = writeln!(out, "  Offset:      {}", trim_float(offset));
-    }
-    if let Some((xbin, ybin)) = info.binning {
-        let _ = writeln!(out, "  Binning:     {xbin}x{ybin}");
-    }
-    push_field(&mut out, "Filter", info.filter.as_deref());
-    push_field(&mut out, "Instrument", info.instrument.as_deref());
-    if let Some(telescope) = telescope_label(&info) {
-        let _ = writeln!(out, "  Telescope:   {telescope}");
-    }
-    push_field(&mut out, "Date-obs", info.date_obs.as_deref());
 
     // Pixel statistics are only computed on request (`--pixel`), since they
     // require reading and decompressing the full pixel array. They only make
@@ -144,159 +114,9 @@ fn push_raw_headers(out: &mut String, header: &fitz_core::fitskit::Header) {
     }
 }
 
-/// Describe the pixel storage format. The bit depth comes from the (possibly
-/// decompressed) image's own pixel type, so it's correct for tile-compressed
-/// images whose container `BITPIX` describes the binary table, not the image.
-fn bit_depth_label(info: &HeaderInfo) -> String {
-    match info.bitpix {
-        // An unsigned 16-bit image is stored as signed 16 with BZERO=32768.
-        16 if info.is_unsigned16 => "16-bit unsigned integer".to_string(),
-        8 => "8-bit unsigned integer".to_string(),
-        16 => "16-bit integer".to_string(),
-        32 => "32-bit integer".to_string(),
-        64 => "64-bit integer".to_string(),
-        -32 => "32-bit float".to_string(),
-        -64 => "64-bit float".to_string(),
-        other => format!("BITPIX {other}"),
-    }
-}
-
-/// Describe the channel layout. The Bayer pattern itself is reported on its own
-/// `Bayer:` line, so the raw-mosaic case just notes that it is a mosaic.
-fn channel_label(info: &HeaderInfo) -> String {
-    if info.channels == 3 {
-        return "debayered RGB".to_string();
-    }
-    match info.bayerpat {
-        Some(_) => "mosaic".to_string(),
-        None => "monochrome (debayered)".to_string(),
-    }
-}
-
-/// Describe the imaging telescope: its name (`TELESCOP`) optionally followed by
-/// its optical figure derived from focal length (`FOCALLEN`, mm) and focal ratio
-/// (`FOCRATIO`), e.g. `My Scope (203mm F/4.5)`. Returns `None` when no telescope
-/// keyword carries usable information.
-fn telescope_label(info: &HeaderInfo) -> Option<String> {
-    let name = info
-        .telescope
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    let mut optics = String::new();
-    if let Some(focal) = info.focal_len_mm {
-        optics.push_str(&format!("{}mm", trim_float(focal)));
-    }
-    if let Some(ratio) = info.focal_ratio {
-        if !optics.is_empty() {
-            optics.push(' ');
-        }
-        optics.push_str(&format!("F/{}", trim_float(ratio)));
-    }
-
-    match (name, optics.is_empty()) {
-        (Some(name), false) => Some(format!("{name} ({optics})")),
-        (Some(name), true) => Some(name.to_string()),
-        (None, false) => Some(optics),
-        (None, true) => None,
-    }
-}
-
 /// Column width (including the trailing colon) reserved for a field's label, so
 /// values across different fields line up (e.g. `"  Resolution:  1024 x 768"`).
 const FIELD_LABEL_WIDTH: usize = 13;
-
-/// Append a labeled header field to `out` if the string keyword is present and
-/// non-blank once trimmed, e.g. `push_field(out, "Object", info.object.as_deref())`.
-fn push_field(out: &mut String, label: &str, value: Option<&str>) {
-    if let Some(value) = value.map(str::trim).filter(|s| !s.is_empty()) {
-        let _ = writeln!(
-            out,
-            "  {:<1$}{value}",
-            format!("{label}:"),
-            FIELD_LABEL_WIDTH
-        );
-    }
-}
-
-/// Which sky axis a coordinate is, selecting its sexagesimal convention: right
-/// ascension is expressed in hours (`h m s`, 360° = 24h), declination in signed
-/// degrees (`° ' "`).
-#[derive(Clone, Copy)]
-enum Axis {
-    Ra,
-    Dec,
-}
-
-/// Append a sky coordinate to `out`. When the decimal-degree value is present
-/// it is rendered in sexagesimal form (hours for RA, degrees for DEC) with the
-/// decimal value in parentheses; otherwise the raw sexagesimal header string is
-/// shown verbatim.
-fn push_coordinate(out: &mut String, axis: Axis, deg: Option<f64>, sexagesimal: Option<&str>) {
-    let label = match axis {
-        Axis::Ra => "RA",
-        Axis::Dec => "DEC",
-    };
-    let sexagesimal = sexagesimal.map(str::trim).filter(|s| !s.is_empty());
-
-    let value = match (deg, sexagesimal) {
-        (Some(d), _) => Some(format_coordinate(axis, d)),
-        (None, Some(s)) => Some(s.to_string()),
-        (None, None) => None,
-    };
-    if let Some(value) = value {
-        let _ = writeln!(
-            out,
-            "  {:<1$}{value}",
-            format!("{label}:"),
-            FIELD_LABEL_WIDTH
-        );
-    }
-}
-
-/// Format a decimal-degree coordinate in sexagesimal form with the decimal value
-/// echoed in parentheses, e.g. `20h 30m 00.00s (20.5h)` for RA or
-/// `-12° 30' 00.00" (-12.5°)` for DEC.
-fn format_coordinate(axis: Axis, deg: f64) -> String {
-    match axis {
-        Axis::Ra => {
-            // 360 degrees of RA span 24 hours, so hours = degrees / 15.
-            let hours = deg / 15.0;
-            let (h, m, s) = sexagesimal(hours.abs());
-            let sign = if hours < 0.0 { "-" } else { "" };
-            format!("{sign}{h}h {m:02}m {s:05.2}s ({}h)", trim_float(hours))
-        }
-        Axis::Dec => {
-            let (d, m, s) = sexagesimal(deg.abs());
-            let sign = if deg < 0.0 { "-" } else { "" };
-            format!("{sign}{d}° {m:02}' {s:05.2}\" ({}°)", trim_float(deg))
-        }
-    }
-}
-
-/// Split a non-negative decimal value into whole units, minutes and seconds.
-/// Rounding is done on the total seconds first so any carry propagates and the
-/// returned minutes/seconds stay in `[0, 60)`.
-fn sexagesimal(value: f64) -> (u64, u64, f64) {
-    let total_seconds = (value * 3600.0 * 100.0).round() / 100.0;
-    let whole = (total_seconds / 3600.0).trunc();
-    let rem = total_seconds - whole * 3600.0;
-    let minutes = (rem / 60.0).trunc();
-    let seconds = rem - minutes * 60.0;
-    (whole as u64, minutes as u64, seconds)
-}
-
-/// Format a float without a trailing `.0` for whole numbers, keeping a compact
-/// representation otherwise.
-fn trim_float(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        let s = format!("{v:.6}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
-    }
-}
 
 /// Pick the drawn histogram width for a terminal `cols` wide.
 ///
@@ -402,42 +222,6 @@ fn render_histogram(hist: &[u64], width: usize, rows: usize, log: bool) -> Strin
 mod tests {
     use super::*;
     use crate::test_support::test_data;
-
-    #[test]
-    fn trim_float_drops_trailing_zeros() {
-        assert_eq!(trim_float(180.0), "180");
-        assert_eq!(trim_float(312.866739069469), "312.866739");
-        assert_eq!(trim_float(30.5), "30.5");
-    }
-
-    #[test]
-    fn ra_formats_as_hours() {
-        // 307.5° / 15 = 20.5h = 20h 30m 00s.
-        assert_eq!(format_coordinate(Axis::Ra, 307.5), "20h 30m 00.00s (20.5h)");
-        // 0° is 00h 00m 00s.
-        assert_eq!(format_coordinate(Axis::Ra, 0.0), "0h 00m 00.00s (0h)");
-    }
-
-    #[test]
-    fn dec_formats_as_signed_degrees() {
-        assert_eq!(
-            format_coordinate(Axis::Dec, 12.5),
-            "12° 30' 00.00\" (12.5°)"
-        );
-        // Declination is signed.
-        assert_eq!(
-            format_coordinate(Axis::Dec, -12.5),
-            "-12° 30' 00.00\" (-12.5°)"
-        );
-    }
-
-    #[test]
-    fn sexagesimal_carries_rounding() {
-        // 1.0 - a hair: should round cleanly to 1h 00m 00s, not 0h 59m 60s.
-        let (h, m, s) = sexagesimal(0.9999999);
-        assert_eq!((h, m), (1, 0));
-        assert_eq!(s, 0.0);
-    }
 
     #[test]
     fn render_histogram_shape_and_scaling() {

@@ -2,6 +2,7 @@
 //! with no state or threading. Data in, Slint properties out; the controller
 //! owns *when* to call these, this owns *how* the data maps to the UI.
 
+use fitz_core::info::SummaryField;
 use slint::{Image, ModelRc, VecModel};
 
 use crate::doc::{LoadedDoc, StatSummary};
@@ -15,6 +16,7 @@ pub fn show_doc(app: &AppWindow, doc: &LoadedDoc) {
     app.set_image_width(doc.preview.width as f32);
     app.set_image_height(doc.preview.height as f32);
     app.set_header_rows(header_rows(doc));
+    app.set_info(info_items(&doc.info));
     app.set_stats(stat_items(&doc.stats));
     app.set_histogram(histogram(&doc.stats));
 }
@@ -25,6 +27,7 @@ pub fn clear(app: &AppWindow) {
     app.set_image_width(0.0);
     app.set_image_height(0.0);
     app.set_header_rows(ModelRc::new(VecModel::<HeaderRow>::default()));
+    app.set_info(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_stats(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
 }
@@ -42,6 +45,19 @@ fn header_rows(doc: &LoadedDoc) -> ModelRc<HeaderRow> {
         })
         .collect();
     ModelRc::new(VecModel::from(rows))
+}
+
+/// The curated metadata summary as label/value rows for the info panel (reusing
+/// the generic [`StatItem`] label/value pair).
+fn info_items(fields: &[SummaryField]) -> ModelRc<StatItem> {
+    let items: Vec<StatItem> = fields
+        .iter()
+        .map(|f| StatItem {
+            label: f.label.as_str().into(),
+            value: f.value.as_str().into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(items))
 }
 
 /// The labeled statistics for the panel, or empty for an already-debayered RGB
