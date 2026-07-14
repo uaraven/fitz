@@ -140,13 +140,37 @@ pub struct PreviewImage {
     pub source: PreviewSource,
 }
 
+/// A heavy stage of the preview pipeline, reported to a caller (e.g. a GUI
+/// status bar) just before the work runs. The caller's own file reading is not
+/// covered here — it happens before [`render_preview`] is called.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreviewStage {
+    /// Demosaicing a raw mosaic / setting up channels (the debayer step).
+    Debayering,
+    /// Applying the auto-stretch.
+    Stretching,
+}
+
 /// Render an in-memory image to an RGBA8 display buffer, honoring the debayer
 /// and stretch toggles in `p`. No I/O — the caller has already loaded the
 /// `(header, img)` (see [`crate::fits_image::find_image_hdu`]).
 pub fn render_preview(header: &Header, img: &ImageData, p: &PreviewParams) -> Result<PreviewImage> {
+    render_preview_with_progress(header, img, p, |_| {})
+}
+
+/// Like [`render_preview`], but calls `progress` just before each heavy stage so
+/// a caller can surface what work is currently running.
+pub fn render_preview_with_progress(
+    header: &Header,
+    img: &ImageData,
+    p: &PreviewParams,
+    mut progress: impl FnMut(PreviewStage),
+) -> Result<PreviewImage> {
+    progress(PreviewStage::Debayering);
     let pr = preview_rgb(header, img, p.debayer, p.pattern, p.force_demosaic)?;
 
     let rgba8 = if p.stretch {
+        progress(PreviewStage::Stretching);
         // A raw-mono preview is grayscale (all channels equal), so linked vs.
         // unlinked is moot; honor the caller's choice for color images.
         let stretched = auto_stretch(&pr.rgb, p.linked, p.brightness);
@@ -215,6 +239,34 @@ mod tests {
         // RGBA: four bytes per pixel, every alpha byte fully opaque.
         assert_eq!(img.rgba8.len(), 8 * 8 * 4);
         assert!(img.rgba8.chunks_exact(4).all(|px| px[3] == 255));
+    }
+
+    #[test]
+    fn progress_reports_debayer_then_stretch() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("mosaic.fit");
+        write_mosaic_fits(&path, 8, 8, Some("RGGB"));
+
+        let mut stages = Vec::new();
+        with_image(&path, |h, i| {
+            render_preview_with_progress(h, i, &PreviewParams::default(), |s| stages.push(s))
+                .unwrap()
+        });
+        assert_eq!(
+            stages,
+            vec![PreviewStage::Debayering, PreviewStage::Stretching]
+        );
+
+        // With stretch off, the stretch stage is not reported.
+        let mut stages = Vec::new();
+        let p = PreviewParams {
+            stretch: false,
+            ..PreviewParams::default()
+        };
+        with_image(&path, |h, i| {
+            render_preview_with_progress(h, i, &p, |s| stages.push(s)).unwrap()
+        });
+        assert_eq!(stages, vec![PreviewStage::Debayering]);
     }
 
     #[test]

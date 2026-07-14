@@ -17,12 +17,13 @@ use std::time::Duration;
 use anyhow::Result;
 use fitz_core::fits_image::find_image_hdu;
 use fitz_core::fitskit::FitsFile;
-use fitz_core::preview::{PreviewImage, PreviewParams, render_preview};
+use fitz_core::preview::{PreviewImage, PreviewParams, PreviewStage, render_preview_with_progress};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 
+use crate::doc::LoadedDoc;
 use crate::files::{display_name, is_compressed, next_index, scan_directory};
 use crate::image::preview_to_image;
-use crate::{AppWindow, FileRow};
+use crate::{AppWindow, FileRow, HeaderRow};
 
 /// Maximum total size of rendered previews to keep cached. Sized so a handful
 /// of full-frame images stay resident for instant blink / re-selection.
@@ -42,8 +43,9 @@ struct AppState {
     paths: Vec<PathBuf>,
     /// The `[FileRow]` model backing the list view (mirrors `paths`).
     files_model: Rc<VecModel<FileRow>>,
-    /// Rendered previews, keyed by path. Cleared when a setting invalidates them.
-    cache: crate::cache::LruCache<PathBuf, Rc<PreviewImage>>,
+    /// Loaded documents (preview + headers + stats), keyed by path. Cleared
+    /// when a setting invalidates the rendered preview.
+    cache: crate::cache::LruCache<PathBuf, Rc<LoadedDoc>>,
     /// Currently selected index into `paths`, if any.
     selected: Option<usize>,
     /// Bumped on every selection/re-render request; a worker result is applied
@@ -92,6 +94,58 @@ fn apply_preview(app: &AppWindow, preview: &PreviewImage) {
     app.set_preview_image(preview_to_image(preview));
     app.set_image_width(preview.width as f32);
     app.set_image_height(preview.height as f32);
+}
+
+/// Populate the Headers tab's table from a document's header cards — one row per
+/// keyword, so the full header is shown (as `fitz info --headers` prints it).
+fn apply_headers(app: &AppWindow, doc: &LoadedDoc) {
+    let rows: Vec<HeaderRow> = doc
+        .headers
+        .iter()
+        .map(|c| HeaderRow {
+            keyword: c.name.as_str().into(),
+            value: c.value.as_str().into(),
+            comment: c.comment.as_str().into(),
+        })
+        .collect();
+    app.set_header_rows(ModelRc::new(VecModel::from(rows)));
+}
+
+/// Push a document's pixel statistics (numbers + normalized histogram) to the
+/// stats panel, or mark it "no stats" for an already-debayered RGB cube.
+fn apply_stats(app: &AppWindow, doc: &LoadedDoc) {
+    match &doc.stats {
+        Some(s) => {
+            app.set_has_stats(true);
+            app.set_stat_min(format_stat(s.min).into());
+            app.set_stat_max(format_stat(s.max).into());
+            app.set_stat_mean(format_stat(s.mean).into());
+            app.set_stat_median(format_stat(s.median).into());
+            app.set_stat_zeros(s.zeros.to_string().into());
+            app.set_histogram(ModelRc::new(VecModel::from(s.histogram.clone())));
+        }
+        None => {
+            app.set_has_stats(false);
+            app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
+        }
+    }
+}
+
+/// Format a statistic value compactly: whole numbers without a decimal point,
+/// fractional ones to three places.
+fn format_stat(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.3}")
+    }
+}
+
+/// Clear the Headers tab and stats panel (no document, or a failed load).
+fn clear_doc_views(app: &AppWindow) {
+    app.set_header_rows(ModelRc::new(VecModel::<HeaderRow>::default()));
+    app.set_has_stats(false);
+    app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
 }
 
 /// Build the list row for a path: base name plus a "compressed" badge for `.fz`.
@@ -162,6 +216,8 @@ pub fn clear_files(app: &AppWindow) {
     app.set_image_height(0.0);
     app.set_busy(false);
     app.set_status_text("No image — use File ▸ Add File…".into());
+    app.set_stage_text("".into());
+    clear_doc_views(app);
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
@@ -210,12 +266,19 @@ pub fn select_file(app: &AppWindow, index: i32) {
     };
 
     app.set_selected_index(index as i32);
-    if let Some(preview) = cached {
-        display_preview(app, &path, &preview);
+    if let Some(doc) = cached {
+        display_doc(app, &path, &doc);
         return;
     }
     app.set_busy(true);
-    app.set_status_text(format!("Loading {}…", display_name(&path)).into());
+    // Left half: the high-level activity; the worker fills the right half with
+    // the fine-grained step (reading / debayering / stretching).
+    let action = if app.get_blinking() {
+        "Blinking"
+    } else {
+        "Loading"
+    };
+    app.set_status_text(format!("{action}: {}", display_name(&path)).into());
     spawn_load(app.as_weak(), path, params(app), req);
 }
 
@@ -232,20 +295,51 @@ pub fn rerender(app: &AppWindow) {
     }
 }
 
-/// Read a file, decode it, and render its preview on a worker thread, marshaling
-/// the result back to the UI thread.
+/// Read a file, decode it, and render its preview on a worker thread, reporting
+/// each pipeline stage to the right-hand status field and marshaling the final
+/// result back to the UI thread.
 fn spawn_load(weak: Weak<AppWindow>, path: PathBuf, p: PreviewParams, req: u64) {
     std::thread::spawn(move || {
-        let outcome = load_and_render(&path, &p);
+        // Push the current pipeline step to the UI thread, but only while this
+        // request is still the latest one (a superseded load stays quiet).
+        let report = {
+            let weak = weak.clone();
+            move |label: &'static str| {
+                let weak = weak.clone();
+                let _ = weak.upgrade_in_event_loop(move |app| {
+                    if is_current(req) {
+                        app.set_stage_text(label.into());
+                    }
+                });
+            }
+        };
+        let outcome = load_and_render(&path, &p, &report);
         let _ = weak.upgrade_in_event_loop(move |app| finish_load(&app, path, outcome, req));
     });
 }
 
-/// Read a FITS file and render it to a display-ready preview. Runs on a worker.
-fn load_and_render(path: &Path, p: &PreviewParams) -> Result<PreviewImage> {
+/// Read a FITS file, render its preview, and derive its header cards and pixel
+/// stats — the whole display-ready document — calling `report` with the name of
+/// each stage as it starts. Runs on a worker.
+fn load_and_render(
+    path: &Path,
+    p: &PreviewParams,
+    report: &dyn Fn(&'static str),
+) -> Result<LoadedDoc> {
+    report("Reading");
     let fits = FitsFile::from_file(path)?;
     let (header, img) = find_image_hdu(&fits, path)?;
-    render_preview(header, &img, p)
+    let preview =
+        render_preview_with_progress(header, &img, p, |stage| report(stage_label(stage)))?;
+    Ok(LoadedDoc::build(header, &img, preview))
+}
+
+/// The right-hand status label for a render stage.
+fn stage_label(stage: PreviewStage) -> &'static str {
+    match stage {
+        PreviewStage::Debayering => "Debayering",
+        PreviewStage::Stretching => "Stretching",
+    }
 }
 
 /// Whether `req` is still the latest request; stale results are dropped so the
@@ -254,20 +348,16 @@ fn is_current(req: u64) -> bool {
     STATE.with(|s| s.borrow().generation == req)
 }
 
-/// Cache a freshly rendered preview (always, so the work isn't wasted) and
+/// Cache a freshly loaded document (always, so the work isn't wasted) and
 /// display it only if the selection hasn't moved on.
-fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<PreviewImage>, req: u64) {
+fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<LoadedDoc>, req: u64) {
     match outcome {
-        Ok(preview) => {
-            let preview = Rc::new(preview);
-            let cost = preview.rgba8.len();
-            STATE.with(|s| {
-                s.borrow_mut()
-                    .cache
-                    .put(path.clone(), preview.clone(), cost)
-            });
+        Ok(doc) => {
+            let doc = Rc::new(doc);
+            let cost = doc.preview.rgba8.len();
+            STATE.with(|s| s.borrow_mut().cache.put(path.clone(), doc.clone(), cost));
             if is_current(req) {
-                display_preview(app, &path, &preview);
+                display_doc(app, &path, &doc);
             }
         }
         Err(e) => {
@@ -275,6 +365,7 @@ fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<PreviewImage>, re
             if is_current(req) {
                 app.set_busy(false);
                 app.set_status_text(format!("Failed to open {}: {e}", display_name(&path)).into());
+                app.set_stage_text("".into());
                 // Don't let a broken file stall an in-progress blink loop.
                 schedule_next_blink(app);
             }
@@ -282,19 +373,23 @@ fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<PreviewImage>, re
     }
 }
 
-/// Show a preview on screen and, if blink is running, arm the next advance.
-fn display_preview(app: &AppWindow, path: &Path, preview: &PreviewImage) {
-    apply_preview(app, preview);
+/// Show a loaded document on screen — image, header table and stats panel — and,
+/// if blink is running, arm the next advance.
+fn display_doc(app: &AppWindow, path: &Path, doc: &LoadedDoc) {
+    apply_preview(app, &doc.preview);
+    apply_headers(app, doc);
+    apply_stats(app, doc);
     app.set_busy(false);
     app.set_status_text(
         format!(
             "{}   {}×{}",
             display_name(path),
-            preview.width,
-            preview.height
+            doc.preview.width,
+            doc.preview.height
         )
         .into(),
     );
+    app.set_stage_text("".into()); // pipeline finished for this frame
     schedule_next_blink(app);
 }
 
