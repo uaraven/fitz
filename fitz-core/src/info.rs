@@ -82,8 +82,15 @@ fn header_info_impl(input: &Path, with_pixels: bool) -> Result<HeaderInfo> {
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
     let (header, img) = find_image_hdu(&fits, input)?;
-    let img = img.as_ref();
+    Ok(header_info_from(header, img.as_ref(), with_pixels))
+}
 
+/// Build a [`HeaderInfo`] from an already-loaded image and header, without
+/// touching the filesystem. This is the shared core of [`header_info`] and lets
+/// callers that already hold a decoded `(header, img)` (e.g. the GUI's loader)
+/// reuse the same summary without a second read. `with_pixels` computes
+/// [`PixelStats`] (meaningless, and skipped, for an already-debayered RGB cube).
+pub fn header_info_from(header: &Header, img: &ImageData, with_pixels: bool) -> HeaderInfo {
     let is_rgb_cube = is_debayered_rgb_cube(header, img);
     let channels = if is_rgb_cube { 3 } else { 1 };
 
@@ -98,7 +105,7 @@ fn header_info_impl(input: &Path, with_pixels: bool) -> Result<HeaderInfo> {
         None
     };
 
-    Ok(HeaderInfo {
+    HeaderInfo {
         width,
         height,
         channels,
@@ -125,7 +132,221 @@ fn header_info_impl(input: &Path, with_pixels: bool) -> Result<HeaderInfo> {
         date_obs: header.get_string("DATE-OBS").map(str::to_string),
         header: header.clone(),
         pixel_stats,
-    })
+    }
+}
+
+/// One labeled field in a [`HeaderInfo::summary`] — a display label and its
+/// already-formatted value (e.g. `"Resolution"` / `"3008 x 3008"`).
+pub struct SummaryField {
+    pub label: String,
+    pub value: String,
+}
+
+impl HeaderInfo {
+    /// A curated, ordered list of the most useful header fields as label/value
+    /// pairs. The CLI `info` report and the GUI info panel both build on this so
+    /// the two stay in sync. Resolution, bit depth and channels are always
+    /// present; every other field appears only when the header carries it (and
+    /// is non-blank). Pixel statistics are deliberately excluded — they belong
+    /// in their own panel/section.
+    pub fn summary(&self) -> Vec<SummaryField> {
+        let mut fields = Vec::new();
+        push(
+            &mut fields,
+            "Resolution",
+            format!("{} x {}", self.width, self.height),
+        );
+        push(&mut fields, "Bit depth", bit_depth_label(self));
+        push(
+            &mut fields,
+            "Channels",
+            format!("{} ({})", self.channels, channel_label(self)),
+        );
+        push_str(&mut fields, "Bayer", self.bayerpat.as_deref());
+        push_str(&mut fields, "Object", self.object.as_deref());
+        push_coordinate(&mut fields, Axis::Ra, self.ra_deg, self.ra_sexagesimal.as_deref());
+        push_coordinate(
+            &mut fields,
+            Axis::Dec,
+            self.dec_deg,
+            self.dec_sexagesimal.as_deref(),
+        );
+        if let Some(rot) = self.rotation_deg {
+            push(&mut fields, "Rotation", format!("{}°", trim_float(rot)));
+        }
+        if let Some(exptime) = self.exptime_s {
+            push(&mut fields, "Exposure", format!("{} s", trim_float(exptime)));
+        }
+        if let Some(gain) = self.gain {
+            push(&mut fields, "Gain", trim_float(gain));
+        }
+        if let Some(offset) = self.offset {
+            push(&mut fields, "Offset", trim_float(offset));
+        }
+        if let Some((xbin, ybin)) = self.binning {
+            push(&mut fields, "Binning", format!("{xbin}x{ybin}"));
+        }
+        push_str(&mut fields, "Filter", self.filter.as_deref());
+        push_str(&mut fields, "Instrument", self.instrument.as_deref());
+        if let Some(telescope) = telescope_label(self) {
+            push(&mut fields, "Telescope", telescope);
+        }
+        push_str(&mut fields, "Date-obs", self.date_obs.as_deref());
+        fields
+    }
+}
+
+/// Append a field with an already-formatted value.
+fn push(fields: &mut Vec<SummaryField>, label: &str, value: String) {
+    fields.push(SummaryField {
+        label: label.to_string(),
+        value,
+    });
+}
+
+/// Append a string field only when present and non-blank once trimmed.
+fn push_str(fields: &mut Vec<SummaryField>, label: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|s| !s.is_empty()) {
+        push(fields, label, value.to_string());
+    }
+}
+
+/// Describe the pixel storage format. The bit depth comes from the (possibly
+/// decompressed) image's own pixel type, so it's correct for tile-compressed
+/// images whose container `BITPIX` describes the binary table, not the image.
+fn bit_depth_label(info: &HeaderInfo) -> String {
+    match info.bitpix {
+        // An unsigned 16-bit image is stored as signed 16 with BZERO=32768.
+        16 if info.is_unsigned16 => "16-bit unsigned integer".to_string(),
+        8 => "8-bit unsigned integer".to_string(),
+        16 => "16-bit integer".to_string(),
+        32 => "32-bit integer".to_string(),
+        64 => "64-bit integer".to_string(),
+        -32 => "32-bit float".to_string(),
+        -64 => "64-bit float".to_string(),
+        other => format!("BITPIX {other}"),
+    }
+}
+
+/// Describe the channel layout. The Bayer pattern itself is reported on its own
+/// `Bayer` field, so the raw-mosaic case just notes that it is a mosaic.
+fn channel_label(info: &HeaderInfo) -> String {
+    if info.channels == 3 {
+        return "debayered RGB".to_string();
+    }
+    match info.bayerpat {
+        Some(_) => "mosaic".to_string(),
+        None => "monochrome (debayered)".to_string(),
+    }
+}
+
+/// Describe the imaging telescope: its name (`TELESCOP`) optionally followed by
+/// its optical figure derived from focal length (`FOCALLEN`, mm) and focal ratio
+/// (`FOCRATIO`), e.g. `My Scope (203mm F/4.5)`. Returns `None` when no telescope
+/// keyword carries usable information.
+fn telescope_label(info: &HeaderInfo) -> Option<String> {
+    let name = info
+        .telescope
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut optics = String::new();
+    if let Some(focal) = info.focal_len_mm {
+        optics.push_str(&format!("{}mm", trim_float(focal)));
+    }
+    if let Some(ratio) = info.focal_ratio {
+        if !optics.is_empty() {
+            optics.push(' ');
+        }
+        optics.push_str(&format!("F/{}", trim_float(ratio)));
+    }
+
+    match (name, optics.is_empty()) {
+        (Some(name), false) => Some(format!("{name} ({optics})")),
+        (Some(name), true) => Some(name.to_string()),
+        (None, false) => Some(optics),
+        (None, true) => None,
+    }
+}
+
+/// Which sky axis a coordinate is, selecting its sexagesimal convention: right
+/// ascension is expressed in hours (`h m s`, 360° = 24h), declination in signed
+/// degrees (`° ' "`).
+#[derive(Clone, Copy)]
+enum Axis {
+    Ra,
+    Dec,
+}
+
+/// Append a sky coordinate. When the decimal-degree value is present it is
+/// rendered in sexagesimal form (hours for RA, degrees for DEC) with the decimal
+/// value in parentheses; otherwise the raw sexagesimal header string is shown
+/// verbatim. Absent on both counts, nothing is appended.
+fn push_coordinate(
+    fields: &mut Vec<SummaryField>,
+    axis: Axis,
+    deg: Option<f64>,
+    sexagesimal: Option<&str>,
+) {
+    let label = match axis {
+        Axis::Ra => "RA",
+        Axis::Dec => "DEC",
+    };
+    let sexagesimal = sexagesimal.map(str::trim).filter(|s| !s.is_empty());
+
+    let value = match (deg, sexagesimal) {
+        (Some(d), _) => Some(format_coordinate(axis, d)),
+        (None, Some(s)) => Some(s.to_string()),
+        (None, None) => None,
+    };
+    if let Some(value) = value {
+        push(fields, label, value);
+    }
+}
+
+/// Format a decimal-degree coordinate in sexagesimal form with the decimal value
+/// echoed in parentheses, e.g. `20h 30m 00.00s (20.5h)` for RA or
+/// `-12° 30' 00.00" (-12.5°)` for DEC.
+fn format_coordinate(axis: Axis, deg: f64) -> String {
+    match axis {
+        Axis::Ra => {
+            // 360 degrees of RA span 24 hours, so hours = degrees / 15.
+            let hours = deg / 15.0;
+            let (h, m, s) = to_sexagesimal(hours.abs());
+            let sign = if hours < 0.0 { "-" } else { "" };
+            format!("{sign}{h}h {m:02}m {s:05.2}s ({}h)", trim_float(hours))
+        }
+        Axis::Dec => {
+            let (d, m, s) = to_sexagesimal(deg.abs());
+            let sign = if deg < 0.0 { "-" } else { "" };
+            format!("{sign}{d}° {m:02}' {s:05.2}\" ({}°)", trim_float(deg))
+        }
+    }
+}
+
+/// Split a non-negative decimal value into whole units, minutes and seconds.
+/// Rounding is done on the total seconds first so any carry propagates and the
+/// returned minutes/seconds stay in `[0, 60)`.
+fn to_sexagesimal(value: f64) -> (u64, u64, f64) {
+    let total_seconds = (value * 3600.0 * 100.0).round() / 100.0;
+    let whole = (total_seconds / 3600.0).trunc();
+    let rem = total_seconds - whole * 3600.0;
+    let minutes = (rem / 60.0).trunc();
+    let seconds = rem - minutes * 60.0;
+    (whole as u64, minutes as u64, seconds)
+}
+
+/// Format a float without a trailing `.0` for whole numbers, keeping a compact
+/// representation otherwise. Shared with the CLI's pixel-stats report so numbers
+/// are rendered the same way everywhere.
+pub fn trim_float(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        let s = format!("{v:.6}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
 }
 
 /// Compute min/max/mean/median, the zero count and the value histogram of the
@@ -359,6 +580,64 @@ mod tests {
         let img = img.as_ref();
         let stats = pixel_stats(header, img);
         assert_eq!(stats.zeros, 1);
+    }
+
+    #[test]
+    fn trim_float_drops_trailing_zeros() {
+        assert_eq!(trim_float(180.0), "180");
+        assert_eq!(trim_float(312.866739069469), "312.866739");
+        assert_eq!(trim_float(30.5), "30.5");
+    }
+
+    #[test]
+    fn ra_formats_as_hours() {
+        // 307.5° / 15 = 20.5h = 20h 30m 00s.
+        assert_eq!(format_coordinate(Axis::Ra, 307.5), "20h 30m 00.00s (20.5h)");
+        // 0° is 00h 00m 00s.
+        assert_eq!(format_coordinate(Axis::Ra, 0.0), "0h 00m 00.00s (0h)");
+    }
+
+    #[test]
+    fn dec_formats_as_signed_degrees() {
+        assert_eq!(
+            format_coordinate(Axis::Dec, 12.5),
+            "12° 30' 00.00\" (12.5°)"
+        );
+        // Declination is signed.
+        assert_eq!(
+            format_coordinate(Axis::Dec, -12.5),
+            "-12° 30' 00.00\" (-12.5°)"
+        );
+    }
+
+    #[test]
+    fn sexagesimal_carries_rounding() {
+        // 1.0 - a hair: should round cleanly to 1h 00m 00s, not 0h 59m 60s.
+        let (h, m, s) = to_sexagesimal(0.9999999);
+        assert_eq!((h, m), (1, 0));
+        assert_eq!(s, 0.0);
+    }
+
+    #[test]
+    fn summary_lists_core_fields_and_present_metadata() {
+        // A real mosaic frame always yields Resolution / Bit depth / Channels,
+        // plus its Bayer pattern, in that order and without any pixel stats.
+        let input = test_data("uncompressed.fit");
+        let info = header_info(&input).unwrap();
+        let summary = info.summary();
+
+        let labels: Vec<&str> = summary.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!(&labels[..3], &["Resolution", "Bit depth", "Channels"]);
+        assert!(labels.contains(&"Bayer"));
+
+        let by = |label: &str| {
+            summary
+                .iter()
+                .find(|f| f.label == label)
+                .map(|f| f.value.as_str())
+        };
+        assert_eq!(by("Resolution"), Some("3008 x 3008"));
+        assert_eq!(by("Channels"), Some("1 (mosaic)"));
     }
 
     #[test]

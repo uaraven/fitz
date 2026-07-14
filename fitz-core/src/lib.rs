@@ -13,6 +13,7 @@ pub mod debayer;
 pub mod decompress;
 pub mod fits_image;
 pub mod info;
+pub mod preview;
 pub mod resize;
 pub mod split_channel;
 pub mod stretch;

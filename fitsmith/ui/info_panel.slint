@@ -1,0 +1,53 @@
+import { VScrollArea } from "scrolling.slint";
+import { StatItem } from "types.slint";
+
+// A docked panel showing the curated FITS metadata summary — the same fields
+// the `fitz info` command reports — as label/value lines. Shown below the image
+// when "Info" is on (mutually exclusive with the stats panel), shrinking the
+// image area to fit. Scrolls when the fields don't all fit the fixed height.
+export component InfoPanel inherits Rectangle {
+    in property <[StatItem]> info;
+
+    property <length> row-height: 22px;
+
+    height: 150px;
+    background: #1b1b1b;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 4px;
+
+        Text {
+            text: "Image info";
+            color: #d0d0d0;
+            font-weight: 700;
+        }
+
+        list := VScrollArea {
+            vertical-stretch: 1;
+            content-height: root.info.length * root.row-height;
+            for item[idx] in root.info: Rectangle {
+                y: idx * root.row-height;
+                width: list.content-width;
+                height: root.row-height;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: item.label;
+                        width: 100px;
+                        color: #9ecbff;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.value;
+                        horizontal-stretch: 1;
+                        color: white;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

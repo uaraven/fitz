@@ -1,0 +1,98 @@
+import { VScrollArea } from "scrolling.slint";
+import { FileRow } from "types.slint";
+
+// The working-set file list. Rows are click-to-select; the selected row is
+// highlighted. Selection is driven by index so blink, clicks and keyboard
+// navigation all share one path. When focused (click a row, or on startup) the
+// list handles arrow / page / home-end / space keys:
+//   Up / Down          move by one     (Space == Down, for manual blinking)
+//   PageUp / PageDown  move by a page   (macOS: Option+Up/Down)
+//   Home / End         jump to ends     (macOS: Cmd+Up/Down — Cmd maps to the
+//                                        `control` modifier on macOS)
+export component FileList inherits Rectangle {
+    in property <[FileRow]> files;
+    in property <int> selected-index;
+    callback select(int);
+    callback select-relative(int);
+    callback select-first();
+    callback select-last();
+
+    property <length> row-height: 30px;
+    // Rows that fit in the viewport, for Page Up / Down (at least one).
+    property <int> page-size: max(1, floor(self.height / root.row-height));
+
+    background: #262626;
+    forward-focus: fs;
+
+    fs := FocusScope {
+        init => {
+            self.focus();
+        }
+        key-pressed(event) => {
+            // Home / End (macOS: Cmd = the `control` modifier).
+            if (event.text == Key.Home || (event.text == Key.UpArrow && event.modifiers.control)) {
+                root.select-first();
+                return accept;
+            }
+            if (event.text == Key.End || (event.text == Key.DownArrow && event.modifiers.control)) {
+                root.select-last();
+                return accept;
+            }
+            // Page Up / Down (macOS: Option = the `alt` modifier).
+            if (event.text == Key.PageUp || (event.text == Key.UpArrow && event.modifiers.alt)) {
+                root.select-relative(-root.page-size);
+                return accept;
+            }
+            if (event.text == Key.PageDown || (event.text == Key.DownArrow && event.modifiers.alt)) {
+                root.select-relative(root.page-size);
+                return accept;
+            }
+            // Single step; Space acts as Down to simplify manual blinking.
+            if (event.text == Key.UpArrow) {
+                root.select-relative(-1);
+                return accept;
+            }
+            if (event.text == Key.DownArrow || event.text == Key.Space) {
+                root.select-relative(1);
+                return accept;
+            }
+            return reject;
+        }
+
+        list := VScrollArea {
+            content-height: root.files.length * root.row-height;
+            for row[idx] in root.files: Rectangle {
+                y: idx * root.row-height;
+                width: list.content-width;
+                height: root.row-height;
+                background: idx == root.selected-index ? #0a5ea8 : (touch.has-hover ? #333333 : transparent);
+                touch := TouchArea {
+                    clicked => {
+                        fs.focus();
+                        root.select(idx);
+                    }
+                }
+                // Name on the left, an optional status badge on the right — one line.
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    Text {
+                        text: row.name;
+                        overflow: elide;
+                        color: white;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: row.status;
+                        visible: row.status != "";
+                        font-size: 11px;
+                        color: row.status == "error" ? #ff8080 : #a0a0a0;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
