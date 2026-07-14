@@ -38,6 +38,10 @@ export component AppWindow inherits Window {
     callback clear-files();
     callback request-exit();
     callback select-file(int);
+    // Keyboard navigation from the file list: relative move, and jump to ends.
+    callback navigate(int);
+    callback navigate-first();
+    callback navigate-last();
     callback blink-toggled();
     // Fired when a view toggle changes so Rust can re-render the cached image.
     callback toggles-changed();
@@ -224,6 +228,15 @@ export component AppWindow inherits Window {
                 selected-index: root.selected-index;
                 select(idx) => {
                     root.select-file(idx);
+                }
+                select-relative(delta) => {
+                    root.navigate(delta);
+                }
+                select-first() => {
+                    root.navigate-first();
+                }
+                select-last() => {
+                    root.navigate-last();
                 }
             }
 

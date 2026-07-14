@@ -1,4 +1,4 @@
-//! A byte-budgeted LRU cache keeping recently rendered previews resident, so
+//! An LRU cache keeping recently rendered previews resident, so
 //! re-selecting a file or blinking back to it re-displays instantly instead of
 //! re-reading, re-debayering, and re-stretching. Entries carry an explicit cost
 //! (their pixel-buffer size); the cache evicts the least-recently-used entries

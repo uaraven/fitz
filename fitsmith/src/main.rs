@@ -60,6 +60,33 @@ fn main() -> Result<()> {
         }
     });
 
+    app.on_navigate({
+        let weak = app.as_weak();
+        move |delta| {
+            if let Some(app) = weak.upgrade() {
+                controller::navigate(&app, delta);
+            }
+        }
+    });
+
+    app.on_navigate_first({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                controller::navigate_edge(&app, false);
+            }
+        }
+    });
+
+    app.on_navigate_last({
+        let weak = app.as_weak();
+        move || {
+            if let Some(app) = weak.upgrade() {
+                controller::navigate_edge(&app, true);
+            }
+        }
+    });
+
     app.on_toggles_changed({
         let weak = app.as_weak();
         move || {
