@@ -1,4 +1,4 @@
-import { Button, CheckBox, HorizontalBox, VerticalBox, ListView } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, VerticalBox, ListView, TabWidget, ScrollView } from "std-widgets.slint";
 
 // One entry in the file list: its display name, a short status badge
 // ("compressed" / "error" / ""), and the full path (kept for tooltips).
@@ -8,14 +8,26 @@ export struct FileRow {
     path: string,
 }
 
-// A zoomable, pannable image surface. The natural (pixel) size is supplied by
-// Rust; the displayed size is that scaled by `zoom`. A `Flickable` provides
-// panning once the image is larger than the view.
+// One FITS header card for the Headers tab, split into display columns.
+export struct HeaderRow {
+    keyword: string,
+    value: string,
+    comment: string,
+}
+
+// A zoomable, scrollable image surface. The natural (pixel) size is supplied by
+// Rust; the displayed size is that scaled by `zoom`. A `ScrollView` shows
+// scrollbars once the scaled image is larger than the view; when it is smaller,
+// the viewport is padded out to the visible area so the image stays centered.
 component ImageView inherits Rectangle {
     in property <image> source;
     in property <length> natural-width;
     in property <length> natural-height;
     in-out property <float> zoom: 1.0;
+
+    // The displayed image size at the current zoom.
+    property <length> scaled-width: root.natural-width * root.zoom;
+    property <length> scaled-height: root.natural-height * root.zoom;
 
     // The zoom that makes the image exactly fit the view, or 1.0 when empty.
     property <float> fit-zoom: (root.natural-width > 0px && root.natural-height > 0px)
@@ -38,15 +50,18 @@ component ImageView inherits Rectangle {
         root.zoom = root.fit-zoom;
     }
 
-    clip: true;
     background: #202020;
 
-    Flickable {
-        viewport-width: root.natural-width * root.zoom;
-        viewport-height: root.natural-height * root.zoom;
+    scroll := ScrollView {
+        // Pad the viewport out to the visible area when the image is smaller,
+        // so it centers; grow to the image when larger, so scrollbars appear.
+        viewport-width: max(root.scaled-width, self.visible-width);
+        viewport-height: max(root.scaled-height, self.visible-height);
         Image {
-            width: root.natural-width * root.zoom;
-            height: root.natural-height * root.zoom;
+            x: (scroll.viewport-width - root.scaled-width) / 2;
+            y: (scroll.viewport-height - root.scaled-height) / 2;
+            width: root.scaled-width;
+            height: root.scaled-height;
             source: root.source;
             image-fit: fill;
         }
@@ -95,6 +110,86 @@ component FileList inherits Rectangle {
     }
 }
 
+// A docked panel of image statistics: the numeric summary on the left, a
+// value histogram (256 normalized bar heights, 0..1) on the right. Shown below
+// the image when "Show stats" is on, shrinking the image area to fit.
+component StatsPanel inherits Rectangle {
+    in property <bool> has-stats;
+    in property <string> stat-min;
+    in property <string> stat-max;
+    in property <string> stat-mean;
+    in property <string> stat-median;
+    in property <string> stat-zeros;
+    in property <[float]> histogram;
+
+    height: 150px;
+    background: #1b1b1b;
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 16px;
+
+        // Numeric summary.
+        VerticalLayout {
+            width: 200px;
+            spacing: 4px;
+            alignment: center;
+            Text {
+                text: root.has-stats ? "Statistics" : "No pixel statistics";
+                color: #d0d0d0;
+                font-weight: 700;
+            }
+            if root.has-stats: Text {
+                text: "min: " + root.stat-min;
+                color: #a0a0a0;
+                font-size: 12px;
+            }
+            if root.has-stats: Text {
+                text: "max: " + root.stat-max;
+                color: #a0a0a0;
+                font-size: 12px;
+            }
+            if root.has-stats: Text {
+                text: "mean: " + root.stat-mean;
+                color: #a0a0a0;
+                font-size: 12px;
+            }
+            if root.has-stats: Text {
+                text: "median: " + root.stat-median;
+                color: #a0a0a0;
+                font-size: 12px;
+            }
+            if root.has-stats: Text {
+                text: "zeros: " + root.stat-zeros;
+                color: #a0a0a0;
+                font-size: 12px;
+            }
+        }
+
+        // Histogram: one bottom-anchored bar per bucket.
+        Rectangle {
+            background: #101010;
+            border-color: #303030;
+            border-width: 1px;
+            horizontal-stretch: 1;
+            visible: root.has-stats;
+            HorizontalLayout {
+                padding: 4px;
+                spacing: 0px;
+                for h in root.histogram: Rectangle {
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height * h;
+                        y: parent.height - self.height;
+                        background: #6fbf73;
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     in property <image> preview-image;
     in property <length> image-width;
@@ -104,8 +199,23 @@ export component AppWindow inherits Window {
     in-out property <bool> debayer-enabled: true;
     in-out property <bool> stretch-enabled: true;
     in-out property <bool> blinking: false;
+    in-out property <bool> show-stats: false;
     in property <bool> busy: false;
+    // FITS header cards for the Headers tab (keyword / value / comment columns).
+    in property <[HeaderRow]> header-rows;
+    // Pixel statistics for the docked stats panel.
+    in property <bool> has-stats: false;
+    in property <string> stat-min;
+    in property <string> stat-max;
+    in property <string> stat-mean;
+    in property <string> stat-median;
+    in property <string> stat-zeros;
+    // 256 normalized (0..1) histogram bar heights.
+    in property <[float]> histogram;
+    // Left half of the status bar: the high-level activity (loading, blinking…).
     in property <string> status-text;
+    // Right half: the fine-grained pipeline step (reading, debayering, stretching).
+    in property <string> stage-text;
 
     callback open();
     callback open-directory();
@@ -173,6 +283,11 @@ export component AppWindow inherits Window {
                 checkable: true;
                 checked <=> root.stretch-enabled;
             }
+            MenuItem {
+                title: "Show image stats";
+                checkable: true;
+                checked <=> root.show-stats;
+            }
             MenuSeparator { }
             MenuItem {
                 title: "Blink";
@@ -221,6 +336,10 @@ export component AppWindow inherits Window {
             CheckBox {
                 text: "Stretch";
                 checked <=> root.stretch-enabled;
+            }
+            CheckBox {
+                text: "Stats";
+                checked <=> root.show-stats;
             }
             Rectangle {
                 width: 1px;
@@ -276,21 +395,129 @@ export component AppWindow inherits Window {
                 }
             }
 
-            image-view := ImageView {
-                source: root.preview-image;
-                natural-width: root.image-width;
-                natural-height: root.image-height;
+            TabWidget {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
+
+                Tab {
+                    title: "Image";
+                    VerticalLayout {
+                        image-view := ImageView {
+                            vertical-stretch: 1;
+                            source: root.preview-image;
+                            natural-width: root.image-width;
+                            natural-height: root.image-height;
+                        }
+                        // Docks below the image when "Show stats" is on,
+                        // shrinking the image area to fit.
+                        if root.show-stats: StatsPanel {
+                            has-stats: root.has-stats;
+                            stat-min: root.stat-min;
+                            stat-max: root.stat-max;
+                            stat-mean: root.stat-mean;
+                            stat-median: root.stat-median;
+                            stat-zeros: root.stat-zeros;
+                            histogram: root.histogram;
+                        }
+                    }
+                }
+
+                Tab {
+                    title: "Headers";
+                    // A plain, non-sortable table: a fixed column header over a
+                    // scrolling list of every header card, so the full set is
+                    // always shown (matching `fitz info --headers`).
+                    Rectangle {
+                        background: #1b1b1b;
+                        VerticalLayout {
+                            // Column titles.
+                            Rectangle {
+                                height: 26px;
+                                background: #2a2a2a;
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    spacing: 10px;
+                                    Text {
+                                        text: "Keyword";
+                                        width: 110px;
+                                        font-weight: 700;
+                                        color: #d0d0d0;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Value";
+                                        width: 220px;
+                                        font-weight: 700;
+                                        color: #d0d0d0;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Comment";
+                                        horizontal-stretch: 1;
+                                        font-weight: 700;
+                                        color: #d0d0d0;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            ListView {
+                                for row[idx] in root.header-rows: Rectangle {
+                                    height: 24px;
+                                    background: mod(idx, 2) == 0 ? transparent : #ffffff08;
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 10px;
+                                        Text {
+                                            text: row.keyword;
+                                            width: 110px;
+                                            font-family: "monospace";
+                                            color: #9ecbff;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: row.value;
+                                            width: 220px;
+                                            font-family: "monospace";
+                                            color: white;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: row.comment;
+                                            horizontal-stretch: 1;
+                                            color: #a0a0a0;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
         HorizontalBox {
             padding: 6px;
+            spacing: 8px;
+            // Left: global action.
             Text {
                 text: root.busy ? "⏳  " + root.status-text : root.status-text;
                 overflow: elide;
                 vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            // Right: current pipeline step.
+            Text {
+                text: root.stage-text;
+                color: #a0a0a0;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-alignment: right;
             }
         }
     }

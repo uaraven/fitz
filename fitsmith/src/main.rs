@@ -7,6 +7,7 @@
 
 mod cache;
 mod controller;
+mod doc;
 mod files;
 mod image;
 
