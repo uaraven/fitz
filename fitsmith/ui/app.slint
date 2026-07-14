@@ -19,6 +19,9 @@ export component AppWindow inherits Window {
     in-out property <bool> blinking: false;
     in-out property <bool> show-stats: false;
     in property <bool> busy: false;
+    // Draggable split between the file list and the image/headers panel. Stored
+    // as the file list's width; clamped to the min widths below at layout time.
+    in-out property <length> file-list-width: 240px;
     // FITS header cards for the Headers tab.
     in property <[HeaderRow]> header-rows;
     // Pixel statistics (empty for an already-debayered RGB cube) and the
@@ -52,6 +55,9 @@ export component AppWindow inherits Window {
     title: "FitSmith";
     preferred-width: 1000px;
     preferred-height: 680px;
+    // Enough for both min widths (150 + 6 handle + 480) plus window chrome.
+    min-width: 660px;
+    min-height: 400px;
 
     MenuBar {
         Menu {
@@ -195,12 +201,25 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Left: file list. Right: the image / headers tabs.
-        HorizontalBox {
-            padding: 0px;
-            spacing: 0px;
+        // Left: file list. A draggable handle. Right: the image / headers tabs.
+        // Positioned manually (not via a layout) so the split width is honored
+        // exactly and clamped to each side's minimum.
+        split := Rectangle {
+            vertical-stretch: 1;
+
+            property <length> handle-w: 6px;
+            property <length> min-list: 150px;
+            property <length> min-image: 480px;
+            property <length> max-list: max(self.min-list, self.width - self.handle-w - self.min-image);
+            // The effective (clamped) list width used for layout; the stored
+            // `file-list-width` is the user's preference.
+            property <length> list-w: clamp(root.file-list-width, self.min-list, self.max-list);
 
             FileList {
+                x: 0;
+                y: 0;
+                width: split.list-w;
+                height: parent.height;
                 files: root.files;
                 selected-index: root.selected-index;
                 select(idx) => {
@@ -208,9 +227,30 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // Splitter handle: drag to reallocate width.
+            Rectangle {
+                x: split.list-w;
+                y: 0;
+                width: split.handle-w;
+                height: parent.height;
+                background: handle-touch.pressed || handle-touch.has-hover ? #4a4a4a : #333333;
+                handle-touch := TouchArea {
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        // pressed-x is fixed for the drag; mouse-x follows the
+                        // cursor, so the handle tracks it keeping the grab offset.
+                        root.file-list-width = clamp(
+                            split.list-w + (self.mouse-x - self.pressed-x),
+                            split.min-list, split.max-list);
+                    }
+                }
+            }
+
             TabWidget {
-                horizontal-stretch: 1;
-                vertical-stretch: 1;
+                x: split.list-w + split.handle-w;
+                y: 0;
+                width: parent.width - split.list-w - split.handle-w;
+                height: parent.height;
 
                 Tab {
                     title: "Image";
