@@ -1,18 +1,22 @@
-//! Application logic bridging the Slint UI to `fitz-core`. Milestone 4 adds a
-//! working set of files with click / blink selection: files are decoded off the
-//! UI thread, kept in an LRU cache so re-selecting or blinking re-renders from
-//! memory, and a generation counter drops stale results when the user scrubs
-//! faster than frames can render.
+//! Application logic bridging the Slint UI to `fitz-core`. Files are decoded and
+//! rendered off the UI thread; the resulting display-ready previews are kept in
+//! a byte-budgeted LRU cache so re-selecting or blinking back to a file
+//! re-displays instantly, with no re-debayer/re-stretch. A generation counter
+//! drops stale results when the user scrubs faster than frames can render.
+//!
+//! Blink is load-aware: it never advances before the current frame is on
+//! screen. Manually selecting a file while blinking simply continues the loop
+//! from that file. Because the cache holds *rendered* previews, it is cleared
+//! whenever the debayer/stretch settings change (which invalidate them).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use fitz_core::fits_image::find_image_hdu;
-use fitz_core::fitskit::{FitsFile, Header, ImageData};
+use fitz_core::fitskit::FitsFile;
 use fitz_core::preview::{PreviewImage, PreviewParams, render_preview};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 
@@ -20,20 +24,15 @@ use crate::files::{display_name, is_compressed, next_index, scan_directory};
 use crate::image::preview_to_image;
 use crate::{AppWindow, FileRow};
 
-/// How many decoded frames to keep resident. Small: the goal is smooth blink /
-/// re-selection over a handful of frames, not caching a whole session.
-const CACHE_CAPACITY: usize = 8;
+/// Maximum total size of rendered previews to keep cached. Sized so a handful
+/// of full-frame images stay resident for instant blink / re-selection.
+/// TODO: make this user-configurable.
+const CACHE_CAPACITY_BYTES: usize = 512 * 1024 * 1024;
 
-/// Blink advance interval.
-const BLINK_INTERVAL: Duration = Duration::from_millis(600);
-
-/// A decoded FITS image kept resident so a toggle change or re-selection only
-/// re-runs the (in-memory) render, never a disk read. Shared via `Arc` so the
-/// render worker can borrow it without copying multi-MB pixel data.
-struct LoadedDoc {
-    header: Header,
-    img: ImageData,
-}
+/// How long a blink frame stays on screen *after it has finished loading*
+/// before advancing to the next. The load is always awaited first, so blink
+/// never runs ahead of the images it is showing.
+const BLINK_DWELL: Duration = Duration::from_millis(400);
 
 /// All UI-thread application state. Lives in a thread-local because Slint is
 /// single-threaded: every mutation happens either from a callback or from a
@@ -43,14 +42,14 @@ struct AppState {
     paths: Vec<PathBuf>,
     /// The `[FileRow]` model backing the list view (mirrors `paths`).
     files_model: Rc<VecModel<FileRow>>,
-    /// Decoded frames, keyed by path.
-    cache: crate::cache::LruCache<PathBuf, Arc<LoadedDoc>>,
+    /// Rendered previews, keyed by path. Cleared when a setting invalidates them.
+    cache: crate::cache::LruCache<PathBuf, Rc<PreviewImage>>,
     /// Currently selected index into `paths`, if any.
     selected: Option<usize>,
     /// Bumped on every selection/re-render request; a worker result is applied
     /// only if its captured generation still matches (stale-result coalescing).
     generation: u64,
-    /// Drives blink; stopped by default.
+    /// One-shot timer that advances blink after the current frame's dwell.
     blink_timer: Timer,
 }
 
@@ -59,7 +58,7 @@ impl AppState {
         Self {
             paths: Vec::new(),
             files_model: Rc::new(VecModel::default()),
-            cache: crate::cache::LruCache::new(CACHE_CAPACITY),
+            cache: crate::cache::LruCache::new(CACHE_CAPACITY_BYTES),
             selected: None,
             generation: 0,
             blink_timer: Timer::default(),
@@ -145,14 +144,14 @@ pub fn open_directory(app: &AppWindow) {
 }
 
 /// Remove every file from the working set and reset the view. Bumping the
-/// generation makes any in-flight load/render land as stale and be dropped.
+/// generation makes any in-flight load land as stale and be dropped.
 pub fn clear_files(app: &AppWindow) {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.blink_timer.stop();
         st.paths.clear();
         st.files_model.set_vec(Vec::new());
-        st.cache = crate::cache::LruCache::new(CACHE_CAPACITY);
+        st.cache.clear();
         st.selected = None;
         st.generation += 1;
     });
@@ -191,10 +190,13 @@ fn index_of(path: &Path) -> Option<usize> {
 // --- selection & rendering ----------------------------------------------
 
 /// Select the file at `index`: mark it current, bump the generation, and either
-/// render from the cache (off-thread) or load it from disk.
+/// display it straight from the preview cache or load it from disk off-thread.
+/// Any pending blink advance is cancelled here; the newly shown frame schedules
+/// the next one, so blink continues from whatever the user just selected.
 pub fn select_file(app: &AppWindow, index: i32) {
     let action = STATE.with(|s| {
         let mut st = s.borrow_mut();
+        st.blink_timer.stop();
         let index = usize::try_from(index).ok()?;
         let path = st.paths.get(index)?.clone();
         st.selected = Some(index);
@@ -208,41 +210,30 @@ pub fn select_file(app: &AppWindow, index: i32) {
     };
 
     app.set_selected_index(index as i32);
+    if let Some(preview) = cached {
+        display_preview(app, &path, &preview);
+        return;
+    }
     app.set_busy(true);
     app.set_status_text(format!("Loading {}…", display_name(&path)).into());
-    let p = params(app);
-    match cached {
-        Some(doc) => spawn_render(app.as_weak(), doc, p, req),
-        None => spawn_load(app.as_weak(), path, p, req),
-    }
+    spawn_load(app.as_weak(), path, params(app), req);
 }
 
-/// Re-render the currently selected document after a toggle change, off-thread
-/// with the same coalescing. No-op when nothing is selected or cached.
+/// Handle a debayer/stretch toggle change: the cached previews were rendered
+/// with the old settings, so drop them all and re-render the current selection.
 pub fn rerender(app: &AppWindow) {
-    let action = STATE.with(|s| {
+    let selected = STATE.with(|s| {
         let mut st = s.borrow_mut();
-        let idx = st.selected?;
-        let path = st.paths.get(idx)?.clone();
-        let doc = st.cache.get(&path).cloned()?;
-        st.generation += 1;
-        Some((doc, st.generation))
+        st.cache.clear();
+        st.selected
     });
-    if let Some((doc, req)) = action {
-        app.set_busy(true);
-        spawn_render(app.as_weak(), doc, params(app), req);
+    if let Some(index) = selected {
+        select_file(app, index as i32);
     }
 }
 
-/// Render a cached document on a worker thread, marshaling the result back.
-fn spawn_render(weak: Weak<AppWindow>, doc: Arc<LoadedDoc>, p: PreviewParams, req: u64) {
-    std::thread::spawn(move || {
-        let outcome = render_preview(&doc.header, &doc.img, &p);
-        let _ = weak.upgrade_in_event_loop(move |app| finish_render(&app, outcome, req));
-    });
-}
-
-/// Read a file, decode it, and render its first preview on a worker thread.
+/// Read a file, decode it, and render its preview on a worker thread, marshaling
+/// the result back to the UI thread.
 fn spawn_load(weak: Weak<AppWindow>, path: PathBuf, p: PreviewParams, req: u64) {
     std::thread::spawn(move || {
         let outcome = load_and_render(&path, &p);
@@ -250,16 +241,11 @@ fn spawn_load(weak: Weak<AppWindow>, path: PathBuf, p: PreviewParams, req: u64) 
     });
 }
 
-/// Read a FITS file into a resident document and render it. Runs on a worker.
-fn load_and_render(path: &Path, p: &PreviewParams) -> Result<(LoadedDoc, PreviewImage)> {
+/// Read a FITS file and render it to a display-ready preview. Runs on a worker.
+fn load_and_render(path: &Path, p: &PreviewParams) -> Result<PreviewImage> {
     let fits = FitsFile::from_file(path)?;
     let (header, img) = find_image_hdu(&fits, path)?;
-    let doc = LoadedDoc {
-        header: header.clone(),
-        img: img.into_owned(),
-    };
-    let preview = render_preview(&doc.header, &doc.img, p)?;
-    Ok((doc, preview))
+    render_preview(header, &img, p)
 }
 
 /// Whether `req` is still the latest request; stale results are dropped so the
@@ -268,53 +254,20 @@ fn is_current(req: u64) -> bool {
     STATE.with(|s| s.borrow().generation == req)
 }
 
-/// Base name of the currently selected file, for status text.
-fn selected_name() -> Option<String> {
-    STATE.with(|s| {
-        let st = s.borrow();
-        st.selected
-            .and_then(|i| st.paths.get(i))
-            .map(|p| display_name(p))
-    })
-}
-
-/// Apply a re-render result (from the cache) if it isn't stale.
-fn finish_render(app: &AppWindow, outcome: Result<PreviewImage>, req: u64) {
-    if !is_current(req) {
-        return;
-    }
+/// Cache a freshly rendered preview (always, so the work isn't wasted) and
+/// display it only if the selection hasn't moved on.
+fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<PreviewImage>, req: u64) {
     match outcome {
         Ok(preview) => {
-            apply_preview(app, &preview);
-            app.set_busy(false);
-            let name = selected_name().unwrap_or_default();
-            app.set_status_text(format!("{name}   {}×{}", preview.width, preview.height).into());
-        }
-        Err(e) => {
-            app.set_busy(false);
-            app.set_status_text(format!("Render failed: {e}").into());
-        }
-    }
-}
-
-/// Cache a freshly loaded document (always, so the work isn't wasted) and
-/// display it only if the selection hasn't moved on.
-fn finish_load(
-    app: &AppWindow,
-    path: PathBuf,
-    outcome: Result<(LoadedDoc, PreviewImage)>,
-    req: u64,
-) {
-    match outcome {
-        Ok((doc, preview)) => {
-            STATE.with(|s| s.borrow_mut().cache.put(path.clone(), Arc::new(doc)));
+            let preview = Rc::new(preview);
+            let cost = preview.rgba8.len();
+            STATE.with(|s| {
+                s.borrow_mut()
+                    .cache
+                    .put(path.clone(), preview.clone(), cost)
+            });
             if is_current(req) {
-                apply_preview(app, &preview);
-                app.set_busy(false);
-                let name = display_name(&path);
-                app.set_status_text(
-                    format!("{name}   {}×{}", preview.width, preview.height).into(),
-                );
+                display_preview(app, &path, &preview);
             }
         }
         Err(e) => {
@@ -322,9 +275,27 @@ fn finish_load(
             if is_current(req) {
                 app.set_busy(false);
                 app.set_status_text(format!("Failed to open {}: {e}", display_name(&path)).into());
+                // Don't let a broken file stall an in-progress blink loop.
+                schedule_next_blink(app);
             }
         }
     }
+}
+
+/// Show a preview on screen and, if blink is running, arm the next advance.
+fn display_preview(app: &AppWindow, path: &Path, preview: &PreviewImage) {
+    apply_preview(app, preview);
+    app.set_busy(false);
+    app.set_status_text(
+        format!(
+            "{}   {}×{}",
+            display_name(path),
+            preview.width,
+            preview.height
+        )
+        .into(),
+    );
+    schedule_next_blink(app);
 }
 
 /// Update a file row's status badge (e.g. mark a failed load "error").
@@ -346,22 +317,31 @@ fn set_row_status(path: &Path, status: &str) {
 
 // --- blink ---------------------------------------------------------------
 
-/// Start or stop the blink timer, which advances the selection across the
-/// working set. Re-render is cached, so blink stays responsive.
+/// Start or stop blink. Starting advances immediately; from then on each frame
+/// arms the next advance once it is displayed (see [`schedule_next_blink`]).
 pub fn set_blinking(app: &AppWindow, on: bool) {
+    if on {
+        advance_blink(app);
+    } else {
+        STATE.with(|s| s.borrow().blink_timer.stop());
+    }
+}
+
+/// If blink is on, arm a one-shot timer to advance after the dwell. Called after
+/// every displayed frame, so the loop only ever runs one load at a time.
+fn schedule_next_blink(app: &AppWindow) {
+    if !app.get_blinking() {
+        return;
+    }
+    let weak = app.as_weak();
     STATE.with(|s| {
-        let st = s.borrow();
-        if on {
-            let weak = app.as_weak();
-            st.blink_timer
-                .start(TimerMode::Repeated, BLINK_INTERVAL, move || {
-                    if let Some(app) = weak.upgrade() {
-                        advance_blink(&app);
-                    }
-                });
-        } else {
-            st.blink_timer.stop();
-        }
+        s.borrow()
+            .blink_timer
+            .start(TimerMode::SingleShot, BLINK_DWELL, move || {
+                if let Some(app) = weak.upgrade() {
+                    advance_blink(&app);
+                }
+            });
     });
 }
 
