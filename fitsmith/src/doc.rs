@@ -10,7 +10,7 @@
 
 use fitz_core::fits_image::is_debayered_rgb_cube;
 use fitz_core::fitskit::{Header, HeaderValue, ImageData, Keyword};
-use fitz_core::info::{HISTOGRAM_BUCKETS, pixel_stats};
+use fitz_core::info::{HISTOGRAM_BUCKETS, SummaryField, header_info_from, pixel_stats};
 use fitz_core::preview::PreviewImage;
 
 /// One FITS header card, pre-formatted into the three display columns.
@@ -36,6 +36,9 @@ pub struct StatSummary {
 pub struct LoadedDoc {
     pub preview: PreviewImage,
     pub headers: Vec<HeaderCard>,
+    /// The curated metadata summary (label/value pairs), the same fields the
+    /// `fitz info` command reports, for the docked info panel.
+    pub info: Vec<SummaryField>,
     /// `None` for an already-debayered RGB cube, where per-pixel stats over a
     /// single channel aren't meaningful (mirrors `header_info_with_pixels`).
     pub stats: Option<StatSummary>,
@@ -46,6 +49,9 @@ impl LoadedDoc {
     /// preview. Runs on the worker thread.
     pub fn build(header: &Header, img: &ImageData, preview: PreviewImage) -> Self {
         let headers = header.iter().map(header_card).collect();
+        // `false`: the info panel shows metadata only, so skip the (expensive)
+        // pixel-stats pass here — the stats panel computes those separately.
+        let info = header_info_from(header, img, false).summary();
         let stats = (!is_debayered_rgb_cube(header, img)).then(|| {
             let s = pixel_stats(header, img);
             StatSummary {
@@ -60,6 +66,7 @@ impl LoadedDoc {
         LoadedDoc {
             preview,
             headers,
+            info,
             stats,
         }
     }
