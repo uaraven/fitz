@@ -29,7 +29,7 @@ use crate::{AppWindow, FileRow, view};
 /// Maximum total size of rendered previews to keep cached. Sized so a handful
 /// of full-frame images stay resident for instant blink / re-selection.
 /// TODO: make this user-configurable.
-const CACHE_CAPACITY_BYTES: usize = 512 * 1024 * 1024;
+const CACHE_CAPACITY_BYTES: usize = 1024 * 1024 * 1024;
 
 /// How long a blink frame stays on screen *after it has finished loading*
 /// before advancing to the next. The load is always awaited first, so blink
@@ -228,6 +228,37 @@ pub fn select_file(app: &AppWindow, index: i32) {
     };
     app.set_status_text(format!("{action}: {}", display_name(&path)).into());
     spawn_load(app.as_weak(), path, params(app), req);
+}
+
+/// Move the selection by `delta` rows (arrow / page / space keys), clamped to
+/// the list. With nothing selected yet, any key lands on the first row.
+pub fn navigate(app: &AppWindow, delta: i32) {
+    let target = STATE.with(|s| {
+        let st = s.borrow();
+        let len = st.paths.len() as i64;
+        if len == 0 {
+            return None;
+        }
+        let index = match st.selected {
+            None => 0,
+            Some(cur) => (cur as i64 + delta as i64).clamp(0, len - 1),
+        };
+        Some(index as i32)
+    });
+    if let Some(index) = target {
+        select_file(app, index);
+    }
+}
+
+/// Jump the selection to the first (`last = false`) or last row (Home / End).
+pub fn navigate_edge(app: &AppWindow, last: bool) {
+    let target = STATE.with(|s| {
+        let len = s.borrow().paths.len();
+        (len > 0).then(|| if last { len - 1 } else { 0 } as i32)
+    });
+    if let Some(index) = target {
+        select_file(app, index);
+    }
 }
 
 /// Handle a debayer/stretch toggle change: the cached previews were rendered
