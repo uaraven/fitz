@@ -1,0 +1,394 @@
+import { Button, CheckBox, HorizontalBox, VerticalBox, TabWidget, Spinner } from "std-widgets.slint";
+import { FileRow, HeaderRow, StatItem } from "types.slint";
+import { ImageView } from "image_view.slint";
+import { FileList } from "file_list.slint";
+import { StatsPanel } from "stats_panel.slint";
+import { InfoPanel } from "info_panel.slint";
+import { HeaderView } from "header_view.slint";
+import { AboutDialog } from "about.slint";
+
+// Re-export the shared structs so the generated Rust names them at the crate root.
+export { FileRow, HeaderRow, StatItem }
+
+// A thin vertical divider between toolbar / status-bar groups.
+component Separator inherits Rectangle {
+    width: 1px;
+    background: #444444;
+}
+
+export component AppWindow inherits Window {
+    in property <image> preview-image;
+    in property <length> image-width;
+    in property <length> image-height;
+    in property <[FileRow]> files;
+    in property <int> selected-index: -1;
+    in-out property <bool> debayer-enabled: true;
+    in-out property <bool> stretch-enabled: true;
+    in-out property <bool> blinking: false;
+    // The stats and info panels dock in the same spot and are mutually
+    // exclusive — turning one on turns the other off (see the `changed`
+    // handlers below).
+    in-out property <bool> show-stats: false;
+    in-out property <bool> show-info: false;
+    in property <bool> busy: false;
+    // Draggable split between the file list and the image/headers panel. Stored
+    // as the file list's width; clamped to the min widths below at layout time.
+    in-out property <length> file-list-width: 240px;
+    // FITS header cards for the Headers tab.
+    in property <[HeaderRow]> header-rows;
+    // Pixel statistics (empty for an already-debayered RGB cube) and the
+    // matching 0..1 histogram bar heights for the stats panel.
+    in property <[StatItem]> stats;
+    in property <[float]> histogram;
+    // Curated metadata summary (label/value pairs, as `fitz info` reports) for
+    // the info panel.
+    in property <[StatItem]> info;
+    // Status bar: the high-level activity (loading, blinking…), the fine-grained
+    // pipeline step (reading, debayering, stretching), and the cache memory use.
+    in property <string> status-text;
+    in property <string> stage-text;
+    in property <string> memory-text;
+    // App version (set from Cargo's package version) for the About dialog.
+    in property <string> app-version;
+    // Whether the Help ▸ About overlay is showing.
+    in-out property <bool> show-about: false;
+
+    callback open();
+    callback open-directory();
+    callback clear-files();
+    callback request-exit();
+    callback select-file(int);
+    // Keyboard navigation from the file list: relative move, and jump to ends.
+    callback navigate(int);
+    callback navigate-first();
+    callback navigate-last();
+    callback blink-toggled();
+    // Fired when a view toggle changes so Rust can re-render the cached image.
+    callback toggles-changed();
+
+    changed debayer-enabled => {
+        root.toggles-changed();
+    }
+    changed stretch-enabled => {
+        root.toggles-changed();
+    }
+    changed blinking => {
+        root.blink-toggled();
+    }
+    // Stats and info share the dock, so only one shows at a time. The `if`
+    // guards stop the paired reset (setting the other to false) from bouncing
+    // back — a false value doesn't re-trigger these handlers.
+    changed show-stats => {
+        if (root.show-stats) {
+            root.show-info = false;
+        }
+    }
+    changed show-info => {
+        if (root.show-info) {
+            root.show-stats = false;
+        }
+    }
+
+    title: "FitSmith";
+    preferred-width: 1000px;
+    preferred-height: 680px;
+    // Enough for both min widths (150 + 6 handle + 480) plus window chrome.
+    min-width: 660px;
+    min-height: 400px;
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Add File…";
+                activated => {
+                    root.open();
+                }
+            }
+            MenuItem {
+                title: "Add Folder…";
+                activated => {
+                    root.open-directory();
+                }
+            }
+            MenuItem {
+                title: "Clear";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.clear-files();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Exit";
+                activated => {
+                    root.request-exit();
+                }
+            }
+        }
+
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Debayer raw";
+                checkable: true;
+                checked <=> root.debayer-enabled;
+            }
+            MenuItem {
+                title: "Stretch preview";
+                checkable: true;
+                checked <=> root.stretch-enabled;
+            }
+            MenuItem {
+                title: "Show image stats";
+                checkable: true;
+                checked <=> root.show-stats;
+            }
+            MenuItem {
+                title: "Show image info";
+                checkable: true;
+                checked <=> root.show-info;
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Blink";
+                checkable: true;
+                checked <=> root.blinking;
+            }
+        }
+
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "About FitSmith";
+                activated => {
+                    root.show-about = true;
+                }
+            }
+        }
+    }
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 0px;
+
+        // Toolbar: file + view toggles on the left, zoom controls on the right.
+        HorizontalBox {
+            padding: 8px;
+            spacing: 8px;
+
+            Button {
+                text: "Add File…";
+                clicked => {
+                    root.open();
+                }
+            }
+            Button {
+                text: "Add Folder…";
+                clicked => {
+                    root.open-directory();
+                }
+            }
+            Button {
+                text: "Clear";
+                enabled: root.files.length > 0;
+                clicked => {
+                    root.clear-files();
+                }
+            }
+            Separator { }
+            CheckBox {
+                text: "Debayer";
+                checked <=> root.debayer-enabled;
+            }
+            CheckBox {
+                text: "Stretch";
+                checked <=> root.stretch-enabled;
+            }
+            Separator { }
+            CheckBox {
+                text: "Stats";
+                checked <=> root.show-stats;
+            }
+            CheckBox {
+                text: "Info";
+                checked <=> root.show-info;
+            }
+            Separator { }
+            Button {
+                text: "Blink";
+                checkable: true;
+                checked <=> root.blinking;
+                enabled: root.files.length > 1;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "Fit";
+                clicked => {
+                    image-view.fit();
+                }
+            }
+            Button {
+                text: "1:1";
+                clicked => {
+                    image-view.actual-size();
+                }
+            }
+            Button {
+                text: "−";
+                clicked => {
+                    image-view.zoom-by(0.8);
+                }
+            }
+            Button {
+                text: "+";
+                clicked => {
+                    image-view.zoom-by(1.25);
+                }
+            }
+        }
+
+        // Left: file list. A draggable handle. Right: the image / headers tabs.
+        // Positioned manually (not via a layout) so the split width is honored
+        // exactly and clamped to each side's minimum.
+        split := Rectangle {
+            vertical-stretch: 1;
+
+            property <length> handle-w: 6px;
+            property <length> min-list: 150px;
+            property <length> min-image: 480px;
+            property <length> max-list: max(self.min-list, self.width - self.handle-w - self.min-image);
+            // The effective (clamped) list width used for layout; the stored
+            // `file-list-width` is the user's preference.
+            property <length> list-w: clamp(root.file-list-width, self.min-list, self.max-list);
+
+            FileList {
+                x: 0;
+                y: 0;
+                width: split.list-w;
+                height: parent.height;
+                files: root.files;
+                selected-index: root.selected-index;
+                select(idx) => {
+                    root.select-file(idx);
+                }
+                select-relative(delta) => {
+                    root.navigate(delta);
+                }
+                select-first() => {
+                    root.navigate-first();
+                }
+                select-last() => {
+                    root.navigate-last();
+                }
+            }
+
+            // Splitter handle: drag to reallocate width.
+            Rectangle {
+                x: split.list-w;
+                y: 0;
+                width: split.handle-w;
+                height: parent.height;
+                background: handle-touch.pressed || handle-touch.has-hover ? #4a4a4a : #333333;
+                handle-touch := TouchArea {
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        // pressed-x is fixed for the drag; mouse-x follows the
+                        // cursor, so the handle tracks it keeping the grab offset.
+                        root.file-list-width = clamp(
+                            split.list-w + (self.mouse-x - self.pressed-x),
+                            split.min-list, split.max-list);
+                    }
+                }
+            }
+
+            TabWidget {
+                x: split.list-w + split.handle-w;
+                y: 0;
+                width: parent.width - split.list-w - split.handle-w;
+                height: parent.height;
+
+                Tab {
+                    title: "Image";
+                    VerticalLayout {
+                        image-view := ImageView {
+                            vertical-stretch: 1;
+                            source: root.preview-image;
+                            natural-width: root.image-width;
+                            natural-height: root.image-height;
+                        }
+                        // Docks below the image when "Stats" or "Info" is on
+                        // (mutually exclusive), shrinking the image area to fit.
+                        if root.show-stats: StatsPanel {
+                            stats: root.stats;
+                            histogram: root.histogram;
+                        }
+                        if root.show-info: InfoPanel {
+                            info: root.info;
+                        }
+                    }
+                }
+
+                Tab {
+                    title: "Headers";
+                    HeaderView {
+                        rows: root.header-rows;
+                    }
+                }
+            }
+        }
+
+        // Status bar: global activity on the left, then a separator and the
+        // pipeline step (only while one is running), and cache memory use pinned
+        // to the far right.
+        HorizontalBox {
+            padding: 6px;
+            spacing: 8px;
+            // A live spinner while a load/render is in flight.
+            if root.busy: Spinner {
+                width: 14px;
+                height: 14px;
+                indeterminate: true;
+            }
+            Text {
+                text: root.status-text;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            // Separator + action step, shown only while a pipeline step runs.
+            if root.stage-text != "": Separator { }
+            if root.stage-text != "": Text {
+                text: root.stage-text;
+                color: #a0a0a0;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+            }
+            // Absorb the slack so memory use sits on the far right.
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.memory-text;
+                color: #a0a0a0;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+            }
+        }
+    }
+
+    // The About overlay sits above the main content (declared last, so it stacks
+    // on top) and fills the window when shown.
+    if root.show-about: AboutDialog {
+        width: 100%;
+        height: 100%;
+        version: root.app-version;
+        close => {
+            root.show-about = false;
+        }
+    }
+}

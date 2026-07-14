@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["fitz-core", "fitz-cli"]
+members = ["fitz-core", "fitz-cli", "fitsmith"]
 
 [profile.release]
 opt-level = 'z'       # Optimize for binary size (use 's' if 'z' hurts performance too much)

@@ -1,0 +1,43 @@
+[package]
+name = "fitsmith"
+version = "0.1.5"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "fitsmith"
+path = "src/main.rs"
+
+# Per-OS installer metadata for `cargo bundle` (macOS `.app`/`.dmg`, Windows
+# `.msi`, Linux `.deb`/AppImage). Slint links no external SDK, so the bundle is a
+# single self-contained binary. Drop icon files into `fitsmith/assets/` and add an
+# `icon = [...]` list here to brand the bundle.
+[package.metadata.bundle]
+name = "FitSmith"
+identifier = "dev.fitz.fitsmith"
+short_description = "A GUI frontend for the fitz FITS toolset."
+long_description = """
+FitSmith opens FITS astronomy images, debayers and auto-stretches them for a live
+preview, blinks through a working set, and inspects headers and pixel statistics.
+All FITS and image operations are performed by fitz-core.
+"""
+category = "public.app-category.graphics-design"
+
+[dependencies]
+fitz-core = { path = "../fitz-core" }
+slint = "1"
+rfd = "0.15"
+anyhow = "1"
+sysinfo = "0.39.6"
+
+# macOS only: used to turn off automatic window tabbing so AppKit stops
+# injecting "Show Tab Bar"/"Show All Tabs" into our View menu. Already in the
+# dependency tree via Slint's winit backend, so this adds no build cost.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
+[build-dependencies]
+slint-build = "1"
+
+[dev-dependencies]
+tempfile = "3"

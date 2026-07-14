@@ -1,0 +1,58 @@
+import { StatItem } from "types.slint";
+
+// A docked panel of image statistics: the numeric summary on the left, a value
+// histogram (normalized bar heights, 0..1) on the right. Shown below the image
+// when "Show stats" is on, shrinking the image area to fit. Empty `stats` (an
+// already-debayered RGB cube) shows a placeholder and hides the histogram.
+export component StatsPanel inherits Rectangle {
+    in property <[StatItem]> stats;
+    in property <[float]> histogram;
+
+    property <bool> has-stats: root.stats.length > 0;
+
+    height: 150px;
+    background: #1b1b1b;
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 16px;
+
+        // Numeric summary.
+        VerticalLayout {
+            width: 200px;
+            spacing: 4px;
+            alignment: center;
+            Text {
+                text: root.has-stats ? "Statistics" : "No pixel statistics";
+                color: #d0d0d0;
+                font-weight: 700;
+            }
+            for s in root.stats: Text {
+                text: s.label + ": " + s.value;
+                color: #a0a0a0;
+                font-size: 12px;
+            }
+        }
+
+        // Histogram: one bottom-anchored bar per bucket.
+        Rectangle {
+            background: #101010;
+            border-color: #303030;
+            border-width: 1px;
+            horizontal-stretch: 1;
+            visible: root.has-stats;
+            HorizontalLayout {
+                padding: 4px;
+                for h in root.histogram: Rectangle {
+                    horizontal-stretch: 1;
+                    Rectangle {
+                        width: parent.width;
+                        height: parent.height * h;
+                        y: parent.height - self.height;
+                        background: #6fbf73;
+                    }
+                }
+            }
+        }
+    }
+}
