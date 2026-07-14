@@ -1,0 +1,76 @@
+import { VScrollArea } from "scrolling.slint";
+import { HeaderRow } from "types.slint";
+
+// One keyword / value / comment line, used for both the column-title bar
+// (`title: true`) and each data row, so the column layout is defined once.
+component HeaderLine inherits Rectangle {
+    in property <string> keyword;
+    in property <string> value;
+    in property <string> comment;
+    in property <bool> title;
+
+    height: 24px;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        cell := Text {
+            text: root.keyword;
+            width: 110px;
+            font-family: root.title ? "" : "monospace";
+            font-weight: root.title ? 700 : 400;
+            color: root.title ? #d0d0d0 : #9ecbff;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.value;
+            width: 220px;
+            font-family: cell.font-family;
+            font-weight: cell.font-weight;
+            color: root.title ? #d0d0d0 : white;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.comment;
+            horizontal-stretch: 1;
+            font-weight: cell.font-weight;
+            color: root.title ? #d0d0d0 : #a0a0a0;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The Headers tab: a fixed, non-sortable column-title bar over a scrolling list
+// of every header card, so the full set is always shown (matching
+// `fitz info --headers`).
+export component HeaderView inherits Rectangle {
+    in property <[HeaderRow]> rows;
+
+    background: #1b1b1b;
+
+    VerticalLayout {
+        HeaderLine {
+            keyword: "Keyword";
+            value: "Value";
+            comment: "Comment";
+            title: true;
+            background: #2a2a2a;
+        }
+        list := VScrollArea {
+            vertical-stretch: 1;
+            content-height: root.rows.length * 24px;
+            for row[idx] in root.rows: HeaderLine {
+                y: idx * self.height;
+                width: list.content-width;
+                keyword: row.keyword;
+                value: row.value;
+                comment: row.comment;
+                background: mod(idx, 2) == 0 ? transparent : #ffffff08;
+            }
+        }
+    }
+}

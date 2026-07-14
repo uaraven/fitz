@@ -1,12 +1,14 @@
 //! Application logic bridging the Slint UI to `fitz-core`. Files are decoded and
-//! rendered off the UI thread; the resulting display-ready previews are kept in
-//! a byte-budgeted LRU cache so re-selecting or blinking back to a file
-//! re-displays instantly, with no re-debayer/re-stretch. A generation counter
-//! drops stale results when the user scrubs faster than frames can render.
+//! rendered off the UI thread into display-ready [`LoadedDoc`]s (preview +
+//! headers + stats), kept in a byte-budgeted LRU cache so re-selecting or
+//! blinking back to a file re-displays instantly, with no re-decode. A
+//! generation counter drops stale results when the user scrubs faster than
+//! frames can render. Turning a document into UI properties is [`crate::view`]'s
+//! job; this module owns state, threading and blink.
 //!
 //! Blink is load-aware: it never advances before the current frame is on
 //! screen. Manually selecting a file while blinking simply continues the loop
-//! from that file. Because the cache holds *rendered* previews, it is cleared
+//! from that file. Because the cache holds *rendered* documents, it is cleared
 //! whenever the debayer/stretch settings change (which invalidate them).
 
 use std::cell::RefCell;
@@ -17,13 +19,12 @@ use std::time::Duration;
 use anyhow::Result;
 use fitz_core::fits_image::find_image_hdu;
 use fitz_core::fitskit::FitsFile;
-use fitz_core::preview::{PreviewImage, PreviewParams, PreviewStage, render_preview_with_progress};
+use fitz_core::preview::{PreviewParams, PreviewStage, render_preview_with_progress};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 
 use crate::doc::LoadedDoc;
 use crate::files::{display_name, is_compressed, next_index, scan_directory};
-use crate::image::preview_to_image;
-use crate::{AppWindow, FileRow, HeaderRow};
+use crate::{AppWindow, FileRow, view};
 
 /// Maximum total size of rendered previews to keep cached. Sized so a handful
 /// of full-frame images stay resident for instant blink / re-selection.
@@ -86,66 +87,6 @@ fn params(app: &AppWindow) -> PreviewParams {
         stretch: app.get_stretch_enabled(),
         ..PreviewParams::default()
     }
-}
-
-/// Push a rendered preview onto the window: the image plus its natural size,
-/// which the `ImageView` needs to compute fit/zoom.
-fn apply_preview(app: &AppWindow, preview: &PreviewImage) {
-    app.set_preview_image(preview_to_image(preview));
-    app.set_image_width(preview.width as f32);
-    app.set_image_height(preview.height as f32);
-}
-
-/// Populate the Headers tab's table from a document's header cards — one row per
-/// keyword, so the full header is shown (as `fitz info --headers` prints it).
-fn apply_headers(app: &AppWindow, doc: &LoadedDoc) {
-    let rows: Vec<HeaderRow> = doc
-        .headers
-        .iter()
-        .map(|c| HeaderRow {
-            keyword: c.name.as_str().into(),
-            value: c.value.as_str().into(),
-            comment: c.comment.as_str().into(),
-        })
-        .collect();
-    app.set_header_rows(ModelRc::new(VecModel::from(rows)));
-}
-
-/// Push a document's pixel statistics (numbers + normalized histogram) to the
-/// stats panel, or mark it "no stats" for an already-debayered RGB cube.
-fn apply_stats(app: &AppWindow, doc: &LoadedDoc) {
-    match &doc.stats {
-        Some(s) => {
-            app.set_has_stats(true);
-            app.set_stat_min(format_stat(s.min).into());
-            app.set_stat_max(format_stat(s.max).into());
-            app.set_stat_mean(format_stat(s.mean).into());
-            app.set_stat_median(format_stat(s.median).into());
-            app.set_stat_zeros(s.zeros.to_string().into());
-            app.set_histogram(ModelRc::new(VecModel::from(s.histogram.clone())));
-        }
-        None => {
-            app.set_has_stats(false);
-            app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
-        }
-    }
-}
-
-/// Format a statistic value compactly: whole numbers without a decimal point,
-/// fractional ones to three places.
-fn format_stat(v: f64) -> String {
-    if v.fract() == 0.0 {
-        format!("{v:.0}")
-    } else {
-        format!("{v:.3}")
-    }
-}
-
-/// Clear the Headers tab and stats panel (no document, or a failed load).
-fn clear_doc_views(app: &AppWindow) {
-    app.set_header_rows(ModelRc::new(VecModel::<HeaderRow>::default()));
-    app.set_has_stats(false);
-    app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
 }
 
 /// Build the list row for a path: base name plus a "compressed" badge for `.fz`.
@@ -211,13 +152,10 @@ pub fn clear_files(app: &AppWindow) {
     });
     app.set_blinking(false);
     app.set_selected_index(-1);
-    app.set_preview_image(slint::Image::default());
-    app.set_image_width(0.0);
-    app.set_image_height(0.0);
     app.set_busy(false);
-    app.set_status_text("No image — use File ▸ Add File…".into());
+    app.set_status_text("No image — add files to view".into());
     app.set_stage_text("".into());
-    clear_doc_views(app);
+    view::clear(app);
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
@@ -376,9 +314,7 @@ fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<LoadedDoc>, req: 
 /// Show a loaded document on screen — image, header table and stats panel — and,
 /// if blink is running, arm the next advance.
 fn display_doc(app: &AppWindow, path: &Path, doc: &LoadedDoc) {
-    apply_preview(app, &doc.preview);
-    apply_headers(app, doc);
-    apply_stats(app, doc);
+    view::show_doc(app, doc);
     app.set_busy(false);
     app.set_status_text(
         format!(
