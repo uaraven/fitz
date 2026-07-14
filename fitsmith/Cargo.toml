@@ -8,6 +8,21 @@ license = "MIT"
 name = "fitsmith"
 path = "src/main.rs"
 
+# Per-OS installer metadata for `cargo bundle` (macOS `.app`/`.dmg`, Windows
+# `.msi`, Linux `.deb`/AppImage). Slint links no external SDK, so the bundle is a
+# single self-contained binary. Drop icon files into `fitsmith/assets/` and add an
+# `icon = [...]` list here to brand the bundle.
+[package.metadata.bundle]
+name = "FitSmith"
+identifier = "dev.fitz.fitsmith"
+short_description = "A GUI frontend for the fitz FITS toolset."
+long_description = """
+FitSmith opens FITS astronomy images, debayers and auto-stretches them for a live
+preview, blinks through a working set, and inspects headers and pixel statistics.
+All FITS and image operations are performed by fitz-core.
+"""
+category = "public.app-category.graphics-design"
+
 [dependencies]
 fitz-core = { path = "../fitz-core" }
 slint = "1"

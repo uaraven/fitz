@@ -1,10 +1,11 @@
-import { Button, CheckBox, HorizontalBox, VerticalBox, TabWidget } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, VerticalBox, TabWidget, Spinner } from "std-widgets.slint";
 import { FileRow, HeaderRow, StatItem } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
 import { StatsPanel } from "stats_panel.slint";
 import { InfoPanel } from "info_panel.slint";
 import { HeaderView } from "header_view.slint";
+import { AboutDialog } from "about.slint";
 
 // Re-export the shared structs so the generated Rust names them at the crate root.
 export { FileRow, HeaderRow, StatItem }
@@ -41,6 +42,10 @@ export component AppWindow inherits Window {
     in property <string> status-text;
     in property <string> stage-text;
     in property <string> memory-text;
+    // App version (set from Cargo's package version) for the About dialog.
+    in property <string> app-version;
+    // Whether the Help ▸ About overlay is showing.
+    in-out property <bool> show-about: false;
 
     callback open();
     callback open-directory();
@@ -143,6 +148,16 @@ export component AppWindow inherits Window {
                 title: "Blink";
                 checkable: true;
                 checked <=> root.blinking;
+            }
+        }
+
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "About FitSmith";
+                activated => {
+                    root.show-about = true;
+                }
             }
         }
     }
@@ -336,8 +351,14 @@ export component AppWindow inherits Window {
         HorizontalBox {
             padding: 6px;
             spacing: 8px;
+            // A live spinner while a load/render is in flight.
+            if root.busy: Spinner {
+                width: 14px;
+                height: 14px;
+                indeterminate: true;
+            }
             Text {
-                text: root.busy ? "⏳  " + root.status-text : root.status-text;
+                text: root.status-text;
                 overflow: elide;
                 vertical-alignment: center;
             }
@@ -363,6 +384,17 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 horizontal-alignment: right;
             }
+        }
+    }
+
+    // The About overlay sits above the main content (declared last, so it stacks
+    // on top) and fills the window when shown.
+    if root.show-about: AboutDialog {
+        width: 100%;
+        height: 100%;
+        version: root.app-version;
+        close => {
+            root.show-about = false;
         }
     }
 }
