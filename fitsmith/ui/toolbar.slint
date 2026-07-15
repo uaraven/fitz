@@ -1,0 +1,109 @@
+import { Button, CheckBox, HorizontalBox } from "std-widgets.slint";
+import { Separator } from "widgets.slint";
+
+// The top toolbar: file actions and view toggles on the left, zoom controls on
+// the right. The toggles are two-way bound to the window's view state (so its
+// `changed` handlers still fire); the buttons and zoom controls fire callbacks
+// the window forwards to Rust or to the image view.
+export component Toolbar inherits HorizontalBox {
+    // Working-set size: gates the buttons that need files, and Blink (needs > 1).
+    in property <int> file-count;
+    in-out property <bool> debayer-enabled;
+    in-out property <bool> stretch-enabled;
+    in-out property <bool> show-stats;
+    in-out property <bool> show-info;
+    in-out property <bool> blinking;
+
+    callback add-file();
+    callback add-folder();
+    callback remove-selected();
+    callback clear();
+    callback fit();
+    callback actual-size();
+    callback zoom-in();
+    callback zoom-out();
+
+    padding: 8px;
+    spacing: 8px;
+
+    Button {
+        text: "Add File…";
+        clicked => {
+            root.add-file();
+        }
+    }
+    Button {
+        text: "Add Folder…";
+        clicked => {
+            root.add-folder();
+        }
+    }
+    Button {
+        text: "Remove";
+        enabled: root.file-count > 0;
+        clicked => {
+            root.remove-selected();
+        }
+    }
+    Button {
+        text: "Clear";
+        enabled: root.file-count > 0;
+        clicked => {
+            root.clear();
+        }
+    }
+    Separator { }
+    CheckBox {
+        text: "Debayer";
+        checked <=> root.debayer-enabled;
+    }
+    CheckBox {
+        text: "Stretch";
+        checked <=> root.stretch-enabled;
+    }
+    Separator { }
+    CheckBox {
+        text: "Stats";
+        checked <=> root.show-stats;
+    }
+    CheckBox {
+        text: "Info";
+        checked <=> root.show-info;
+    }
+    Separator { }
+    Button {
+        text: "Blink";
+        checkable: true;
+        checked <=> root.blinking;
+        enabled: root.file-count > 1;
+    }
+
+    Rectangle {
+        horizontal-stretch: 1;
+    }
+
+    Button {
+        text: "Fit";
+        clicked => {
+            root.fit();
+        }
+    }
+    Button {
+        text: "1:1";
+        clicked => {
+            root.actual-size();
+        }
+    }
+    Button {
+        text: "−";
+        clicked => {
+            root.zoom-out();
+        }
+    }
+    Button {
+        text: "+";
+        clicked => {
+            root.zoom-in();
+        }
+    }
+}
