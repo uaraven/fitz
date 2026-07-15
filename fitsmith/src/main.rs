@@ -60,6 +60,7 @@ fn main() -> Result<()> {
     forward!(on_open_directory, |app| controller::open_directory(&app));
     forward!(on_clear_files, |app| controller::clear_files(&app));
     forward!(on_select_file, |app, index| controller::select_file(&app, index));
+    forward!(on_toggle_check, |app, index| controller::toggle_check(&app, index));
     forward!(on_navigate, |app, delta| controller::navigate(&app, delta));
     forward!(on_navigate_first, |app| controller::navigate_edge(&app, false));
     forward!(on_navigate_last, |app| controller::navigate_edge(&app, true));
