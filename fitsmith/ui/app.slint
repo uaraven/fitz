@@ -1,4 +1,4 @@
-import { Button, CheckBox, HorizontalBox, VerticalBox, TabWidget, Spinner } from "std-widgets.slint";
+import { VerticalBox, TabWidget } from "std-widgets.slint";
 import { FileRow, HeaderRow, StatItem } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
@@ -9,15 +9,11 @@ import { AboutDialog } from "about.slint";
 import { CompressDialog, DecompressDialog } from "operation.slint";
 import { ExportDialog, ExportProgress } from "export.slint";
 import { ConfirmDialog } from "confirm.slint";
+import { Toolbar } from "toolbar.slint";
+import { StatusBar } from "status_bar.slint";
 
 // Re-export the shared structs so the generated Rust names them at the crate root.
 export { FileRow, HeaderRow, StatItem }
-
-// A thin vertical divider between toolbar / status-bar groups.
-component Separator inherits Rectangle {
-    width: 1px;
-    background: #444444;
-}
 
 export component AppWindow inherits Window {
     in property <image> preview-image;
@@ -283,89 +279,38 @@ export component AppWindow inherits Window {
         spacing: 0px;
 
         // Toolbar: file + view toggles on the left, zoom controls on the right.
-        HorizontalBox {
-            padding: 8px;
-            spacing: 8px;
-
-            Button {
-                text: "Add File…";
-                clicked => {
-                    root.open();
-                }
+        // The toggles two-way bind the window's view state; the zoom callbacks
+        // drive the image view directly.
+        Toolbar {
+            file-count: root.files.length;
+            debayer-enabled <=> root.debayer-enabled;
+            stretch-enabled <=> root.stretch-enabled;
+            show-stats <=> root.show-stats;
+            show-info <=> root.show-info;
+            blinking <=> root.blinking;
+            add-file => {
+                root.open();
             }
-            Button {
-                text: "Add Folder…";
-                clicked => {
-                    root.open-directory();
-                }
+            add-folder => {
+                root.open-directory();
             }
-            Button {
-                text: "Remove";
-                enabled: root.files.length > 0;
-                clicked => {
-                    root.remove-selected();
-                }
+            remove-selected => {
+                root.remove-selected();
             }
-            Button {
-                text: "Clear";
-                enabled: root.files.length > 0;
-                clicked => {
-                    root.show-clear-confirm = true;
-                }
+            clear => {
+                root.show-clear-confirm = true;
             }
-            Separator { }
-            CheckBox {
-                text: "Debayer";
-                checked <=> root.debayer-enabled;
+            fit => {
+                image-view.fit();
             }
-            CheckBox {
-                text: "Stretch";
-                checked <=> root.stretch-enabled;
+            actual-size => {
+                image-view.actual-size();
             }
-            Separator { }
-            CheckBox {
-                text: "Stats";
-                checked <=> root.show-stats;
+            zoom-in => {
+                image-view.zoom-by(1.25);
             }
-            CheckBox {
-                text: "Info";
-                checked <=> root.show-info;
-            }
-            Separator { }
-            Button {
-                text: "Blink";
-                checkable: true;
-                checked <=> root.blinking;
-                enabled: root.files.length > 1;
-            }
-
-            Rectangle {
-                horizontal-stretch: 1;
-            }
-
-            Button {
-                text: "Fit";
-                clicked => {
-                    image-view.fit();
-                }
-            }
-            Button {
-                text: "1:1";
-                clicked => {
-                    image-view.actual-size();
-                }
-            }
-            Button {
-                text: "−";
-                clicked => {
-                    image-view.zoom-by(0.8);
-                }
-            }
-            Button {
-                text: "+";
-                clicked => {
-                    image-view.zoom-by(1.25);
-                }
+            zoom-out => {
+                image-view.zoom-by(0.8);
             }
         }
 
@@ -462,42 +407,13 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Status bar: global activity on the left, then a separator and the
-        // pipeline step (only while one is running), and cache memory use pinned
-        // to the far right.
-        HorizontalBox {
-            padding: 6px;
-            spacing: 8px;
-            // A live spinner while a load/render is in flight.
-            if root.busy: Spinner {
-                width: 14px;
-                height: 14px;
-                indeterminate: true;
-            }
-            Text {
-                text: root.status-text;
-                overflow: elide;
-                vertical-alignment: center;
-            }
-            // Separator + action step, shown only while a pipeline step runs.
-            if root.stage-text != "": Separator { }
-            if root.stage-text != "": Text {
-                text: root.stage-text;
-                color: #a0a0a0;
-                overflow: elide;
-                vertical-alignment: center;
-                horizontal-alignment: left;
-            }
-            // Absorb the slack so memory use sits on the far right.
-            Rectangle {
-                horizontal-stretch: 1;
-            }
-            Text {
-                text: root.memory-text;
-                color: #a0a0a0;
-                vertical-alignment: center;
-                horizontal-alignment: right;
-            }
+        // Status bar: global activity on the left, the pipeline step (only while
+        // one is running), and cache memory use pinned to the far right.
+        StatusBar {
+            busy: root.busy;
+            status-text: root.status-text;
+            stage-text: root.stage-text;
+            memory-text: root.memory-text;
         }
     }
 

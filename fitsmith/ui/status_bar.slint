@@ -1,0 +1,46 @@
+import { HorizontalBox, Spinner } from "std-widgets.slint";
+import { Separator } from "widgets.slint";
+
+// The bottom status bar: a spinner and the global activity on the left, the
+// fine-grained pipeline step (only while one is running), and cache memory use
+// pinned to the far right. Purely presentational — the window feeds the text.
+export component StatusBar inherits HorizontalBox {
+    in property <bool> busy;
+    in property <string> status-text;
+    in property <string> stage-text;
+    in property <string> memory-text;
+
+    padding: 6px;
+    spacing: 8px;
+
+    // A live spinner while a load/render is in flight.
+    if root.busy: Spinner {
+        width: 14px;
+        height: 14px;
+        indeterminate: true;
+    }
+    Text {
+        text: root.status-text;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    // Separator + action step, shown only while a pipeline step runs.
+    if root.stage-text != "": Separator { }
+    if root.stage-text != "": Text {
+        text: root.stage-text;
+        color: #a0a0a0;
+        overflow: elide;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+    }
+    // Absorb the slack so memory use sits on the far right.
+    Rectangle {
+        horizontal-stretch: 1;
+    }
+    Text {
+        text: root.memory-text;
+        color: #a0a0a0;
+        vertical-alignment: center;
+        horizontal-alignment: right;
+    }
+}
