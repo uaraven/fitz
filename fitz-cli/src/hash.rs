@@ -16,8 +16,8 @@ pub(crate) enum HashTarget {
 pub(crate) fn hash_file(input: &Path, target: HashTarget) -> Result<()> {
     let hash = match target {
         HashTarget::File => {
-            let data = std::fs::read(input)
-                .with_context(|| format!("cannot read {}", input.display()))?;
+            let data =
+                std::fs::read(input).with_context(|| format!("cannot read {}", input.display()))?;
             hex(Sha256::digest(&data))
         }
         HashTarget::Header => {

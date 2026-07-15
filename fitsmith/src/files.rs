@@ -90,6 +90,29 @@ pub fn decompressed_output_path(input: &Path, output_dir: Option<&Path>) -> Path
     }
 }
 
+/// Where an exported copy of `input` is written: into `dir`, with the input's
+/// base name (all FITS extensions stripped, including a `.fz` suffix) and the
+/// export format's `ext`. So `frame.fit` → `<dir>/frame.<ext>` and
+/// `frame.fit.fz` → `<dir>/frame.<ext>`. A base name containing dots (e.g.
+/// `M31.LRGB.fit`) keeps them (`M31.LRGB.<ext>`).
+pub fn export_output_path(input: &Path, dir: &Path, ext: &str) -> PathBuf {
+    // Drop a trailing `.fz`, then the FITS extension, leaving the bare stem.
+    let mut base = input.to_path_buf();
+    if is_compressed(&base) {
+        base.set_extension("");
+    }
+    if is_fits_path(&base) {
+        base.set_extension("");
+    }
+    let mut name = base
+        .file_name()
+        .map(|n| n.to_owned())
+        .unwrap_or_else(|| input.as_os_str().to_owned());
+    name.push(".");
+    name.push(ext);
+    dir.join(name)
+}
+
 /// Expand command-line arguments into a flat list of input files: directories
 /// are scanned for FITS files, existing files are kept as-is (a file named
 /// explicitly is honored regardless of extension), and missing paths are
@@ -185,6 +208,30 @@ mod tests {
         assert_eq!(
             decompressed_output_path(Path::new("/x/frame.fits"), None),
             PathBuf::from("/x/frame.fits")
+        );
+    }
+
+    #[test]
+    fn export_output_path_strips_fits_extensions_and_applies_format_ext() {
+        let dir = Path::new("/out");
+        assert_eq!(
+            export_output_path(Path::new("/x/frame.fit"), dir, "tiff"),
+            PathBuf::from("/out/frame.tiff")
+        );
+        // A .fz-compressed input drops both the .fz and the FITS extension.
+        assert_eq!(
+            export_output_path(Path::new("/x/frame.fit.fz"), dir, "png"),
+            PathBuf::from("/out/frame.png")
+        );
+        // Dots inside the base name are preserved.
+        assert_eq!(
+            export_output_path(Path::new("/x/M31.LRGB.fits"), dir, "jpg"),
+            PathBuf::from("/out/M31.LRGB.jpg")
+        );
+        // A name without a FITS extension keeps its whole name as the base.
+        assert_eq!(
+            export_output_path(Path::new("/x/frame"), dir, "fits"),
+            PathBuf::from("/out/frame.fits")
         );
     }
 

@@ -187,6 +187,27 @@ pub fn render_preview_with_progress(
     })
 }
 
+/// Resolve the debayer + stretch toggles into a full-precision interleaved RGB
+/// buffer, *without* widening it to 8-bit RGBA the way [`render_preview`] does.
+/// This is the form the export encoders consume, so 16-bit FITS/TIFF output
+/// keeps the source's full precision instead of the display path's `>> 8`
+/// narrowing. With `stretch` on, the auto-stretched 16-bit result is returned;
+/// otherwise the un-stretched buffer passes through in its own bit depth.
+pub fn render_export_rgb(
+    header: &Header,
+    img: &ImageData,
+    p: &PreviewParams,
+) -> Result<(usize, usize, RgbBuffer)> {
+    let pr = preview_rgb(header, img, p.debayer, p.pattern, p.force_demosaic)?;
+    let (width, height) = (pr.width, pr.height);
+    let rgb = if p.stretch {
+        RgbBuffer::U16(auto_stretch(&pr.rgb, p.linked, p.brightness))
+    } else {
+        pr.rgb
+    };
+    Ok((width, height, rgb))
+}
+
 /// Widen an interleaved 16-bit RGB buffer to RGBA8, keeping each sample's high
 /// byte (the same `>> 8` convention as the rest of the display path) and a
 /// fully opaque alpha.

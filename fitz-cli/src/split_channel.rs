@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-pub use fitz_core::split_channel::ChannelFormat;
 use fitz_core::fits_image::{CFA_KEYWORDS, write_pixel_fits};
+pub use fitz_core::split_channel::ChannelFormat;
 use fitz_core::split_channel::encode_channel;
 
 use crate::io_prompt::{ensure_can_write, print_progress, print_step};
@@ -51,7 +51,15 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
     for (output, values, channel) in outputs {
         print_progress(opts.verbose, input, &output);
         print_step(opts.verbose, "writing");
-        write_channel_fits(&output, s.width, s.height, values, opts.format, &s.header, channel)?;
+        write_channel_fits(
+            &output,
+            s.width,
+            s.height,
+            values,
+            opts.format,
+            &s.header,
+            channel,
+        )?;
     }
 
     Ok(())

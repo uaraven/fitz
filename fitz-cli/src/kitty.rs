@@ -103,8 +103,13 @@ mod tests {
         // then decode the payload back and confirm it equals the 8-bit RGB.
         let input = test_data("uncompressed.fit");
         let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
-        let (pw, ph, preview) =
-            resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 120, 120);
+        let (pw, ph, preview) = resize_to_fit(
+            &stretched.pixels,
+            stretched.width,
+            stretched.height,
+            120,
+            120,
+        );
 
         let rgb8 = rgb16_to_rgb8(&preview);
         let seq = encode_image(&rgb8, pw, ph);

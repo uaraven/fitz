@@ -164,7 +164,9 @@ mod tests {
         }
 
         let (fits, _) = copy_header(&source, &target).unwrap();
-        let history: Vec<&str> = fits.primary().header
+        let history: Vec<&str> = fits
+            .primary()
+            .header
             .iter()
             .filter(|k| k.name == "HISTORY")
             .filter_map(|k| k.comment.as_deref())

@@ -1,0 +1,202 @@
+import { Button, ComboBox, LineEdit, CheckBox, SpinBox, ProgressIndicator } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+
+// The View ▸ Export… modal. Picks a destination folder and an output format
+// (FITS / TIFF / JPEG / PNG), each with its own options block. Purely
+// presentational: the parent toggles visibility, feeds the file count, and
+// receives the chosen settings back through the in-out properties on confirm.
+// The native folder picker behind "Browse…" and the actual encoding live in
+// Rust. The image exported is the current view (debayer/stretch as toggled).
+
+// One "label:  <widget>" row, so the option blocks line up consistently.
+component LabeledRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 8px;
+    Text {
+        text: root.label;
+        color: #c8c8c8;
+        vertical-alignment: center;
+        width: 96px;
+    }
+    @children
+}
+
+export component ExportDialog inherits DialogCard {
+    in property <int> file-count;
+    in-out property <string> output-dir;
+    // 0 = FITS, 1 = TIFF, 2 = JPEG, 3 = PNG (matches the ComboBox order).
+    in-out property <int> format-index;
+    // FITS: bit depth (0 = 8-bit int, 1 = 16-bit int, 2 = 32-bit float),
+    // optional tile compression and its algorithm (0 = RICE_1, 1/2 = GZIP_1/2).
+    in-out property <int> fits-bitpix-index;
+    in-out property <bool> fits-compress;
+    in-out property <int> fits-algorithm-index;
+    // TIFF: bits per pixel (0 = 8, 1 = 16, 2 = 32) and optional DEFLATE.
+    in-out property <int> tiff-bpp-index;
+    in-out property <bool> tiff-deflate;
+    // JPEG: encoder quality, 1..=100.
+    in-out property <int> jpeg-quality;
+    callback browse();
+    callback confirm();
+
+    card-width: 480px;
+    card-height: self.min-height;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 14px;
+
+        Text {
+            text: "Export";
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+        Text {
+            text: root.file-count == 1
+                ? "1 file will be exported."
+                : root.file-count + " files will be exported.";
+            color: #c8c8c8;
+        }
+
+        // Destination folder (required).
+        HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.output-dir;
+                placeholder-text: "Destination folder";
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Browse…";
+                clicked => {
+                    root.browse();
+                }
+            }
+        }
+
+        LabeledRow {
+            label: "Format:";
+            ComboBox {
+                model: ["FITS", "TIFF", "JPEG", "PNG"];
+                current-index <=> root.format-index;
+                horizontal-stretch: 1;
+            }
+        }
+
+        // Per-format options. Each option row is a *direct* child of this
+        // VerticalLayout (not wrapped in a nested layout), exactly like the
+        // "Format:" row above — so the trailing spacer absorbs all the card's
+        // slack and every row keeps its natural single-line height. Wrapping
+        // these in a nested VerticalLayout instead makes that inner layout
+        // distribute the slack, stretching its combo boxes vertically.
+        //
+        // FITS.
+        if root.format-index == 0: LabeledRow {
+            label: "Bit depth:";
+            ComboBox {
+                model: ["8-bit integer", "16-bit integer", "32-bit float"];
+                current-index <=> root.fits-bitpix-index;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.format-index == 0: CheckBox {
+            text: "Compression";
+            checked <=> root.fits-compress;
+        }
+        if root.format-index == 0: LabeledRow {
+            label: "Algorithm:";
+            ComboBox {
+                model: ["RICE_1", "GZIP_1", "GZIP_2"];
+                current-index <=> root.fits-algorithm-index;
+                enabled: root.fits-compress;
+                horizontal-stretch: 1;
+            }
+        }
+        // TIFF.
+        if root.format-index == 1: LabeledRow {
+            label: "Bits/pixel:";
+            ComboBox {
+                model: ["8", "16", "32"];
+                current-index <=> root.tiff-bpp-index;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.format-index == 1: CheckBox {
+            text: "DEFLATE compression";
+            checked <=> root.tiff-deflate;
+        }
+        // JPEG.
+        if root.format-index == 2: LabeledRow {
+            label: "Quality:";
+            SpinBox {
+                minimum: 1;
+                maximum: 100;
+                value <=> root.jpeg-quality;
+                horizontal-stretch: 1;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button {
+                text: "Cancel";
+                clicked => {
+                    root.cancel();
+                }
+            }
+            Button {
+                text: "Export";
+                primary: true;
+                enabled: root.file-count > 0 && root.output-dir != "";
+                clicked => {
+                    root.confirm();
+                }
+            }
+        }
+    }
+}
+
+// Modal progress overlay shown while an export batch runs. Non-dismissable: the
+// scrim swallows clicks so the batch can't be interrupted mid-file. The parent
+// drives `progress` (0..1) and `message` from the worker thread.
+export component ExportProgress inherits Rectangle {
+    in property <float> progress;
+    in property <string> message;
+
+    background: #000000cc;
+    // Swallow clicks so nothing behind the overlay reacts while exporting.
+    TouchArea { }
+
+    Rectangle {
+        width: 440px;
+        height: 160px;
+        background: #2b2b2b;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: #444444;
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text {
+                text: "Exporting…";
+                font-size: 18px;
+                font-weight: 700;
+                color: white;
+            }
+            Text {
+                text: root.message;
+                color: #c8c8c8;
+                overflow: elide;
+            }
+            ProgressIndicator {
+                progress: root.progress;
+                height: 8px;
+            }
+        }
+    }
+}
