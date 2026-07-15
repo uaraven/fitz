@@ -11,6 +11,7 @@ and the CLI behave identically.
 ## What it does
 
  - **Working set** — open a single file or a whole directory and browse the files as a list.
+   A file that fails to load is highlighted with a red background; hover it to see the error.
  - **Live preview** — images are decoded off the UI thread and displayed with debayer and
    auto-stretch toggles that re-render the current frame live.
  - **Blink** — step or blink through the working set to compare frames; decoded images are
