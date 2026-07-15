@@ -8,9 +8,7 @@ use bayer::CFA;
 use fitskit::{FitsFile, Header};
 use rayon::prelude::*;
 
-use crate::fits_image::{
-    LoadRgbNotice, RgbBuffer, find_image_hdu, load_rgb, round_to_u16,
-};
+use crate::fits_image::{LoadRgbNotice, RgbBuffer, find_image_hdu, load_rgb, round_to_u16};
 
 /// Working sample type for the stretch math. `f32` is more than precise enough
 /// for a 16-bit result and halves the normalized-image buffer versus `f64`.
@@ -228,11 +226,11 @@ fn select_nth(values: &mut [Sample], k: usize) -> &Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fits_image::write_rgb16_fits;
     use crate::test_support::{
         output_header, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
         write_rgb_cube_fits,
     };
-    use crate::fits_image::write_rgb16_fits;
     use fitskit::HduData;
     use sha2::{Digest, Sha256};
     use tempfile::TempDir;

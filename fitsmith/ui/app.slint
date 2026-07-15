@@ -7,6 +7,7 @@ import { InfoPanel } from "info_panel.slint";
 import { HeaderView } from "header_view.slint";
 import { AboutDialog } from "about.slint";
 import { CompressDialog, DecompressDialog } from "operation.slint";
+import { ExportDialog, ExportProgress } from "export.slint";
 import { ConfirmDialog } from "confirm.slint";
 
 // Re-export the shared structs so the generated Rust names them at the crate root.
@@ -57,7 +58,7 @@ export component AppWindow inherits Window {
     // Whether the "clear the working set?" confirmation is showing.
     in-out property <bool> show-clear-confirm: false;
 
-    // Edit ▸ Compress… / Decompress… dialogs. Only one shows at a time.
+    // Tools ▸ Compress… / Decompress… dialogs. Only one shows at a time.
     // `op-*` are the shared dialog settings; the counts say how many working-set
     // files each operation will touch (the checked rows, or all when none are
     // checked). Rust fills the counts and resets the settings before showing.
@@ -69,6 +70,25 @@ export component AppWindow inherits Window {
     in-out property <bool> op-keep-source: true;
     in-out property <bool> op-use-custom-dir: false;
     in-out property <string> op-output-dir: "";
+
+    // View ▸ Export… dialog. `export-count` is how many working-set files the
+    // export will touch (the checked rows, or all when none are checked). Rust
+    // fills the count and resets the settings before showing. The `export-*`
+    // fields are the per-format settings; `export-in-progress`/`export-progress`
+    // drive the modal progress overlay while the batch runs.
+    in-out property <bool> show-export: false;
+    in property <int> export-count;
+    in-out property <string> export-output-dir: "";
+    in-out property <int> export-format: 0;
+    in-out property <int> export-fits-bitpix: 1;
+    in-out property <bool> export-fits-compress: false;
+    in-out property <int> export-fits-algorithm: 0;
+    in-out property <int> export-tiff-bpp: 1;
+    in-out property <bool> export-tiff-deflate: false;
+    in-out property <int> export-jpeg-quality: 90;
+    in property <bool> export-in-progress: false;
+    in property <float> export-progress: 0;
+    in property <string> export-progress-text: "";
 
     callback open();
     callback open-directory();
@@ -89,7 +109,7 @@ export component AppWindow inherits Window {
     callback blink-toggled();
     // Fired when a view toggle changes so Rust can re-render the cached image.
     callback toggles-changed();
-    // Edit menu: Rust computes the file count and resets the dialog
+    // Tools menu: Rust computes the file count and resets the dialog
     // settings, then shows the matching dialog.
     callback open-compress-dialog();
     callback open-decompress-dialog();
@@ -98,6 +118,13 @@ export component AppWindow inherits Window {
     // Run the operation with the current `op-*` settings.
     callback run-compress();
     callback run-decompress();
+    // View ▸ Export: Rust computes the file count and resets the dialog
+    // settings, then shows it; browse opens the native folder picker for the
+    // destination; run-export starts the batch with the current `export-*`
+    // settings.
+    callback open-export-dialog();
+    callback browse-export-dir();
+    callback run-export();
 
     changed debayer-enabled => {
         root.toggles-changed();
@@ -198,7 +225,7 @@ export component AppWindow inherits Window {
         }
 
         Menu {
-            title: "Edit";
+            title: "Tools";
             MenuItem {
                 title: "Select All";
                 enabled: root.files.length > 0;
@@ -228,6 +255,14 @@ export component AppWindow inherits Window {
                 enabled: root.files.length > 0;
                 activated => {
                     root.open-decompress-dialog();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Export…";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.open-export-dialog();
                 }
             }
         }
@@ -494,7 +529,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    // The Edit dialogs stack above the main content the same way. They bind
+    // The Tools dialogs stack above the main content the same way. They bind
     // the shared `op-*` settings and hand the confirm off to Rust; Cancel (and a
     // scrim click) just hides them.
     if root.show-compress: CompressDialog {
@@ -531,5 +566,35 @@ export component AppWindow inherits Window {
         cancel => {
             root.show-decompress = false;
         }
+    }
+
+    // The Export dialog, and the progress overlay shown while its batch runs.
+    if root.show-export: ExportDialog {
+        width: 100%;
+        height: 100%;
+        file-count: root.export-count;
+        output-dir <=> root.export-output-dir;
+        format-index <=> root.export-format;
+        fits-bitpix-index <=> root.export-fits-bitpix;
+        fits-compress <=> root.export-fits-compress;
+        fits-algorithm-index <=> root.export-fits-algorithm;
+        tiff-bpp-index <=> root.export-tiff-bpp;
+        tiff-deflate <=> root.export-tiff-deflate;
+        jpeg-quality <=> root.export-jpeg-quality;
+        browse => {
+            root.browse-export-dir();
+        }
+        confirm => {
+            root.run-export();
+        }
+        cancel => {
+            root.show-export = false;
+        }
+    }
+    if root.export-in-progress: ExportProgress {
+        width: 100%;
+        height: 100%;
+        progress: root.export-progress;
+        message: root.export-progress-text;
     }
 }
