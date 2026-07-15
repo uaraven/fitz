@@ -121,9 +121,7 @@ pub fn header_info_from(header: &Header, img: &ImageData, with_pixels: bool) -> 
         exptime_s: header.get_float("EXPTIME"),
         gain: header.get_float("GAIN"),
         offset: header.get_float("OFFSET"),
-        binning: header
-            .get_int("XBINNING")
-            .zip(header.get_int("YBINNING")),
+        binning: header.get_int("XBINNING").zip(header.get_int("YBINNING")),
         filter: header.get_string("FILTER").map(str::to_string),
         instrument: header.get_string("INSTRUME").map(str::to_string),
         telescope: header.get_string("TELESCOP").map(str::to_string),
@@ -164,7 +162,12 @@ impl HeaderInfo {
         );
         push_str(&mut fields, "Bayer", self.bayerpat.as_deref());
         push_str(&mut fields, "Object", self.object.as_deref());
-        push_coordinate(&mut fields, Axis::Ra, self.ra_deg, self.ra_sexagesimal.as_deref());
+        push_coordinate(
+            &mut fields,
+            Axis::Ra,
+            self.ra_deg,
+            self.ra_sexagesimal.as_deref(),
+        );
         push_coordinate(
             &mut fields,
             Axis::Dec,
@@ -175,7 +178,11 @@ impl HeaderInfo {
             push(&mut fields, "Rotation", format!("{}°", trim_float(rot)));
         }
         if let Some(exptime) = self.exptime_s {
-            push(&mut fields, "Exposure", format!("{} s", trim_float(exptime)));
+            push(
+                &mut fields,
+                "Exposure",
+                format!("{} s", trim_float(exptime)),
+            );
         }
         if let Some(gain) = self.gain {
             push(&mut fields, "Gain", trim_float(gain));

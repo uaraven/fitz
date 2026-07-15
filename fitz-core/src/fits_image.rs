@@ -69,9 +69,9 @@ pub fn find_image_hdu<'a>(
 /// commands that only need to inspect or edit the HDU's header, not its pixel
 /// data (unlike [`find_image_hdu`], which decompresses eagerly).
 pub fn find_image_hdu_index(fits: &FitsFile) -> Option<usize> {
-    fits.hdus
-        .iter()
-        .position(|hdu| matches!(hdu.data, HduData::Image(_)) || hdu.as_compressed_image().is_some())
+    fits.hdus.iter().position(|hdu| {
+        matches!(hdu.data, HduData::Image(_)) || hdu.as_compressed_image().is_some()
+    })
 }
 
 pub fn resolve_cfa(header: &Header, cli_pattern: Option<CFA>) -> Result<CFA> {
@@ -263,14 +263,11 @@ pub fn load_rgb(
     }
 
     if img.axes.len() != 2 {
-        bail!(
-            "expected a 2D mosaic image, found {} axes",
-            img.axes.len()
-        );
+        bail!("expected a 2D mosaic image, found {} axes", img.axes.len());
     }
 
-    let cfa =
-        resolve_cfa(header, pattern).with_context(|| "cannot determine Bayer pattern".to_string())?;
+    let cfa = resolve_cfa(header, pattern)
+        .with_context(|| "cannot determine Bayer pattern".to_string())?;
 
     let (width, height, rgb) =
         demosaic_to_rgb(header, img, cfa).with_context(|| "debayering failed".to_string())?;
@@ -393,7 +390,12 @@ pub fn deinterleave_to_planes<T: Copy + Send + Sync>(v: &[T]) -> Vec<T> {
 }
 
 /// Write an interleaved 16-bit RGB image as an RGB16 TIFF.
-pub fn write_rgb16_tiff(output: &Path, width: usize, height: usize, interleaved: &[u16]) -> Result<()> {
+pub fn write_rgb16_tiff(
+    output: &Path,
+    width: usize,
+    height: usize,
+    interleaved: &[u16],
+) -> Result<()> {
     let file =
         File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
     let mut enc = TiffEncoder::new(file)
@@ -452,6 +454,27 @@ pub fn write_pixel_fits(
     drop: &[&str],
     history: Option<&str>,
 ) -> Result<()> {
+    let fits = build_pixel_fits(axes, pixels, bscale, bzero, src_header, drop, history);
+    fits.to_file(output)
+        .with_context(|| format!("cannot write {}", output.display()))?;
+    Ok(())
+}
+
+/// Build (but do not write) the in-memory FITS file [`write_pixel_fits`] writes:
+/// a primary-image HDU carrying `pixels`, the `bscale`/`bzero` scaling, and the
+/// copied metadata / HISTORY card. Split out so callers that need to further
+/// transform the file before writing (e.g. tile-compress it on export) can do so
+/// without a write-then-reread round trip.
+#[allow(clippy::too_many_arguments)]
+pub fn build_pixel_fits(
+    axes: Vec<usize>,
+    pixels: PixelData,
+    bscale: f64,
+    bzero: f64,
+    src_header: Option<&Header>,
+    drop: &[&str],
+    history: Option<&str>,
+) -> FitsFile {
     let img = ImageData::new(axes, pixels);
     let mut fits = FitsFile::with_primary_image(img);
 
@@ -469,10 +492,7 @@ pub fn write_pixel_fits(
         }
     }
 
-    fits.to_file(output)
-        .with_context(|| format!("cannot write {}", output.display()))?;
-
-    Ok(())
+    fits
 }
 
 /// Copy metadata keywords from `src` onto `dest`, skipping structural/reserved

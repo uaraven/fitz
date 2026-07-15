@@ -343,7 +343,8 @@ mod tests {
         let input = test_data("uncompressed.fit");
         let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
 
-        let (pw, ph, preview) = resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
+        let (pw, ph, preview) =
+            resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
         let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
         assert!(text.contains('▄'));
     }
@@ -355,7 +356,8 @@ mod tests {
         let input = test_data("uncompressed.fit");
         let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
 
-        let (pw, ph, preview) = resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
+        let (pw, ph, preview) =
+            resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
         assert!(pw <= 80 && ph <= 48);
         assert_eq!(preview.len(), pw * ph * 3);
         assert_eq!(pw, ph, "square source should yield a square preview");

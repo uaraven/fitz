@@ -29,7 +29,14 @@ impl Default for CompressOptions {
 pub fn compress(input: &Path, opts: &CompressOptions) -> Result<FitsFile> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
+    compress_fits(&fits, opts)
+}
 
+/// Tile-compress every image HDU of an already-loaded `fits`, returning a new
+/// in-memory `FitsFile`. The file-reading half of [`compress`], split out so
+/// callers holding a freshly built `FitsFile` (e.g. the FITS export path) can
+/// compress it without writing it to disk and reading it back first.
+pub fn compress_fits(fits: &FitsFile, opts: &CompressOptions) -> Result<FitsFile> {
     let compress_opts = FitskitCompressOptions {
         algorithm: opts.algorithm,
         ..FitskitCompressOptions::default()
@@ -69,7 +76,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = copy_to_temp("uncompressed.fit", &tmp);
         let out_fits = compress(&input, &CompressOptions::default()).unwrap();
-        assert!(out_fits.hdus.iter().any(|h| h.as_compressed_image().is_some()));
+        assert!(
+            out_fits
+                .hdus
+                .iter()
+                .any(|h| h.as_compressed_image().is_some())
+        );
     }
 
     #[test]
