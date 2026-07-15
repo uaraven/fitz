@@ -6,6 +6,8 @@ import { StatsPanel } from "stats_panel.slint";
 import { InfoPanel } from "info_panel.slint";
 import { HeaderView } from "header_view.slint";
 import { AboutDialog } from "about.slint";
+import { CompressDialog, DecompressDialog } from "operation.slint";
+import { ConfirmDialog } from "confirm.slint";
 
 // Re-export the shared structs so the generated Rust names them at the crate root.
 export { FileRow, HeaderRow, StatItem }
@@ -52,10 +54,30 @@ export component AppWindow inherits Window {
     in property <string> app-version;
     // Whether the Help ▸ About overlay is showing.
     in-out property <bool> show-about: false;
+    // Whether the "clear the working set?" confirmation is showing.
+    in-out property <bool> show-clear-confirm: false;
+
+    // Edit ▸ Compress… / Decompress… dialogs. Only one shows at a time.
+    // `op-*` are the shared dialog settings; the counts say how many working-set
+    // files each operation will touch (the checked rows, or all when none are
+    // checked). Rust fills the counts and resets the settings before showing.
+    in-out property <bool> show-compress: false;
+    in-out property <bool> show-decompress: false;
+    in property <int> compress-count;
+    in property <int> decompress-count;
+    in-out property <int> op-algorithm: 0;
+    in-out property <bool> op-keep-source: true;
+    in-out property <bool> op-use-custom-dir: false;
+    in-out property <string> op-output-dir: "";
 
     callback open();
     callback open-directory();
     callback clear-files();
+    // Remove the checked rows (or the highlighted one when none are checked).
+    callback remove-selected();
+    // Check / uncheck every row in the working set.
+    callback select-all();
+    callback deselect-all();
     callback request-exit();
     callback select-file(int);
     // Toggle a row's checkbox (selection) state — by index into the file list.
@@ -67,6 +89,15 @@ export component AppWindow inherits Window {
     callback blink-toggled();
     // Fired when a view toggle changes so Rust can re-render the cached image.
     callback toggles-changed();
+    // Edit menu: Rust computes the file count and resets the dialog
+    // settings, then shows the matching dialog.
+    callback open-compress-dialog();
+    callback open-decompress-dialog();
+    // Open the native folder picker for the "different directory" field.
+    callback browse-output-dir();
+    // Run the operation with the current `op-*` settings.
+    callback run-compress();
+    callback run-decompress();
 
     changed debayer-enabled => {
         root.toggles-changed();
@@ -114,10 +145,17 @@ export component AppWindow inherits Window {
                 }
             }
             MenuItem {
+                title: "Remove Selected";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.remove-selected();
+                }
+            }
+            MenuItem {
                 title: "Clear";
                 enabled: root.files.length > 0;
                 activated => {
-                    root.clear-files();
+                    root.show-clear-confirm = true;
                 }
             }
             MenuSeparator { }
@@ -160,6 +198,41 @@ export component AppWindow inherits Window {
         }
 
         Menu {
+            title: "Edit";
+            MenuItem {
+                title: "Select All";
+                enabled: root.files.length > 0;
+                shortcut: @keys(Control + A);
+                activated => {
+                    root.select-all();
+                }
+            }
+            MenuItem {
+                title: "Deselect All";
+                enabled: root.files.length > 0;
+                shortcut: @keys(Control + D);
+                activated => {
+                    root.deselect-all();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Compress…";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.open-compress-dialog();
+                }
+            }
+            MenuItem {
+                title: "Decompress…";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.open-decompress-dialog();
+                }
+            }
+        }
+
+        Menu {
             title: "Help";
             MenuItem {
                 title: "About FitSmith";
@@ -192,10 +265,17 @@ export component AppWindow inherits Window {
                 }
             }
             Button {
+                text: "Remove";
+                enabled: root.files.length > 0;
+                clicked => {
+                    root.remove-selected();
+                }
+            }
+            Button {
                 text: "Clear";
                 enabled: root.files.length > 0;
                 clicked => {
-                    root.clear-files();
+                    root.show-clear-confirm = true;
                 }
             }
             Separator { }
@@ -394,6 +474,62 @@ export component AppWindow inherits Window {
         version: root.app-version;
         close => {
             root.show-about = false;
+        }
+    }
+
+    // Guard the destructive "Clear" with a confirmation — the working set is
+    // only emptied once the user agrees.
+    if root.show-clear-confirm: ConfirmDialog {
+        width: 100%;
+        height: 100%;
+        title: "Clear working set?";
+        message: "Remove all " + root.files.length + " files from the list? This doesn't delete them from disk.";
+        confirm-text: "Clear";
+        confirm => {
+            root.show-clear-confirm = false;
+            root.clear-files();
+        }
+        cancel => {
+            root.show-clear-confirm = false;
+        }
+    }
+
+    // The Edit dialogs stack above the main content the same way. They bind
+    // the shared `op-*` settings and hand the confirm off to Rust; Cancel (and a
+    // scrim click) just hides them.
+    if root.show-compress: CompressDialog {
+        width: 100%;
+        height: 100%;
+        file-count: root.compress-count;
+        algorithm-index <=> root.op-algorithm;
+        keep-source <=> root.op-keep-source;
+        use-custom-dir <=> root.op-use-custom-dir;
+        output-dir <=> root.op-output-dir;
+        browse => {
+            root.browse-output-dir();
+        }
+        confirm => {
+            root.run-compress();
+        }
+        cancel => {
+            root.show-compress = false;
+        }
+    }
+    if root.show-decompress: DecompressDialog {
+        width: 100%;
+        height: 100%;
+        file-count: root.decompress-count;
+        keep-source <=> root.op-keep-source;
+        use-custom-dir <=> root.op-use-custom-dir;
+        output-dir <=> root.op-output-dir;
+        browse => {
+            root.browse-output-dir();
+        }
+        confirm => {
+            root.run-decompress();
+        }
+        cancel => {
+            root.show-decompress = false;
         }
     }
 }

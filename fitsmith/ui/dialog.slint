@@ -1,0 +1,28 @@
+// Shared modal-dialog chrome: a click-to-dismiss dimming scrim with a centered
+// card floated on top. Used by the Compress/Decompress dialogs and the generic
+// confirmation dialog. Purely presentational — the parent toggles visibility
+// and fills the card via `@children`.
+export component DialogCard inherits Rectangle {
+    in property <length> card-width: 460px;
+    in property <length> card-height;
+    callback cancel();
+
+    background: #000000cc;
+    scrim := TouchArea {
+        clicked => {
+            root.cancel();
+        }
+    }
+
+    Rectangle {
+        width: root.card-width;
+        height: root.card-height;
+        background: #2b2b2b;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: #444444;
+        // Swallow clicks on the card so they don't reach the scrim and close it.
+        TouchArea { }
+        @children
+    }
+}

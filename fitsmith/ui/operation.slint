@@ -1,0 +1,180 @@
+import { Button, ComboBox, LineEdit, CheckBox } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+
+// The Operation ▸ Compress… / Decompress… modal dialogs. Both dim the window
+// with a click-to-dismiss scrim and float a centered card; the parent toggles
+// visibility, feeds the file count, and receives the chosen settings back
+// through the in-out properties on confirm. Purely presentational — the actual
+// compress/decompress work (and the native folder picker behind "Browse…")
+// lives in Rust.
+
+// Shared choose-a-destination block used by both dialogs: a "keep originals"
+// checkbox, a "write to a different directory" toggle, and the directory field
+// with its Browse button. When a custom directory is chosen the originals are
+// always kept, so the keep checkbox is disabled (forced on).
+component DestinationOptions inherits VerticalLayout {
+    in-out property <bool> keep-source;
+    in-out property <bool> use-custom-dir;
+    in-out property <string> output-dir;
+    callback browse();
+
+    spacing: 10px;
+
+    CheckBox {
+        text: "Keep original files";
+        // A custom output directory never touches the originals, so keeping
+        // them is implied and the toggle is locked on.
+        checked <=> root.keep-source;
+        enabled: !root.use-custom-dir;
+    }
+    CheckBox {
+        text: "Write to a different directory";
+        checked <=> root.use-custom-dir;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        LineEdit {
+            text <=> root.output-dir;
+            enabled: root.use-custom-dir;
+            placeholder-text: "Output directory";
+            horizontal-stretch: 1;
+        }
+        Button {
+            text: "Browse…";
+            enabled: root.use-custom-dir;
+            clicked => {
+                root.browse();
+            }
+        }
+    }
+}
+
+export component CompressDialog inherits DialogCard {
+    in property <int> file-count;
+    in-out property <int> algorithm-index;
+    in-out property <bool> keep-source;
+    in-out property <bool> use-custom-dir;
+    in-out property <string> output-dir;
+    callback browse();
+    callback confirm();
+
+    card-height: 330px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 14px;
+
+        Text {
+            text: "Compress";
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+        Text {
+            text: root.file-count == 1
+                ? "1 file will be compressed."
+                : root.file-count + " files will be compressed.";
+            color: #c8c8c8;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Algorithm:";
+                color: #c8c8c8;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                model: ["RICE_1", "GZIP_1", "GZIP_2"];
+                current-index <=> root.algorithm-index;
+                horizontal-stretch: 1;
+            }
+        }
+        DestinationOptions {
+            keep-source <=> root.keep-source;
+            use-custom-dir <=> root.use-custom-dir;
+            output-dir <=> root.output-dir;
+            browse => {
+                root.browse();
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button {
+                text: "Cancel";
+                clicked => {
+                    root.cancel();
+                }
+            }
+            Button {
+                text: "Compress";
+                primary: true;
+                enabled: root.file-count > 0;
+                clicked => {
+                    root.confirm();
+                }
+            }
+        }
+    }
+}
+
+export component DecompressDialog inherits DialogCard {
+    in property <int> file-count;
+    in-out property <bool> keep-source;
+    in-out property <bool> use-custom-dir;
+    in-out property <string> output-dir;
+    callback browse();
+    callback confirm();
+
+    card-height: 270px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 14px;
+
+        Text {
+            text: "Decompress";
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+        Text {
+            text: root.file-count == 1
+                ? "1 file will be decompressed."
+                : root.file-count + " files will be decompressed.";
+            color: #c8c8c8;
+        }
+        DestinationOptions {
+            keep-source <=> root.keep-source;
+            use-custom-dir <=> root.use-custom-dir;
+            output-dir <=> root.output-dir;
+            browse => {
+                root.browse();
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button {
+                text: "Cancel";
+                clicked => {
+                    root.cancel();
+                }
+            }
+            Button {
+                text: "Decompress";
+                primary: true;
+                enabled: root.file-count > 0;
+                clicked => {
+                    root.confirm();
+                }
+            }
+        }
+    }
+}

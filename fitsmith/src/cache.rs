@@ -59,6 +59,15 @@ impl<K: PartialEq, V> LruCache<K, V> {
         }
     }
 
+    /// Drop the entry for `key`, if present (e.g. when the file it rendered has
+    /// been replaced on disk). A no-op for a key that isn't resident.
+    pub fn remove(&mut self, key: &K) {
+        if let Some(idx) = self.items.iter().position(|e| &e.key == key) {
+            self.total -= self.items[idx].cost;
+            self.items.remove(idx);
+        }
+    }
+
     /// Drop every entry (e.g. when a setting invalidates all rendered previews).
     pub fn clear(&mut self) {
         self.items.clear();
@@ -137,6 +146,19 @@ mod tests {
         assert_eq!(cache.get(&"a"), None);
         assert_eq!(cache.get(&"big"), Some(&2));
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn remove_drops_one_entry_and_its_cost() {
+        let mut cache = LruCache::new(100);
+        cache.put("a", 1, 10);
+        cache.put("b", 2, 20);
+        cache.remove(&"a");
+        assert_eq!(cache.get(&"a"), None);
+        assert_eq!(cache.get(&"b"), Some(&2));
+        assert_eq!(cache.total_bytes(), 20);
+        cache.remove(&"missing"); // no-op
+        assert_eq!(cache.total_bytes(), 20);
     }
 
     #[test]
