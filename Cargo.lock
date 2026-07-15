@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "fitsmith"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "fitz-core",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "fitz"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "base64",
@@ -1567,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "fitz-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "bayer",
