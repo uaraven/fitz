@@ -137,6 +137,7 @@ fn make_row(path: &Path) -> FileRow {
         }
         .into(),
         path: path.to_string_lossy().into_owned().into(),
+        error: "".into(),
     }
 }
 
@@ -380,7 +381,7 @@ fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<LoadedDoc>, req: 
             }
         }
         Err(e) => {
-            set_row_status(&path, "error");
+            set_row_status(&path, "error", &e.to_string());
             if is_current(req) {
                 app.set_busy(false);
                 app.set_status_text(format!("Failed to open {}: {e}", display_name(&path)).into());
@@ -410,8 +411,9 @@ fn display_doc(app: &AppWindow, path: &Path, doc: &LoadedDoc) {
     schedule_next_blink(app);
 }
 
-/// Update a file row's status badge (e.g. mark a failed load "error").
-fn set_row_status(path: &Path, status: &str) {
+/// Update a file row's status badge (e.g. mark a failed load "error") and its
+/// error message (shown as a tooltip; pass "" for none).
+fn set_row_status(path: &Path, status: &str, error: &str) {
     let target = path.to_string_lossy();
     STATE.with(|s| {
         let model = &s.borrow().files_model;
@@ -420,6 +422,7 @@ fn set_row_status(path: &Path, status: &str) {
                 && row.path.as_str() == target.as_ref()
             {
                 row.status = status.into();
+                row.error = error.into();
                 model.set_row_data(i, row);
                 break;
             }

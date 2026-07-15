@@ -1,3 +1,4 @@
+import { Palette } from "std-widgets.slint";
 import { VScrollArea } from "scrolling.slint";
 import { FileRow } from "types.slint";
 
@@ -20,6 +21,16 @@ export component FileList inherits Rectangle {
     property <length> row-height: 30px;
     // Rows that fit in the viewport, for Page Up / Down (at least one).
     property <int> page-size: max(1, floor(self.height / root.row-height));
+
+    // Error-row and tooltip colors, keyed on the active color scheme: a dark
+    // muted red on dark themes, a pale red on light ones.
+    property <bool> dark-theme: Palette.color-scheme == ColorScheme.dark;
+    property <color> err-bg: root.dark-theme ? #4d2020 : #f7d6d6;
+    property <color> err-hover: root.dark-theme ? #612a2a : #f2bcbc;
+    property <color> err-text: root.dark-theme ? white : #601818;
+    property <color> tip-bg: root.dark-theme ? #2b2b2b : #fbfbfb;
+    property <color> tip-fg: root.dark-theme ? #e0e0e0 : #202020;
+    property <color> tip-border: root.dark-theme ? #555555 : #cccccc;
 
     background: #262626;
     forward-focus: fs;
@@ -61,15 +72,30 @@ export component FileList inherits Rectangle {
 
         list := VScrollArea {
             content-height: root.files.length * root.row-height;
-            for row[idx] in root.files: Rectangle {
+            for row[idx] in root.files: rowrect := Rectangle {
+                property <bool> is-error: row.error != "";
+                property <bool> selected: idx == root.selected-index;
                 y: idx * root.row-height;
                 width: list.content-width;
                 height: root.row-height;
-                background: idx == root.selected-index ? #0a5ea8 : (touch.has-hover ? #333333 : transparent);
+                background: self.selected
+                    ? #0a5ea8
+                    : (self.is-error
+                        ? (touch.has-hover ? root.err-hover : root.err-bg)
+                        : (touch.has-hover ? #333333 : transparent));
                 touch := TouchArea {
                     clicked => {
                         fs.focus();
                         root.select(idx);
+                    }
+                    // Show the failure reason as a tooltip while hovering an
+                    // errored row; hide it as soon as the cursor leaves.
+                    changed has-hover => {
+                        if (self.has-hover && rowrect.is-error) {
+                            tooltip.show();
+                        } else {
+                            tooltip.close();
+                        }
                     }
                 }
                 // Name on the left, an optional status badge on the right — one line.
@@ -80,7 +106,9 @@ export component FileList inherits Rectangle {
                     Text {
                         text: row.name;
                         overflow: elide;
-                        color: white;
+                        // Dark text keeps the name legible on the pale-red error
+                        // background used by light themes; white everywhere else.
+                        color: rowrect.is-error && !rowrect.selected ? root.err-text : white;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
@@ -90,6 +118,29 @@ export component FileList inherits Rectangle {
                         font-size: 11px;
                         color: row.status == "error" ? #ff8080 : #a0a0a0;
                         vertical-alignment: center;
+                    }
+                }
+
+                // Hover tooltip carrying the load error. A PopupWindow renders in
+                // a top-level overlay, so it isn't clipped by the (narrow) list.
+                tooltip := PopupWindow {
+                    x: 12px;
+                    y: root.row-height - 2px;
+                    Rectangle {
+                        width: 280px;
+                        background: root.tip-bg;
+                        border-width: 1px;
+                        border-color: root.tip-border;
+                        border-radius: 4px;
+                        VerticalLayout {
+                            padding: 8px;
+                            Text {
+                                text: row.error;
+                                wrap: word-wrap;
+                                font-size: 12px;
+                                color: root.tip-fg;
+                            }
+                        }
                     }
                 }
             }
