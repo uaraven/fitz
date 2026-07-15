@@ -17,14 +17,17 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fitz_core::fits_image::find_image_hdu;
-use fitz_core::fitskit::FitsFile;
+use fitz_core::fitskit::{CompressionType, FitsFile};
 use fitz_core::preview::{PreviewParams, PreviewStage, render_preview_with_progress};
 use slint::{ComponentHandle, Model, ModelRc, Timer, TimerMode, VecModel, Weak};
 
 use crate::doc::LoadedDoc;
-use crate::files::{display_name, expand_inputs, is_compressed, next_index, scan_directory};
+use crate::files::{
+    compressed_output_path, decompressed_output_path, display_name, expand_inputs, is_compressed,
+    next_index, scan_directory,
+};
 use crate::{AppWindow, FileRow, view};
 
 /// Maximum total size of rendered previews to keep cached. Sized so a handful
@@ -62,7 +65,7 @@ impl AppState {
 
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
-        let max_mem = sys.available_memory();
+        let max_mem = sys.total_memory();
         let cache_capacity = max( CACHE_CAPACITY_BYTES, (max_mem / 8) as usize);
 
         Self {
@@ -206,6 +209,83 @@ pub fn clear_files(app: &AppWindow) {
     app.set_stage_text("".into());
     view::clear(app);
     update_memory(app);
+}
+
+/// The rows a remove-action drops: every checked row, or — when none are
+/// checked — just the highlighted row (if any). Sorted and de-duplicated.
+fn removal_targets(checked: impl Iterator<Item = usize>, selected: Option<usize>) -> Vec<usize> {
+    let mut targets: Vec<usize> = checked.collect();
+    if targets.is_empty() {
+        targets.extend(selected);
+    }
+    targets.sort_unstable();
+    targets.dedup();
+    targets
+}
+
+/// Which row to highlight after a removal: the previously highlighted file if
+/// it survived (at its new index `survived`), else the nearest surviving row to
+/// the old highlight, or `None` when the set is now empty.
+fn next_selection(new_len: usize, survived: Option<usize>, old_index: Option<usize>) -> Option<usize> {
+    if new_len == 0 {
+        None
+    } else if let Some(i) = survived {
+        Some(i)
+    } else {
+        Some(old_index.unwrap_or(0).min(new_len - 1))
+    }
+}
+
+/// Remove the checked rows from the working set — or, when nothing is checked,
+/// the highlighted row. Dropped rows shift the indices below them, so this
+/// evicts each removed file's cached preview, rebuilds the model, and re-homes
+/// the highlight to a surviving row (or clears the view when the set empties).
+pub fn remove_selected(app: &AppWindow) {
+    let reselect = STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let checked = (0..st.files_model.row_count())
+            .filter(|&i| st.files_model.row_data(i).is_some_and(|r| r.checked));
+        let targets = removal_targets(checked, st.selected);
+        if targets.is_empty() {
+            return None;
+        }
+
+        let old_index = st.selected;
+        let selected_path = st.selected.and_then(|i| st.paths.get(i).cloned());
+
+        // Drop rows high-index-first so earlier indices stay valid, evicting
+        // each removed file's cached preview. Any in-flight load is orphaned by
+        // the generation bump below.
+        st.blink_timer.stop();
+        for &i in targets.iter().rev() {
+            let path = st.paths.remove(i);
+            st.files_model.remove(i);
+            st.cache.remove(&path);
+        }
+        st.generation += 1;
+        st.selected = None;
+
+        let len = st.paths.len();
+        let survived = selected_path.and_then(|p| st.paths.iter().position(|q| q == &p));
+        Some(next_selection(len, survived, old_index))
+    });
+
+    let Some(target) = reselect else {
+        return; // nothing was checked or highlighted
+    };
+    update_memory(app);
+    match target {
+        // `select_file` re-displays a surviving file straight from the cache.
+        Some(index) => select_file(app, index as i32),
+        None => {
+            app.set_blinking(false);
+            app.set_selected_index(-1);
+            app.set_busy(false);
+            app.set_status_text("No image — add files to view".into());
+            app.set_stage_text("".into());
+            view::clear(app);
+        }
+    }
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
@@ -450,6 +530,30 @@ fn toggle_check_row(model: &VecModel<FileRow>, index: usize) {
     }
 }
 
+/// Check every row in the working set — Edit ▸ Select All (Ctrl/Cmd+A).
+pub fn select_all(_app: &AppWindow) {
+    STATE.with(|s| set_all_checked(&s.borrow().files_model, true));
+}
+
+/// Uncheck every row in the working set — Edit ▸ Deselect All (Ctrl/Cmd+D).
+pub fn deselect_all(_app: &AppWindow) {
+    STATE.with(|s| set_all_checked(&s.borrow().files_model, false));
+}
+
+/// Set every file row's `checked` flag to `checked`, only rewriting rows that
+/// actually change (avoiding needless model updates). Split out from
+/// [`select_all`]/[`deselect_all`] so it needs no window and is unit-testable.
+fn set_all_checked(model: &VecModel<FileRow>, checked: bool) {
+    for i in 0..model.row_count() {
+        if let Some(mut row) = model.row_data(i)
+            && row.checked != checked
+        {
+            row.checked = checked;
+            model.set_row_data(i, row);
+        }
+    }
+}
+
 // --- blink ---------------------------------------------------------------
 
 /// Start or stop blink. Starting advances immediately; from then on each frame
@@ -492,6 +596,263 @@ fn advance_blink(app: &AppWindow) {
     }
 }
 
+// --- compress / decompress ----------------------------------------------
+
+/// The two file operations the Edit menu drives. `Compress` carries the
+/// chosen tile-compression algorithm; `Decompress` needs no parameters.
+#[derive(Clone, Copy)]
+enum Operation {
+    Compress(CompressionType),
+    Decompress,
+}
+
+impl Operation {
+    /// Present-progressive verb for the status bar ("Compressing" / …).
+    fn progressive(self) -> &'static str {
+        match self {
+            Operation::Compress(_) => "Compressing",
+            Operation::Decompress => "Decompressing",
+        }
+    }
+
+    /// Past-tense noun for the completion summary ("Compressed" / …).
+    fn past(self) -> &'static str {
+        match self {
+            Operation::Compress(_) => "Compressed",
+            Operation::Decompress => "Decompressed",
+        }
+    }
+}
+
+/// Map a compress-dialog algorithm index (the ComboBox order) to a fitskit
+/// compression type. Falls back to Rice for any out-of-range index.
+fn algorithm_for_index(index: i32) -> CompressionType {
+    match index {
+        1 => CompressionType::Gzip1,
+        2 => CompressionType::Gzip2,
+        _ => CompressionType::Rice1,
+    }
+}
+
+/// The working-set paths a bulk operation applies to: the checked rows, or the
+/// whole set when nothing is checked, kept to those matching `predicate` (e.g.
+/// only already-compressed files for decompress).
+fn operation_targets(predicate: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    STATE.with(|s| {
+        let st = s.borrow();
+        let model = &st.files_model;
+        let any_checked =
+            (0..model.row_count()).any(|i| model.row_data(i).is_some_and(|r| r.checked));
+        st.paths
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !any_checked || model.row_data(*i).is_some_and(|r| r.checked))
+            .map(|(_, p)| p.clone())
+            .filter(|p| predicate(p.as_path()))
+            .collect()
+    })
+}
+
+/// Open the Compress dialog: count the files it would compress (every target
+/// that isn't already `.fz`), reset the shared settings, and show it.
+pub fn open_compress_dialog(app: &AppWindow) {
+    let count = operation_targets(|p| !is_compressed(p)).len();
+    app.set_compress_count(count as i32);
+    reset_op_fields(app);
+    app.set_show_compress(true);
+}
+
+/// Open the Decompress dialog: count the files it would decompress (every `.fz`
+/// target), reset the shared settings, and show it.
+pub fn open_decompress_dialog(app: &AppWindow) {
+    let count = operation_targets(is_compressed).len();
+    app.set_decompress_count(count as i32);
+    reset_op_fields(app);
+    app.set_show_decompress(true);
+}
+
+/// Restore the shared dialog settings to their defaults before showing a dialog.
+fn reset_op_fields(app: &AppWindow) {
+    app.set_op_algorithm(0);
+    app.set_op_keep_source(true);
+    app.set_op_use_custom_dir(false);
+    app.set_op_output_dir("".into());
+}
+
+/// Open the native folder picker for the "different directory" field, writing
+/// the chosen path back into the dialog's text field.
+pub fn browse_output_dir(app: &AppWindow) {
+    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+        app.set_op_output_dir(dir.to_string_lossy().into_owned().into());
+    }
+}
+
+/// The output directory the dialog selected, or `None` for "beside the source".
+/// Returns an error message when a custom directory is requested but the field
+/// is empty or doesn't name an existing directory.
+fn dialog_output_dir(app: &AppWindow) -> Result<Option<PathBuf>, String> {
+    if !app.get_op_use_custom_dir() {
+        return Ok(None);
+    }
+    let text = app.get_op_output_dir();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Choose an output directory first".into());
+    }
+    let dir = PathBuf::from(trimmed);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {trimmed}"));
+    }
+    Ok(Some(dir))
+}
+
+/// Confirm the Compress dialog: gather its settings and start the batch.
+pub fn run_compress(app: &AppWindow) {
+    let op = Operation::Compress(algorithm_for_index(app.get_op_algorithm()));
+    start_operation(app, op, |p| !is_compressed(p), |app| app.set_show_compress(false));
+}
+
+/// Confirm the Decompress dialog: gather its settings and start the batch.
+pub fn run_decompress(app: &AppWindow) {
+    start_operation(app, Operation::Decompress, is_compressed, |app| {
+        app.set_show_decompress(false)
+    });
+}
+
+/// Shared confirm handler: validate the destination, hide the dialog, and spawn
+/// the batch. On an invalid custom directory the dialog stays open with the
+/// reason in the status bar.
+fn start_operation(
+    app: &AppWindow,
+    op: Operation,
+    predicate: impl Fn(&Path) -> bool,
+    hide: impl Fn(&AppWindow),
+) {
+    let output_dir = match dialog_output_dir(app) {
+        Ok(dir) => dir,
+        Err(msg) => {
+            app.set_status_text(msg.into());
+            return;
+        }
+    };
+    // A custom output directory always leaves the originals in place.
+    let keep = output_dir.is_some() || app.get_op_keep_source();
+    let targets = operation_targets(predicate);
+    hide(app);
+    if targets.is_empty() {
+        return;
+    }
+    spawn_operation(app.as_weak(), op, targets, output_dir, keep);
+}
+
+/// Run a compress/decompress batch on a worker thread, reporting per-file
+/// progress and marshaling each result back to the UI thread — a replaced file
+/// updates its working-set row in place, a failed one is badged with the error.
+fn spawn_operation(
+    weak: Weak<AppWindow>,
+    op: Operation,
+    targets: Vec<PathBuf>,
+    output_dir: Option<PathBuf>,
+    keep: bool,
+) {
+    let _ = weak.upgrade_in_event_loop(|app| {
+        app.set_busy(true);
+        app.set_stage_text("".into());
+    });
+    std::thread::spawn(move || {
+        let total = targets.len();
+        let mut ok = 0usize;
+        let mut failed = 0usize;
+        for (i, input) in targets.into_iter().enumerate() {
+            let status = format!(
+                "{}: {} ({}/{})",
+                op.progressive(),
+                display_name(&input),
+                i + 1,
+                total
+            );
+            let weak_status = weak.clone();
+            let _ = weak_status.upgrade_in_event_loop(move |app| app.set_status_text(status.into()));
+
+            match process_one(op, &input, output_dir.as_deref(), keep) {
+                Ok(new_path) => {
+                    ok += 1;
+                    // In replace mode (source removed) the working-set entry now
+                    // points at the new file; refresh its row on the UI thread.
+                    if !keep {
+                        let _ = weak.upgrade_in_event_loop(move |app| {
+                            replace_working_path(&app, &input, &new_path);
+                        });
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    let msg = e.to_string();
+                    let _ = weak.upgrade_in_event_loop(move |_app| {
+                        set_row_status(&input, "error", &msg);
+                    });
+                }
+            }
+        }
+        let _ = weak.upgrade_in_event_loop(move |app| {
+            app.set_busy(false);
+            app.set_stage_text("".into());
+            app.set_status_text(
+                format!("{} {ok} file(s), {failed} failed", op.past()).into(),
+            );
+            update_memory(&app);
+        });
+    });
+}
+
+/// Compress or decompress one file: derive its output path, do the work via
+/// `fitz-core`, write the result, and (in replace mode) delete the source.
+/// Returns the path of the file that was written. Runs on a worker thread.
+fn process_one(
+    op: Operation,
+    input: &Path,
+    output_dir: Option<&Path>,
+    keep: bool,
+) -> Result<PathBuf> {
+    let (output, out_fits) = match op {
+        Operation::Compress(algorithm) => {
+            let opts = fitz_core::compress::CompressOptions { algorithm };
+            (
+                compressed_output_path(input, output_dir),
+                fitz_core::compress::compress(input, &opts)?,
+            )
+        }
+        Operation::Decompress => (
+            decompressed_output_path(input, output_dir),
+            fitz_core::decompress::decompress(input)?,
+        ),
+    };
+    out_fits
+        .to_file(&output)
+        .with_context(|| format!("cannot write {}", output.display()))?;
+    // Replace mode removes the source, but never a file we just wrote onto.
+    if !keep && output != input {
+        std::fs::remove_file(input)
+            .with_context(|| format!("cannot remove {}", input.display()))?;
+    }
+    Ok(output)
+}
+
+/// Point a working-set entry at the file that replaced it: update the path and
+/// its list row, and drop the now-stale rendered preview from the cache. A
+/// no-op if the old path is no longer in the set (e.g. it was cleared).
+fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        if let Some(i) = st.paths.iter().position(|p| p == old) {
+            st.paths[i] = new.to_path_buf();
+            st.files_model.set_row_data(i, make_row(new));
+        }
+        st.cache.remove(&old.to_path_buf());
+    });
+    update_memory(app);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,5 +891,94 @@ mod tests {
         // The 1 GiB cache budget reads as "1.0 GB".
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
         assert_eq!(format_bytes(1536 * 1024 * 1024), "1.5 GB");
+    }
+
+    #[test]
+    fn set_all_checked_sets_every_row() {
+        let model = VecModel::from(vec![row("a"), row("b"), row("c")]);
+        toggle_check_row(&model, 1); // start with a mixed state
+
+        set_all_checked(&model, true);
+        assert!((0..3).all(|i| model.row_data(i).unwrap().checked));
+
+        set_all_checked(&model, false);
+        assert!((0..3).all(|i| !model.row_data(i).unwrap().checked));
+    }
+
+    #[test]
+    fn removal_targets_prefers_checked_else_highlighted() {
+        // Checked rows win, sorted and de-duplicated, ignoring the highlight.
+        assert_eq!(removal_targets([2, 0, 2].into_iter(), Some(1)), vec![0, 2]);
+        // No checks → just the highlighted row.
+        assert_eq!(removal_targets([].into_iter(), Some(3)), vec![3]);
+        // Nothing checked and nothing highlighted → nothing to remove.
+        assert_eq!(removal_targets([].into_iter(), None), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn next_selection_rehomes_the_highlight() {
+        // The highlighted file survived → follow it to its new index.
+        assert_eq!(next_selection(3, Some(1), Some(2)), Some(1));
+        // It was removed → clamp the old index into the shrunken list.
+        assert_eq!(next_selection(2, None, Some(5)), Some(1));
+        assert_eq!(next_selection(3, None, Some(1)), Some(1));
+        // Nothing highlighted before → land on the first row.
+        assert_eq!(next_selection(3, None, None), Some(0));
+        // The set emptied → clear the highlight.
+        assert_eq!(next_selection(0, None, Some(0)), None);
+    }
+
+    #[test]
+    fn algorithm_index_maps_to_compression_type() {
+        assert!(matches!(algorithm_for_index(0), CompressionType::Rice1));
+        assert!(matches!(algorithm_for_index(1), CompressionType::Gzip1));
+        assert!(matches!(algorithm_for_index(2), CompressionType::Gzip2));
+        // Out-of-range falls back to Rice.
+        assert!(matches!(algorithm_for_index(99), CompressionType::Rice1));
+    }
+
+    /// Absolute path to a bundled `test-data/` fixture.
+    fn test_data(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("test-data").join(name)
+    }
+
+    #[test]
+    fn process_one_replaces_source_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("frame.fit");
+        std::fs::copy(test_data("uncompressed.fit"), &input).unwrap();
+
+        // Compress in replace mode: source removed, `.fz` written beside it.
+        let compressed =
+            process_one(Operation::Compress(CompressionType::Rice1), &input, None, false).unwrap();
+        assert_eq!(compressed, tmp.path().join("frame.fit.fz"));
+        assert!(compressed.is_file());
+        assert!(!input.exists(), "source should be removed in replace mode");
+
+        // Decompress it back in replace mode: `.fz` removed, `.fit` restored.
+        let restored = process_one(Operation::Decompress, &compressed, None, false).unwrap();
+        assert_eq!(restored, input);
+        assert!(restored.is_file());
+        assert!(!compressed.exists());
+    }
+
+    #[test]
+    fn process_one_keep_mode_leaves_source_and_writes_to_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let input = tmp.path().join("frame.fit");
+        std::fs::copy(test_data("uncompressed.fit"), &input).unwrap();
+        let out_dir = tmp.path().join("out");
+        std::fs::create_dir(&out_dir).unwrap();
+
+        let compressed = process_one(
+            Operation::Compress(CompressionType::Gzip1),
+            &input,
+            Some(&out_dir),
+            true,
+        )
+        .unwrap();
+        assert_eq!(compressed, out_dir.join("frame.fit.fz"));
+        assert!(compressed.is_file());
+        assert!(input.exists(), "source must be kept when writing to a directory");
     }
 }

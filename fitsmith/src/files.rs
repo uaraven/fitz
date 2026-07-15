@@ -55,6 +55,41 @@ pub fn next_index(current: usize, len: usize) -> usize {
     if len == 0 { 0 } else { (current + 1) % len }
 }
 
+/// Where a compressed copy of `input` is written. Compression appends `.fz` to
+/// the whole file name (`frame.fit` → `frame.fit.fz`), matching the `fitz` CLI.
+/// With `output_dir` set the file lands in that directory (same base name);
+/// otherwise it lands beside the source.
+pub fn compressed_output_path(input: &Path, output_dir: Option<&Path>) -> PathBuf {
+    let mut name = input
+        .file_name()
+        .map(|n| n.to_owned())
+        .unwrap_or_else(|| input.as_os_str().to_owned());
+    name.push(".fz");
+    match output_dir {
+        Some(dir) => dir.join(name),
+        None => input.with_file_name(name),
+    }
+}
+
+/// Where a decompressed copy of `input` is written. Decompression drops a
+/// trailing `.fz` (`frame.fit.fz` → `frame.fit`); a name without `.fz` is kept
+/// as-is. With `output_dir` set the (stripped) name lands in that directory;
+/// otherwise it lands beside the source.
+pub fn decompressed_output_path(input: &Path, output_dir: Option<&Path>) -> PathBuf {
+    let stripped = if is_compressed(input) {
+        input.with_extension("")
+    } else {
+        input.to_path_buf()
+    };
+    match output_dir {
+        Some(dir) => {
+            let name = stripped.file_name().unwrap_or(stripped.as_os_str());
+            dir.join(name)
+        }
+        None => stripped,
+    }
+}
+
 /// Expand command-line arguments into a flat list of input files: directories
 /// are scanned for FITS files, existing files are kept as-is (a file named
 /// explicitly is honored regardless of extension), and missing paths are
@@ -122,6 +157,35 @@ mod tests {
         assert_eq!(next_index(2, 3), 0);
         assert_eq!(next_index(0, 1), 0);
         assert_eq!(next_index(0, 0), 0);
+    }
+
+    #[test]
+    fn compressed_output_appends_fz() {
+        assert_eq!(
+            compressed_output_path(Path::new("/x/frame.fit"), None),
+            PathBuf::from("/x/frame.fit.fz")
+        );
+        assert_eq!(
+            compressed_output_path(Path::new("/x/frame.fit"), Some(Path::new("/out"))),
+            PathBuf::from("/out/frame.fit.fz")
+        );
+    }
+
+    #[test]
+    fn decompressed_output_strips_fz() {
+        assert_eq!(
+            decompressed_output_path(Path::new("/x/frame.fit.fz"), None),
+            PathBuf::from("/x/frame.fit")
+        );
+        assert_eq!(
+            decompressed_output_path(Path::new("/x/frame.fit.fz"), Some(Path::new("/out"))),
+            PathBuf::from("/out/frame.fit")
+        );
+        // A name without a .fz extension is kept as-is (only the directory moves).
+        assert_eq!(
+            decompressed_output_path(Path::new("/x/frame.fits"), None),
+            PathBuf::from("/x/frame.fits")
+        );
     }
 
     #[test]

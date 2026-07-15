@@ -12,14 +12,16 @@ and the CLI behave identically.
 
  - **Working set** — open a single file or a whole directory and browse the files as a list.
    A file that fails to load is highlighted with a red background; hover it to see the error.
- - **Select** — each row has a checkbox for building a multi-file selection. Click the box, or
-   press Space on the highlighted row, to check or uncheck it.
- - **Live preview** — images are decoded off the UI thread and displayed with debayer and
-   auto-stretch toggles that re-render the current frame live.
+ - **Live preview** — images are displayed with debayer and auto-stretch if selected.
  - **Blink** — step or blink through the working set to compare frames; decoded images are
    kept in an LRU cache so re-selection and blinking re-render from memory.
  - **Inspect** — a Headers tab and a docked stats panel show the FITS metadata and pixel
    statistics for the selected frame.
+ - **Compress / Decompress** — the Edit menu tile-compresses files to `.fz` (pick the
+   algorithm) or decompresses them back. The operation runs over the checked rows, or the
+   whole working set when none are checked. Choose whether to keep the originals or replace
+   them in place (replaced files update to their new path in the list), or write the results
+   to a different directory (which always keeps the originals).
 
 ## Building and running
 
