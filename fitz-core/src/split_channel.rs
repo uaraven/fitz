@@ -73,10 +73,7 @@ pub fn split_channels(input: &Path, opts: &SplitChannelOptions) -> Result<SplitC
 
     let (width, height, r, g, b) = if try_demosaic {
         if img.axes.len() != 2 {
-            bail!(
-                "expected a 2D mosaic image, found {} axes",
-                img.axes.len()
-            );
+            bail!("expected a 2D mosaic image, found {} axes", img.axes.len());
         }
 
         let cfa = resolve_cfa(header, opts.pattern)
@@ -218,7 +215,9 @@ mod tests {
         let filename = input.file_name().unwrap();
         for (channel, values) in [("R", &s.r), ("G", &s.g), ("B", &s.b)] {
             let output = dir.join(format!("{channel}-{}", filename.to_str().unwrap()));
-            write_channel_fits(&output, s.width, s.height, values, format, &s.header, channel);
+            write_channel_fits(
+                &output, s.width, s.height, values, format, &s.header, channel,
+            );
         }
     }
 
@@ -324,7 +323,9 @@ mod tests {
         let s = split_channels(&input, &SplitChannelOptions::default()).unwrap();
         for (channel, values) in [("r", &s.r), ("g", &s.g), ("b", &s.b)] {
             let output = tmp.path().join(format!("{channel}.fits"));
-            write_channel_fits(&output, s.width, s.height, values, format, &s.header, channel);
+            write_channel_fits(
+                &output, s.width, s.height, values, format, &s.header, channel,
+            );
 
             let hash_file = format!("split/uncompressed-{suffix}-{channel}.sha256");
             let expected = std::fs::read_to_string(test_data(&hash_file))

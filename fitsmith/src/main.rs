@@ -3,7 +3,8 @@
 //! decoded off the UI thread and kept in an LRU cache so re-selection and blink
 //! re-render from memory. The debayer/stretch toggles re-render the current
 //! frame live; a Headers tab and a docked stats panel show the FITS metadata
-//! and pixel statistics. A later milestone adds export.
+//! and pixel statistics. The Tools menu's Export writes the working set out as
+//! FITS, TIFF, JPEG or PNG, honoring the current debayer/stretch view.
 
 mod cache;
 mod controller;
@@ -62,18 +63,42 @@ fn main() -> Result<()> {
     forward!(on_remove_selected, |app| controller::remove_selected(&app));
     forward!(on_select_all, |app| controller::select_all(&app));
     forward!(on_deselect_all, |app| controller::deselect_all(&app));
-    forward!(on_select_file, |app, index| controller::select_file(&app, index));
-    forward!(on_toggle_check, |app, index| controller::toggle_check(&app, index));
+    forward!(on_select_file, |app, index| controller::select_file(
+        &app, index
+    ));
+    forward!(on_toggle_check, |app, index| controller::toggle_check(
+        &app, index
+    ));
     forward!(on_navigate, |app, delta| controller::navigate(&app, delta));
-    forward!(on_navigate_first, |app| controller::navigate_edge(&app, false));
-    forward!(on_navigate_last, |app| controller::navigate_edge(&app, true));
+    forward!(on_navigate_first, |app| controller::navigate_edge(
+        &app, false
+    ));
+    forward!(on_navigate_last, |app| controller::navigate_edge(
+        &app, true
+    ));
     forward!(on_toggles_changed, |app| controller::rerender(&app));
-    forward!(on_blink_toggled, |app| controller::set_blinking(&app, app.get_blinking()));
-    forward!(on_open_compress_dialog, |app| controller::open_compress_dialog(&app));
-    forward!(on_open_decompress_dialog, |app| controller::open_decompress_dialog(&app));
-    forward!(on_browse_output_dir, |app| controller::browse_output_dir(&app));
+    forward!(on_blink_toggled, |app| controller::set_blinking(
+        &app,
+        app.get_blinking()
+    ));
+    forward!(on_open_compress_dialog, |app| {
+        controller::open_compress_dialog(&app)
+    });
+    forward!(on_open_decompress_dialog, |app| {
+        controller::open_decompress_dialog(&app)
+    });
+    forward!(on_browse_output_dir, |app| controller::browse_output_dir(
+        &app
+    ));
     forward!(on_run_compress, |app| controller::run_compress(&app));
     forward!(on_run_decompress, |app| controller::run_decompress(&app));
+    forward!(on_open_export_dialog, |app| controller::open_export_dialog(
+        &app
+    ));
+    forward!(on_browse_export_dir, |app| controller::browse_export_dir(
+        &app
+    ));
+    forward!(on_run_export, |app| controller::run_export(&app));
 
     app.on_request_exit(|| {
         let _ = slint::quit_event_loop();
