@@ -1,0 +1,53 @@
+import { Button } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+
+// A generic yes/no confirmation dialog for a destructive action. The parent
+// supplies the title, message and the confirm button's label, and toggles
+// visibility; `confirm` fires when the user agrees, `cancel` on decline (button
+// or scrim click).
+export component ConfirmDialog inherits DialogCard {
+    in property <string> title;
+    in property <string> message;
+    in property <string> confirm-text: "OK";
+    callback confirm();
+
+    card-width: 400px;
+    card-height: 190px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: root.title;
+            font-size: 18px;
+            font-weight: 700;
+            color: white;
+        }
+        Text {
+            text: root.message;
+            color: #c8c8c8;
+            wrap: word-wrap;
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button {
+                text: "Cancel";
+                clicked => {
+                    root.cancel();
+                }
+            }
+            Button {
+                text: root.confirm-text;
+                primary: true;
+                clicked => {
+                    root.confirm();
+                }
+            }
+        }
+    }
+}
