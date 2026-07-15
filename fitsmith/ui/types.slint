@@ -3,11 +3,14 @@
 // One entry in the file list: its display name, a short status badge
 // ("compressed" / "error" / ""), the full path, and — when the file failed
 // to load — the error message (empty otherwise), shown as a hover tooltip.
+// `checked` is the row's independent selection state (its checkbox), separate
+// from the single highlighted/previewed row tracked by `selected-index`.
 export struct FileRow {
     name: string,
     status: string,
     path: string,
     error: string,
+    checked: bool,
 }
 
 // One FITS header card, split into the Headers tab's display columns.
