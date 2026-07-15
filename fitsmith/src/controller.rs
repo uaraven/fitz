@@ -138,6 +138,7 @@ fn make_row(path: &Path) -> FileRow {
         .into(),
         path: path.to_string_lossy().into_owned().into(),
         error: "".into(),
+        checked: false,
     }
 }
 
@@ -430,6 +431,25 @@ fn set_row_status(path: &Path, status: &str, error: &str) {
     });
 }
 
+/// Flip a file row's `checked` (selection) state. Driven by the row's checkbox
+/// click and by pressing Space on the highlighted row; the toggled state feeds
+/// straight back into the list via the model binding.
+pub fn toggle_check(_app: &AppWindow, index: i32) {
+    if index < 0 {
+        return;
+    }
+    STATE.with(|s| toggle_check_row(&s.borrow().files_model, index as usize));
+}
+
+/// Flip the `checked` flag on one row of the file model. A no-op for an
+/// out-of-range index. Split out from [`toggle_check`] so it needs no window.
+fn toggle_check_row(model: &VecModel<FileRow>, index: usize) {
+    if let Some(mut row) = model.row_data(index) {
+        row.checked = !row.checked;
+        model.set_row_data(index, row);
+    }
+}
+
 // --- blink ---------------------------------------------------------------
 
 /// Start or stop blink. Starting advances immediately; from then on each frame
@@ -475,6 +495,31 @@ fn advance_blink(app: &AppWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(name: &str) -> FileRow {
+        FileRow {
+            name: name.into(),
+            status: "".into(),
+            path: name.into(),
+            error: "".into(),
+            checked: false,
+        }
+    }
+
+    #[test]
+    fn toggle_check_row_flips_only_the_target_row() {
+        let model = VecModel::from(vec![row("a"), row("b"), row("c")]);
+        toggle_check_row(&model, 1);
+        assert!(!model.row_data(0).unwrap().checked);
+        assert!(model.row_data(1).unwrap().checked);
+        assert!(!model.row_data(2).unwrap().checked);
+
+        // Toggling again clears it; an out-of-range index is a no-op.
+        toggle_check_row(&model, 1);
+        assert!(!model.row_data(1).unwrap().checked);
+        toggle_check_row(&model, 9);
+        assert_eq!(model.row_count(), 3);
+    }
 
     #[test]
     fn format_bytes_picks_a_sensible_unit() {

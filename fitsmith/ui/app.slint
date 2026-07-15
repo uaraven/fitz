@@ -58,6 +58,8 @@ export component AppWindow inherits Window {
     callback clear-files();
     callback request-exit();
     callback select-file(int);
+    // Toggle a row's checkbox (selection) state — by index into the file list.
+    callback toggle-check(int);
     // Keyboard navigation from the file list: relative move, and jump to ends.
     callback navigate(int);
     callback navigate-first();
@@ -275,6 +277,9 @@ export component AppWindow inherits Window {
                 selected-index: root.selected-index;
                 select(idx) => {
                     root.select-file(idx);
+                }
+                toggle-check(idx) => {
+                    root.toggle-check(idx);
                 }
                 select-relative(delta) => {
                     root.navigate(delta);
