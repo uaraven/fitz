@@ -1,9 +1,12 @@
-//! Time-series analytics over a set of FITS frames: compute per-frame pixel
-//! metrics (min/max/median/mean ADU and the min/max pixel counts), key each
-//! frame by its `DATE-OBS` acquisition time, and assemble a time-ordered
-//! series for one chosen metric. Pure and `Send` — no GUI types, no terminal
-//! I/O — so both the FitSmith analytics dialog and a future CLI subcommand can
+//! Time-series analytics over a set of FITS frames: compute per-frame metrics,
+//! key each frame by its `DATE-OBS` acquisition time, and assemble a
+//! time-ordered series for one chosen metric. Pure and `Send` — no GUI types, no
+//! terminal I/O — so both the FitSmith dialogs and a future CLI subcommand can
 //! drive it.
+//!
+//! Metrics come in two families (see [`MetricFamily`]): the pixel statistics
+//! every batch reads, and the star metrics only a batch that opted into
+//! [`AnalyzeOptions::detect_stars`] pays for.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -11,8 +14,21 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use fitskit::FitsFile;
 
-use crate::fits_image::{find_image_hdu, is_debayered_rgb_cube};
+use crate::fits_image::{detection_plane, find_image_hdu, is_debayered_rgb_cube};
 use crate::info::{PixelStats, parse_date_obs, pixel_stats};
+use crate::stars::{StarDetectOptions, StarStats, detect_stars, plane_background};
+
+/// Which dialog lists a metric — and, therefore, whether a batch has to detect
+/// stars to answer it. The two families are disjoint: no star metric appears in
+/// the Analytics dropdown, and no pixel metric in the Star metrics one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MetricFamily {
+    /// Read off a frame's [`PixelStats`] — every batch computes these.
+    Pixel,
+    /// Measured from the frame's detected stars, which only a batch that opted
+    /// into [`AnalyzeOptions::detect_stars`] has.
+    Star,
+}
 
 /// A per-frame statistic that can be plotted over a session.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -27,6 +43,10 @@ pub enum Metric {
     Mad,
     Mode,
     Saturated,
+    StarCount,
+    Hfr,
+    Fwhm,
+    Eccentricity,
 }
 
 impl Metric {
@@ -43,12 +63,18 @@ impl Metric {
             Metric::Mad => "Noise MAD",
             Metric::Mode => "Sky background",
             Metric::Saturated => "Saturated pixels",
+            Metric::StarCount => "Star count",
+            Metric::Hfr => "HFR",
+            Metric::Fwhm => "FWHM",
+            Metric::Eccentricity => "Eccentricity",
         }
     }
 
     /// Every metric, in the order a selection dropdown should list them. New
     /// metrics are appended, never inserted: a stored dropdown index has to keep
-    /// meaning the same thing across versions.
+    /// meaning the same thing across versions. The rule now applies per family
+    /// list — see [`Metric::of_family`], which is what a dropdown is actually
+    /// built from.
     pub fn all() -> &'static [Metric] {
         &[
             Metric::Min,
@@ -61,12 +87,39 @@ impl Metric {
             Metric::Mad,
             Metric::Mode,
             Metric::Saturated,
+            Metric::StarCount,
+            Metric::Hfr,
+            Metric::Fwhm,
+            Metric::Eccentricity,
         ]
     }
 
-    /// Extract this metric's value from a frame's pixel statistics.
-    pub fn value(self, stats: &PixelStats) -> f64 {
+    /// Which dialog lists this metric.
+    pub fn family(self) -> MetricFamily {
         match self {
+            Metric::StarCount | Metric::Hfr | Metric::Fwhm | Metric::Eccentricity => {
+                MetricFamily::Star
+            }
+            _ => MetricFamily::Pixel,
+        }
+    }
+
+    /// The metrics of one family, in dropdown order — the source one dropdown is
+    /// built from, so a position in this list is that dialog's stored index.
+    pub fn of_family(family: MetricFamily) -> &'static [Metric] {
+        match family {
+            MetricFamily::Pixel => &Metric::all()[..10],
+            MetricFamily::Star => &Metric::all()[10..],
+        }
+    }
+
+    /// Extract this metric's value from a frame's metrics, or `None` when the
+    /// frame has no value for it: every star metric is `None` for a batch that
+    /// did not detect stars, and HFR/FWHM/eccentricity are also `None` for a
+    /// frame where detection found none.
+    pub fn value(self, m: &FileMetrics) -> Option<f64> {
+        let stats = &m.stats;
+        Some(match self {
             Metric::Min => stats.min,
             Metric::Max => stats.max,
             Metric::Median => stats.median,
@@ -77,8 +130,25 @@ impl Metric {
             Metric::Mad => stats.mad,
             Metric::Mode => stats.mode,
             Metric::Saturated => stats.saturated as f64,
-        }
+            // A frame with no stars still has a star *count* — it is zero, and
+            // that is a real, plottable measurement (a cloud indicator). The
+            // shape metrics have nothing to report.
+            Metric::StarCount => m.stars.as_ref()?.count as f64,
+            Metric::Hfr => m.stars.as_ref()?.hfr?,
+            Metric::Fwhm => m.stars.as_ref()?.fwhm?,
+            Metric::Eccentricity => m.stars.as_ref()?.eccentricity?,
+        })
     }
+}
+
+/// What an [`analyze_file`] batch computes beyond the pixel statistics every
+/// batch reads.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct AnalyzeOptions {
+    /// Detect stars and measure their shapes — the [`MetricFamily::Star`]
+    /// metrics. Off by default: it costs a star-detection pass per frame, and
+    /// the Analytics dialog never asks for it.
+    pub detect_stars: bool,
 }
 
 /// Why a frame was left out of the series (reported, not an error: the batch
@@ -101,9 +171,9 @@ pub enum FileAnalysis {
     Skipped(SkipReason),
 }
 
-/// All phase-1 metrics for one frame, computed in a single pixel read. Collect
-/// these once per batch; switching the plotted metric is then just a
-/// [`build_series`] call with no file re-read.
+/// Every metric for one frame, computed in a single file read. Collect these
+/// once per batch; switching the plotted metric is then just a [`build_series`]
+/// call with no file re-read.
 pub struct FileMetrics {
     pub path: PathBuf,
     /// `DATE-OBS` as seconds since the Unix epoch (see [`parse_date_obs`]).
@@ -111,6 +181,11 @@ pub struct FileMetrics {
     /// The raw `DATE-OBS` string, for tooltips and CSV output.
     pub time_str: String,
     pub stats: PixelStats,
+    /// `None` when the batch did not ask for star detection — distinct from
+    /// `Some(StarStats { count: 0, .. })`, which means it asked and the frame
+    /// had none. The dialog's "no stars detected" note depends on telling those
+    /// apart.
+    pub stars: Option<StarStats>,
 }
 
 /// One plotted sample: a frame's acquisition time and its metric value.
@@ -125,13 +200,19 @@ pub struct SamplePoint {
 pub struct Series {
     pub metric: Metric,
     pub points: Vec<SamplePoint>,
+    /// Frames that analyzed fine but have no value for *this* metric — a
+    /// starless frame's HFR, say. Distinct from a [`SkipReason`], which is about
+    /// the frame rather than the metric, and worth reporting: a run of frames
+    /// with no stars is a cloud indicator in its own right.
+    pub unavailable: usize,
 }
 
 /// Analyze one FITS file: read its image (transparently decompressing `.fz`
-/// inputs), key it by `DATE-OBS`, and compute its pixel statistics. Returns
-/// [`FileAnalysis::Skipped`] for frames that can't participate in the series;
-/// only actual read/decode failures are `Err`.
-pub fn analyze_file(path: &Path) -> Result<FileAnalysis> {
+/// inputs), key it by `DATE-OBS`, compute its pixel statistics, and — when
+/// `opts` asks — detect its stars. Returns [`FileAnalysis::Skipped`] for frames
+/// that can't participate in the series; only actual read/decode failures are
+/// `Err`.
+pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> {
     let fits =
         FitsFile::from_file(path).with_context(|| format!("cannot read {}", path.display()))?;
     let (header, img) = find_image_hdu(&fits, path)?;
@@ -145,29 +226,47 @@ pub fn analyze_file(path: &Path) -> Result<FileAnalysis> {
         return Ok(FileAnalysis::Skipped(SkipReason::NotMono));
     }
 
+    // The RGB-cube skip above means the frame is a mosaic or mono, which is
+    // exactly what `detection_plane` accepts.
+    let stars = if opts.detect_stars {
+        let plane = detection_plane(header, img)?;
+        let bg = plane_background(&plane);
+        Some(detect_stars(&plane, &bg, &StarDetectOptions::default()))
+    } else {
+        None
+    };
+
     Ok(FileAnalysis::Analyzed(FileMetrics {
         path: path.to_path_buf(),
         time,
         time_str: time_str.to_string(),
         stats: pixel_stats(header, img),
+        stars,
     }))
 }
 
 /// Assemble the time-ordered series for one metric from already-computed
 /// per-file metrics. Pure extraction + sort — no file I/O, so switching the
-/// plotted metric is instant.
+/// plotted metric is instant. Frames with no value for this metric are dropped
+/// from the plot and counted in [`Series::unavailable`].
 pub fn build_series(files: &[FileMetrics], metric: Metric) -> Series {
     let mut points: Vec<SamplePoint> = files
         .iter()
-        .map(|f| SamplePoint {
-            time: f.time,
-            time_str: f.time_str.clone(),
-            value: metric.value(&f.stats),
-            path: f.path.clone(),
+        .filter_map(|f| {
+            Some(SamplePoint {
+                time: f.time,
+                time_str: f.time_str.clone(),
+                value: metric.value(f)?,
+                path: f.path.clone(),
+            })
         })
         .collect();
     points.sort_by(|a, b| a.time.total_cmp(&b.time));
-    Series { metric, points }
+    Series {
+        metric,
+        unavailable: files.len() - points.len(),
+        points,
+    }
 }
 
 /// Write a series as CSV: a `time_iso,epoch_seconds,value` header line
@@ -183,19 +282,26 @@ pub fn write_csv(series: &Series, mut w: impl Write) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_mosaic_fits, write_mosaic_fits_with_metadata};
+    use crate::test_support::{
+        test_data, write_mosaic_fits, write_mosaic_fits_with_metadata, write_star_field_fits,
+    };
     use fitskit::{HeaderValue, ImageData, PixelData};
     use tempfile::TempDir;
 
+    /// Analyze a frame the way the Analytics dialog does: pixels only.
     fn metrics(path: &Path) -> FileMetrics {
-        match analyze_file(path).unwrap() {
+        metrics_with(path, &AnalyzeOptions::default())
+    }
+
+    fn metrics_with(path: &Path, opts: &AnalyzeOptions) -> FileMetrics {
+        match analyze_file(path, opts).unwrap() {
             FileAnalysis::Analyzed(m) => m,
             FileAnalysis::Skipped(reason) => panic!("unexpectedly skipped: {reason:?}"),
         }
     }
 
     fn skip_reason(path: &Path) -> SkipReason {
-        match analyze_file(path).unwrap() {
+        match analyze_file(path, &AnalyzeOptions::default()).unwrap() {
             FileAnalysis::Skipped(reason) => reason,
             FileAnalysis::Analyzed(_) => panic!("expected a skip"),
         }
@@ -310,32 +416,121 @@ mod tests {
         write_mosaic_fits_with_metadata(&input, 4, 4, None);
         let m = metrics(&input);
 
-        assert_eq!(Metric::Min.value(&m.stats), 0.0);
-        assert_eq!(Metric::Max.value(&m.stats), 15.0);
-        assert_eq!(Metric::Median.value(&m.stats), 7.5);
-        assert_eq!(Metric::Mean.value(&m.stats), 7.5);
-        assert_eq!(Metric::MinPixelCount.value(&m.stats), 1.0);
-        assert_eq!(Metric::MaxPixelCount.value(&m.stats), 1.0);
+        assert_eq!(Metric::Min.value(&m), Some(0.0));
+        assert_eq!(Metric::Max.value(&m), Some(15.0));
+        assert_eq!(Metric::Median.value(&m), Some(7.5));
+        assert_eq!(Metric::Mean.value(&m), Some(7.5));
+        assert_eq!(Metric::MinPixelCount.value(&m), Some(1.0));
+        assert_eq!(Metric::MaxPixelCount.value(&m), Some(1.0));
 
         // The 4x4 fixture stores sequential values 0..15, one pixel each: every
         // value ties for most common, so the mode is the lowest of them, and
         // nothing reaches the I16 ceiling (a physical 32767 with no BZERO).
-        assert_eq!(Metric::Mode.value(&m.stats), 0.0);
-        assert_eq!(Metric::Saturated.value(&m.stats), 0.0);
-        assert_eq!(Metric::Sigma.value(&m.stats), m.stats.sigma);
-        assert_eq!(Metric::Mad.value(&m.stats), m.stats.mad);
+        assert_eq!(Metric::Mode.value(&m), Some(0.0));
+        assert_eq!(Metric::Saturated.value(&m), Some(0.0));
+        assert_eq!(Metric::Sigma.value(&m), Some(m.stats.sigma));
+        assert_eq!(Metric::Mad.value(&m), Some(m.stats.mad));
         // A uniform 0..15 spread is nothing like Gaussian, so the scaled MAD
         // (1.4826 * 4 = 5.9304) overshoots the true sigma here — the metrics
         // read their stat, they don't reinterpret it.
-        assert_eq!(Metric::Mad.value(&m.stats), 1.4826 * 4.0);
+        assert_eq!(Metric::Mad.value(&m), Some(1.4826 * 4.0));
 
-        assert_eq!(Metric::all().len(), 10);
+        // This batch didn't ask for stars, so no star metric has an answer —
+        // including the count, which is not zero but unknown.
+        for &metric in Metric::of_family(MetricFamily::Star) {
+            assert_eq!(metric.value(&m), None, "{metric:?}");
+        }
+
+        assert_eq!(Metric::all().len(), 14);
+    }
+
+    #[test]
+    fn star_metrics_read_the_detected_stars() {
+        // A real mosaic, analyzed the way the Star metrics dialog does.
+        let m = metrics_with(
+            &test_data("uncompressed.fit"),
+            &AnalyzeOptions { detect_stars: true },
+        );
+        let stars = m.stars.as_ref().unwrap();
+
+        assert_eq!(Metric::StarCount.value(&m), Some(stars.count as f64));
+        assert_eq!(Metric::Hfr.value(&m), stars.hfr);
+        assert_eq!(Metric::Fwhm.value(&m), stars.fwhm);
+        assert_eq!(Metric::Eccentricity.value(&m), stars.eccentricity);
+
+        // Detecting stars doesn't cost the pixel metrics their answers.
+        for &metric in Metric::of_family(MetricFamily::Pixel) {
+            assert!(metric.value(&m).is_some(), "{metric:?}");
+        }
+    }
+
+    #[test]
+    fn of_family_partitions_every_metric_exactly_once() {
+        // The two dropdowns between them must list every metric, once: a metric
+        // in neither list is unreachable, and one in both would be plotted by a
+        // dialog whose batch may not have measured it.
+        let listed: Vec<Metric> = [MetricFamily::Pixel, MetricFamily::Star]
+            .iter()
+            .flat_map(|&f| Metric::of_family(f).iter().copied())
+            .collect();
+        assert_eq!(listed, Metric::all());
+
+        for &m in Metric::of_family(MetricFamily::Pixel) {
+            assert_eq!(m.family(), MetricFamily::Pixel, "{m:?}");
+        }
+        for &m in Metric::of_family(MetricFamily::Star) {
+            assert_eq!(m.family(), MetricFamily::Star, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn build_series_drops_frames_with_no_value_for_the_metric() {
+        let tmp = TempDir::new().unwrap();
+        // Two frames the batch measured stars on — one with a star, one bare —
+        // and one it never asked about.
+        let starry = tmp.path().join("starry.fits");
+        write_star_field_fits(&starry, 60, 60, 1000.0, &[(30.0, 30.0, 2.0, 2.0, 5000.0)]);
+        let empty = tmp.path().join("empty.fits");
+        write_star_field_fits(&empty, 60, 60, 1000.0, &[]);
+        let unasked = tmp.path().join("unasked.fits");
+        write_star_field_fits(&unasked, 60, 60, 1000.0, &[(30.0, 30.0, 2.0, 2.0, 5000.0)]);
+
+        let stamp = |path: &Path, opts: &AnalyzeOptions, time: f64| {
+            let mut m = metrics_with(path, opts);
+            m.time = time;
+            m
+        };
+        let detect = AnalyzeOptions { detect_stars: true };
+        let files = vec![
+            stamp(&starry, &detect, 1.0),
+            stamp(&empty, &detect, 2.0),
+            stamp(&unasked, &AnalyzeOptions::default(), 3.0),
+        ];
+
+        // HFR: only the frame with a star has one. The starless frame and the
+        // one nobody asked about are counted, not plotted.
+        let hfr = build_series(&files, Metric::Hfr);
+        assert_eq!(hfr.points.len(), 1);
+        assert_eq!(hfr.unavailable, 2);
+        assert_eq!(hfr.points[0].time, 1.0);
+
+        // Star count: a starless frame counts zero, which is a real measurement.
+        let count = build_series(&files, Metric::StarCount);
+        assert_eq!(count.points.len(), 2);
+        assert_eq!(count.unavailable, 1);
+        assert_eq!(count.points[1].value, 0.0);
+
+        // A pixel metric is available for every frame regardless.
+        let mean = build_series(&files, Metric::Mean);
+        assert_eq!(mean.points.len(), 3);
+        assert_eq!(mean.unavailable, 0);
     }
 
     #[test]
     fn write_csv_emits_header_and_time_ordered_rows() {
         let series = Series {
             metric: Metric::Mean,
+            unavailable: 0,
             points: vec![
                 SamplePoint {
                     time: 100.0,

@@ -82,6 +82,10 @@ pub(crate) fn write_mosaic_fits_with_metadata(
 /// The ripple is deterministic rather than random: the background's MAD sets the
 /// detection threshold, so a seeded RNG would let a star-detection test flake on
 /// its seed.
+///
+/// Carries a DATE-OBS so an analytics batch will key it onto the time axis
+/// rather than skipping it; a test wanting several frames in an order overrides
+/// [`FileMetrics::time`](crate::analytics::FileMetrics) itself.
 pub(crate) fn write_star_field_fits(
     path: &Path,
     width: usize,
@@ -106,9 +110,13 @@ pub(crate) fn write_star_field_fits(
 
     let img = ImageData::new(vec![width, height], PixelData::I16(pixels));
     let mut fits = FitsFile::with_primary_image(img);
-    fits.primary_mut()
-        .header
-        .set(BZERO, HeaderValue::Float(32768.0), None);
+    let header = &mut fits.primary_mut().header;
+    header.set(BZERO, HeaderValue::Float(32768.0), None);
+    header.set(
+        "DATE-OBS",
+        HeaderValue::String("2026-06-22T00:00:00".to_string()),
+        None,
+    );
     fits.to_file(path).unwrap();
 }
 
