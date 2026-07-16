@@ -14,12 +14,15 @@
 //!   ([`operation_targets`], [`set_row_status`], [`algorithm_for_index`], …);
 //! - [`viewer`] — selecting, navigating, loading/rendering off-thread, and blink;
 //! - [`convert`] — the compress / decompress batch operations;
-//! - [`export`] — the export dialog and its batch.
+//! - [`export`] — the export dialog and its batch;
+//! - [`analytics`] — the analytics batch and its time-series chart.
 
+mod analytics;
 mod convert;
 mod export;
 mod viewer;
 
+pub use analytics::*;
 pub use convert::*;
 pub use export::*;
 pub use viewer::*;
@@ -28,7 +31,10 @@ use std::cell::RefCell;
 use std::cmp::max;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
+use fitz_core::analytics::FileMetrics;
 use fitz_core::fitskit::CompressionType;
 use fitz_core::preview::PreviewParams;
 use slint::{Model, ModelRc, Timer, VecModel};
@@ -60,14 +66,24 @@ struct AppState {
     generation: u64,
     /// One-shot timer that advances blink after the current frame's dwell.
     blink_timer: Timer,
+    /// Every analyzed frame's metrics for the open Analytics dialog, collected
+    /// once so switching the plotted metric needs no file re-read. Cleared when
+    /// the dialog closes.
+    analytics: Vec<FileMetrics>,
+    /// Guards analytics batches specifically — kept apart from `generation` so
+    /// that merely selecting a file mid-batch doesn't discard its results.
+    analytics_generation: u64,
+    /// Raised to ask the running analytics worker to stop between files. Each
+    /// batch gets a fresh flag, so cancelling one can't silence the next.
+    analytics_cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
     fn new() -> Self {
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
-        let max_mem = sys.total_memory();
-        let cache_capacity = max(CACHE_CAPACITY_BYTES, (max_mem / 8) as usize);
+        let max_mem = sys.available_memory();
+        let cache_capacity = max(CACHE_CAPACITY_BYTES, (max_mem * 4 / 5) as usize);
 
         Self {
             paths: Vec::new(),
@@ -76,6 +92,9 @@ impl AppState {
             selected: None,
             generation: 0,
             blink_timer: Timer::default(),
+            analytics: Vec::new(),
+            analytics_generation: 0,
+            analytics_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -416,6 +435,16 @@ fn require_existing_dir(text: &str, empty_msg: &'static str) -> Result<PathBuf, 
         return Err(format!("Not a directory: {trimmed}"));
     }
     Ok(dir)
+}
+
+/// Absolute path to a bundled `test-data/` fixture. Shared by the controller
+/// submodules' tests so they exercise real FITS frames.
+#[cfg(test)]
+fn test_data(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test-data")
+        .join(name)
 }
 
 /// The working-set paths a bulk operation applies to: the checked rows, or the

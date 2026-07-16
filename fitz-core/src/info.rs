@@ -7,10 +7,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use fitskit::{FitsFile, Header, ImageData};
+use fitskit::{FitsFile, Header, ImageData, PixelData};
 use rayon::prelude::*;
 
-use crate::fits_image::{find_image_hdu, get_bayerpat, is_debayered_rgb_cube, scaled_pixels};
+use crate::fits_image::{
+    bscale_bzero, find_image_hdu, get_bayerpat, is_debayered_rgb_cube, scaled_pixels,
+};
 
 /// Number of buckets in the pixel-value histogram.
 pub const HISTOGRAM_BUCKETS: usize = 256;
@@ -24,6 +26,10 @@ pub struct PixelStats {
     pub mean: f64,
     pub median: f64,
     pub zeros: usize,
+    /// Count of pixels whose value equals `min`.
+    pub min_count: usize,
+    /// Count of pixels whose value equals `max`.
+    pub max_count: usize,
     /// Pixel counts per bucket, evenly spanning `[min, max]`. Bucket `i` covers
     /// values in `[min + i*w, min + (i+1)*w)` where `w = (max - min) / BUCKETS`,
     /// with `max` itself folded into the last bucket.
@@ -356,9 +362,222 @@ pub fn trim_float(v: f64) -> String {
     }
 }
 
-/// Compute min/max/mean/median, the zero count and the value histogram of the
-/// image's physical (BSCALE/BZERO-applied) pixel values.
+/// Parse a FITS `DATE-OBS` timestamp (`YYYY-MM-DDTHH:MM:SS[.sss]`, UTC by
+/// convention; a trailing `Z` is tolerated) into seconds since the Unix epoch,
+/// preserving fractional seconds. The result is both a sortable key and a
+/// numeric X value for time-series plots. Returns `None` for anything
+/// unparseable (including a bare date with no time part).
+pub fn parse_date_obs(s: &str) -> Option<f64> {
+    let s = s.trim().trim_end_matches('Z');
+    let (date, time) = s.split_once('T')?;
+
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: u32 = parts.next()?.parse().ok()?;
+    let day: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let mut parts = time.split(':');
+    let hour: u32 = parts.next()?.parse().ok()?;
+    let minute: u32 = parts.next()?.parse().ok()?;
+    let second: f64 = parts.next()?.parse().ok()?;
+    // Allow 60 for a leap second, per the FITS convention of UTC timestamps.
+    if parts.next().is_some() || hour >= 24 || minute >= 60 || !(0.0..61.0).contains(&second) {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day) as f64;
+    Some(days * 86400.0 + f64::from(hour) * 3600.0 + f64::from(minute) * 60.0 + second)
+}
+
+/// Days from the Unix epoch (1970-01-01) to the given civil date, negative for
+/// earlier dates. Howard Hinnant's `days_from_civil` algorithm — exact for the
+/// entire proleptic Gregorian calendar, no external date crate needed.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = i64::from((m + 9) % 12); // March-based month, [0, 11]
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// Compute min/max/mean/median, the min/max pixel counts, the zero count and
+/// the value histogram of the image's physical (BSCALE/BZERO-applied) pixel
+/// values.
+///
+/// Integer 16-bit samples (`U8`/`I16` storage — including the common
+/// unsigned-16 convention, BITPIX 16 with BZERO 32768) take a single-pass
+/// fast path: one parallel scan builds a full-resolution value-count array
+/// (65536 slots, one per raw sample value), from which every statistic falls
+/// out with no sort and no second pass over the pixels. BSCALE/BZERO is an
+/// affine, monotonic map (for the usual `BSCALE > 0`), so ordering and equal
+/// counts on raw samples translate exactly to physical values. Wider or float
+/// samples fall back to the general fold+sort path.
 pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
+    let (bscale, bzero) = bscale_bzero(header);
+    if bscale > 0.0
+        && let Some((counts, offset)) = value_counts(img)
+    {
+        return stats_from_counts(&counts, |i| bzero + bscale * (i as f64 - offset));
+    }
+    pixel_stats_general(header, img)
+}
+
+/// Number of distinct raw sample values in the 16-bit fast path.
+const VALUE_COUNT_SLOTS: usize = 1 << 16;
+
+/// Smallest sample count worth giving its own parallel chunk (and hence its own
+/// [`VALUE_COUNT_SLOTS`]-slot array): four times the per-chunk overhead, so that
+/// bookkeeping stays a fraction of the counting.
+const MIN_COUNT_CHUNK: usize = 4 * VALUE_COUNT_SLOTS;
+
+/// Count occurrences of every raw sample value in one parallel pass, for
+/// sample types whose values index into a 65536-slot array (`U8`, `I16`).
+/// Returns the counts plus the `offset` mapping an index back to its raw
+/// sample value (`raw = index - offset`), or `None` for wider/float samples.
+fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
+    fn count<T: Sync>(v: &[T], idx: impl Fn(&T) -> usize + Sync + Send) -> Vec<u64> {
+        // Every chunk costs a 65536-slot allocation to zero and a 65536-element
+        // add to merge, so a chunk must count enough samples to earn that back:
+        // spread the work one chunk per thread, but never split so fine that the
+        // bookkeeping dominates. A small frame stays on a single chunk.
+        let chunk = v
+            .len()
+            .div_ceil(rayon::current_num_threads())
+            .max(MIN_COUNT_CHUNK);
+        v.par_chunks(chunk)
+            .fold(
+                || vec![0u64; VALUE_COUNT_SLOTS],
+                |mut c, chunk| {
+                    for x in chunk {
+                        c[idx(x)] += 1;
+                    }
+                    c
+                },
+            )
+            .reduce(|| vec![0u64; VALUE_COUNT_SLOTS], add_counts)
+    }
+
+    match &img.pixels {
+        PixelData::U8(v) => Some((count(v, |&x| x as usize), 0.0)),
+        PixelData::I16(v) => Some((count(v, |&x| (x as i32 + 32768) as usize), 32768.0)),
+        _ => None,
+    }
+}
+
+/// Sum two equal-length count arrays element-wise, reusing `a`'s allocation.
+/// The `reduce` step of every parallel counting fold in this module.
+fn add_counts(mut a: Vec<u64>, b: Vec<u64>) -> Vec<u64> {
+    for (slot, c) in a.iter_mut().zip(b) {
+        *slot += c;
+    }
+    a
+}
+
+/// Multiplier turning a value's distance from `min` into a bucket index. A
+/// degenerate range (`max <= min`, e.g. a constant image) yields `0.0`, which
+/// collapses every value into bucket 0.
+fn bucket_scale(min: f64, max: f64) -> f64 {
+    let range = max - min;
+    if range > 0.0 {
+        HISTOGRAM_BUCKETS as f64 / range
+    } else {
+        0.0
+    }
+}
+
+/// Bucket index for a value, given `min` and the [`bucket_scale`] for the
+/// range. `max` (and anything rounding past the upper edge) folds into the last
+/// bucket. Shared so that binning distinct values by their counts lands them in
+/// exactly the buckets that binning every pixel individually would.
+fn bucket_index(v: f64, min: f64, scale: f64) -> usize {
+    (((v - min) * scale) as usize).min(HISTOGRAM_BUCKETS - 1)
+}
+
+/// Derive every [`PixelStats`] field from a full-resolution value-count array.
+/// `physical` maps a count index to its physical (BSCALE/BZERO-applied) value
+/// and must be monotonically increasing in the index.
+fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelStats {
+    let n: u64 = counts.iter().sum();
+    if n == 0 {
+        return PixelStats {
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+            mean: 0.0,
+            median: 0.0,
+            zeros: 0,
+            min_count: 0,
+            max_count: 0,
+            histogram: vec![0; HISTOGRAM_BUCKETS],
+        };
+    }
+
+    let min_idx = counts.iter().position(|&c| c > 0).unwrap();
+    let max_idx = counts.iter().rposition(|&c| c > 0).unwrap();
+    let min = physical(min_idx);
+    let max = physical(max_idx);
+
+    // One walk over the (at most 65536) occupied slots covers the sum for the
+    // mean, the zero count, and the 256-bin display histogram; binning each
+    // distinct value with the same formula as `histogram` keeps the output
+    // bit-identical to binning every pixel individually.
+    let mut sum = 0.0;
+    let mut zeros = 0usize;
+    let mut buckets = vec![0u64; HISTOGRAM_BUCKETS];
+    let scale = bucket_scale(min, max);
+    for (i, &c) in counts.iter().enumerate().take(max_idx + 1).skip(min_idx) {
+        if c == 0 {
+            continue;
+        }
+        let v = physical(i);
+        sum += v * c as f64;
+        zeros += if v == 0.0 { c as usize } else { 0 };
+        buckets[bucket_index(v, min, scale)] += c;
+    }
+
+    // Median from the cumulative counts: the value at rank n/2, averaged with
+    // the one at rank n/2 - 1 for an even count.
+    let mid = n / 2;
+    let median = if n % 2 == 1 {
+        physical(index_at_rank(counts, mid))
+    } else {
+        (physical(index_at_rank(counts, mid - 1)) + physical(index_at_rank(counts, mid))) / 2.0
+    };
+
+    PixelStats {
+        min,
+        max,
+        mean: sum / n as f64,
+        median,
+        zeros,
+        min_count: counts[min_idx] as usize,
+        max_count: counts[max_idx] as usize,
+        histogram: buckets,
+    }
+}
+
+/// Index of the value-count slot holding the sample of (0-based) `rank` in the
+/// sorted order of all samples. `rank` must be less than the total count.
+fn index_at_rank(counts: &[u64], rank: u64) -> usize {
+    let mut cumulative = 0u64;
+    for (i, &c) in counts.iter().enumerate() {
+        cumulative += c;
+        if cumulative > rank {
+            return i;
+        }
+    }
+    unreachable!("rank {rank} beyond total sample count");
+}
+
+/// The general-purpose fallback for samples that don't fit the 16-bit
+/// value-count fast path: parallel fold for min/max/zeros, a counting pass for
+/// the min/max pixel counts, a histogram pass, and an in-place selection for
+/// the median.
+fn pixel_stats_general(header: &Header, img: &ImageData) -> PixelStats {
     let mut values = scaled_pixels(header, img);
 
     // min/max and the zero count reduce in parallel (all associative, so the
@@ -375,6 +594,16 @@ pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
             || (f64::INFINITY, f64::NEG_INFINITY, 0usize),
             |a, b| (a.0.min(b.0), a.1.max(b.1), a.2 + b.2),
         );
+
+    // Count the pixels sitting exactly at the extremes (needs min/max known,
+    // so it can't fold into the pass above; the data is already in memory).
+    let (min_count, max_count) = values
+        .par_iter()
+        .fold(
+            || (0usize, 0usize),
+            |(mnc, mxc), &v| (mnc + (v == min) as usize, mxc + (v == max) as usize),
+        )
+        .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
 
     // Bin into the histogram once min/max are known. Done as a separate pass
     // (the data is already in memory) so the bucket edges can span the actual
@@ -395,6 +624,8 @@ pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
         mean,
         median,
         zeros,
+        min_count,
+        max_count,
         histogram,
     }
 }
@@ -405,33 +636,17 @@ pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
 /// bucket 0. The work is split across threads, each filling a local bucket
 /// array that is then summed element-wise.
 pub fn histogram(values: &[f64], min: f64, max: f64) -> Vec<u64> {
-    let range = max - min;
-    if range <= 0.0 {
-        let mut buckets = vec![0u64; HISTOGRAM_BUCKETS];
-        buckets[0] = values.len() as u64;
-        return buckets;
-    }
-
-    let scale = HISTOGRAM_BUCKETS as f64 / range;
+    let scale = bucket_scale(min, max);
     values
         .par_iter()
         .fold(
             || vec![0u64; HISTOGRAM_BUCKETS],
             |mut buckets, &v| {
-                let idx = (((v - min) * scale) as usize).min(HISTOGRAM_BUCKETS - 1);
-                buckets[idx] += 1;
+                buckets[bucket_index(v, min, scale)] += 1;
                 buckets
             },
         )
-        .reduce(
-            || vec![0u64; HISTOGRAM_BUCKETS],
-            |mut a, b| {
-                for (slot, count) in a.iter_mut().zip(b) {
-                    *slot += count;
-                }
-                a
-            },
-        )
+        .reduce(|| vec![0u64; HISTOGRAM_BUCKETS], add_counts)
 }
 
 /// Median via in-place selection; averages the two central values for an even
@@ -473,6 +688,8 @@ mod tests {
         assert_eq!(stats.mean, 7.5);
         assert_eq!(stats.median, 7.5); // mean of 7 and 8
         assert_eq!(stats.zeros, 1); // only the single 0 pixel
+        assert_eq!(stats.min_count, 1); // sequential values: one pixel per value
+        assert_eq!(stats.max_count, 1);
 
         // 16 values (0..15) over 256 buckets: every value lands in a distinct
         // bucket, the total is conserved, and 15 (the max) folds into bucket 255.
@@ -587,6 +804,126 @@ mod tests {
         let img = img.as_ref();
         let stats = pixel_stats(header, img);
         assert_eq!(stats.zeros, 1);
+    }
+
+    #[test]
+    fn min_max_counts_on_repeated_extremes() {
+        // 2x2 mosaic with two pixels at the minimum and one at the maximum.
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![3, 3, 7, 5]));
+        let stats = pixel_stats(&Header::default(), &img);
+        assert_eq!(stats.min, 3.0);
+        assert_eq!(stats.max, 7.0);
+        assert_eq!(stats.min_count, 2);
+        assert_eq!(stats.max_count, 1);
+        assert_eq!(stats.zeros, 0);
+        assert_eq!(stats.median, 4.0); // mean of 3 and 5
+    }
+
+    #[test]
+    fn constant_image_degenerate_min_equals_max() {
+        // min == max: both counts cover every pixel, histogram collapses to
+        // bucket 0, and zeros counts everything when the constant is 0.
+        let img = ImageData::new(vec![3, 2], PixelData::I16(vec![0; 6]));
+        let stats = pixel_stats(&Header::default(), &img);
+        assert_eq!((stats.min, stats.max), (0.0, 0.0));
+        assert_eq!(stats.min_count, 6);
+        assert_eq!(stats.max_count, 6);
+        assert_eq!(stats.zeros, 6);
+        assert_eq!((stats.mean, stats.median), (0.0, 0.0));
+        assert_eq!(stats.histogram[0], 6);
+        assert_eq!(stats.histogram.iter().sum::<u64>(), 6);
+    }
+
+    #[test]
+    fn fast_path_matches_general_path_on_real_data() {
+        // The bundled frame is 16-bit unsigned (I16 + BZERO 32768), so
+        // `pixel_stats` takes the value-count fast path; it must agree with
+        // the general fold+sort path on every field.
+        let input = test_data("uncompressed.fit");
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let img = img.as_ref();
+
+        let fast = pixel_stats(header, img);
+        let general = pixel_stats_general(header, img);
+
+        assert_eq!(fast.min, general.min);
+        assert_eq!(fast.max, general.max);
+        assert_eq!(fast.median, general.median);
+        assert_eq!(fast.zeros, general.zeros);
+        assert_eq!(fast.min_count, general.min_count);
+        assert_eq!(fast.max_count, general.max_count);
+        assert_eq!(fast.histogram, general.histogram);
+        // The fast path sums value*count over ≤65536 slots instead of every
+        // pixel individually, so the mean may differ in the last few ulps.
+        assert!((fast.mean - general.mean).abs() < 1e-9 * general.mean.abs().max(1.0));
+    }
+
+    #[test]
+    fn general_path_reports_min_max_counts_for_float_samples() {
+        // F32 samples skip the value-count fast path; the fallback must still
+        // fill in the new count fields. Values are i/n, all distinct.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mono_f32.fits");
+        crate::test_support::write_mono_f32_fits(&input, 4, 4);
+
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let stats = pixel_stats(header, img.as_ref());
+        assert_eq!(stats.min_count, 1);
+        assert_eq!(stats.max_count, 1);
+    }
+
+    #[test]
+    fn parse_date_obs_handles_valid_timestamps() {
+        assert_eq!(parse_date_obs("1970-01-01T00:00:00"), Some(0.0));
+        // 2000-01-01T12:00:00 UTC is a well-known epoch value (J2000).
+        assert_eq!(parse_date_obs("2000-01-01T12:00:00"), Some(946728000.0));
+        // Fractional seconds are preserved; trailing Z and whitespace tolerated.
+        assert_eq!(parse_date_obs("1970-01-01T00:00:00.25"), Some(0.25));
+        assert_eq!(parse_date_obs(" 1970-01-02T00:00:00Z "), Some(86400.0));
+    }
+
+    #[test]
+    fn parse_date_obs_rejects_invalid_input() {
+        for s in [
+            "",
+            "2026-05-31",              // bare date, no time part
+            "2026-05-31 04:57:09",     // space instead of T
+            "2026-13-01T00:00:00",     // month out of range
+            "2026-05-32T00:00:00",     // day out of range
+            "2026-05-31T24:00:00",     // hour out of range
+            "2026-05-31T00:60:00",     // minute out of range
+            "2026-05-31T00:00:61",     // second out of range
+            "2026-05-31T00:00",        // missing seconds
+            "2026-05-31T00:00:00:00",  // extra time field
+            "2026-05-31-01T00:00:00",  // extra date field
+            "not-a-date-at-allT00:00", // garbage
+        ] {
+            assert_eq!(parse_date_obs(s), None, "{s:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn parse_date_obs_orders_chronologically() {
+        // Across a day boundary, a month boundary and a leap year.
+        let times = [
+            "2023-12-31T23:59:59.9",
+            "2024-01-01T00:00:00",
+            "2024-02-29T12:00:00",
+            "2024-03-01T00:00:00",
+        ];
+        let parsed: Vec<f64> = times.iter().map(|s| parse_date_obs(s).unwrap()).collect();
+        assert!(parsed.windows(2).all(|w| w[0] < w[1]), "{parsed:?}");
+    }
+
+    #[test]
+    fn parse_date_obs_reads_real_fixture_header() {
+        let input = test_data("uncompressed.fit");
+        let info = header_info(&input).unwrap();
+        let t = parse_date_obs(info.date_obs.as_deref().unwrap()).unwrap();
+        // 2026-05-31T04:57:09.004664 — sanity-check the epoch conversion.
+        assert_eq!(t, 1780203429.004664);
     }
 
     #[test]

@@ -233,8 +233,10 @@ fn write_jpeg(output: &Path, width: usize, height: usize, rgb8: &[u8], quality: 
     Ok(())
 }
 
-/// Write 8-bit interleaved RGB samples as a PNG.
-fn write_png(output: &Path, width: usize, height: usize, rgb8: &[u8]) -> Result<()> {
+/// Write 8-bit interleaved RGB samples as a PNG. Public so GUI frontends can
+/// encode screenshots/chart exports with the same encoder the image export
+/// uses.
+pub fn write_png(output: &Path, width: usize, height: usize, rgb8: &[u8]) -> Result<()> {
     let file =
         File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
     PngEncoder::new(BufWriter::new(file))
