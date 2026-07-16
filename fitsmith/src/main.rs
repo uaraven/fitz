@@ -102,6 +102,9 @@ fn main() -> Result<()> {
     forward!(on_open_analytics_dialog, |app| {
         controller::open_analytics_dialog(&app)
     });
+    forward!(on_cancel_analytics, |app| controller::cancel_analytics(
+        &app
+    ));
     forward!(on_analytics_metric_changed, |app, index| {
         controller::analytics_metric_changed(&app, index)
     });
