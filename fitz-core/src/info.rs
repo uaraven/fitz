@@ -710,8 +710,15 @@ fn index_at_rank(counts: &[u64], rank: u64) -> usize {
 /// the min/max pixel counts, a histogram pass, and an in-place selection for
 /// the median.
 fn pixel_stats_general(header: &Header, img: &ImageData) -> PixelStats {
-    let mut values = scaled_pixels(header, img);
+    stats_from_values(&mut scaled_pixels(header, img))
+}
 
+/// Every [`PixelStats`] field from already-scaled physical values, for callers
+/// that hold a value buffer rather than a `(header, img)` pair (e.g. a star
+/// detection plane). Reorders `values` — selection for the median, then
+/// overwritten with deviations for the MAD — so the caller keeps the multiset,
+/// not the order.
+pub(crate) fn stats_from_values(values: &mut Vec<f64>) -> PixelStats {
     // min/max and the zero count reduce in parallel (all associative, so the
     // result is independent of how the work is split). The sum is kept
     // sequential so the reported mean doesn't drift with thread scheduling from
@@ -740,7 +747,7 @@ fn pixel_stats_general(header: &Header, img: &ImageData) -> PixelStats {
     // Bin into the histogram once min/max are known. Done as a separate pass
     // (the data is already in memory) so the bucket edges can span the actual
     // value range. Per-thread bucket arrays are summed element-wise in reduce.
-    let histogram = histogram(&values, min, max);
+    let histogram = histogram(values, min, max);
 
     // The center of the largest histogram bucket stands in for the mode: for
     // continuous float values, "the most common value" has no exact answer.
@@ -766,9 +773,9 @@ fn pixel_stats_general(header: &Header, img: &ImageData) -> PixelStats {
 
         // σ must be computed before this point: `median_in_place` only reorders
         // `values`, but the MAD step overwrites them with their deviations.
-        let median = median_in_place(&mut values);
+        let median = median_in_place(values);
         values.iter_mut().for_each(|v| *v = (*v - median).abs());
-        let mad = MAD_TO_SIGMA * median_in_place(&mut values);
+        let mad = MAD_TO_SIGMA * median_in_place(values);
         (mean, sigma, median, mad)
     };
 
@@ -827,7 +834,7 @@ pub fn histogram(values: &[f64], min: f64, max: f64) -> Vec<u64> {
 
 /// Median via in-place selection; averages the two central values for an even
 /// count. Assumes a non-empty slice of finite values.
-fn median_in_place(values: &mut [f64]) -> f64 {
+pub(crate) fn median_in_place(values: &mut [f64]) -> f64 {
     let n = values.len();
     let mid = n / 2;
     let (_, hi, _) = values.select_nth_unstable_by(mid, f64::total_cmp);
