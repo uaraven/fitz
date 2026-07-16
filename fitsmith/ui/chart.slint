@@ -22,14 +22,6 @@ export component AnalyticsChart inherits Rectangle {
     // Y-axis title (the plotted metric's name).
     in property <string> metric-label;
 
-    // Where the chart sits in the window, for cropping a window snapshot down
-    // to the chart when exporting a PNG (covers the whole chart, axes and
-    // labels included).
-    out property <length> chart-x: self.absolute-position.x;
-    out property <length> chart-y: self.absolute-position.y;
-    out property <length> chart-w: self.width;
-    out property <length> chart-h: self.height;
-
     // Theme palette, keyed on the active color scheme (same pattern as the
     // file list's error/tooltip colors).
     property <bool> dark-theme: Palette.color-scheme == ColorScheme.dark;

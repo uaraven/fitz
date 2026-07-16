@@ -436,7 +436,11 @@ const VALUE_COUNT_SLOTS: usize = 1 << 16;
 /// sample value (`raw = index - offset`), or `None` for wider/float samples.
 fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
     fn count<T: Sync>(v: &[T], idx: impl Fn(&T) -> usize + Sync + Send) -> Vec<u64> {
-        v.par_chunks(VALUE_COUNT_SLOTS)
+        // One chunk per thread: each chunk costs a 65536-slot allocation and
+        // each merge a 65536-element add, so splitting finer than the thread
+        // count makes that bookkeeping rival the counting itself.
+        let chunk = v.len().div_ceil(rayon::current_num_threads()).max(1);
+        v.par_chunks(chunk)
             .fold(
                 || vec![0u64; VALUE_COUNT_SLOTS],
                 |mut c, chunk| {
@@ -446,15 +450,7 @@ fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
                     c
                 },
             )
-            .reduce(
-                || vec![0u64; VALUE_COUNT_SLOTS],
-                |mut a, b| {
-                    for (slot, c) in a.iter_mut().zip(b) {
-                        *slot += c;
-                    }
-                    a
-                },
-            )
+            .reduce(|| vec![0u64; VALUE_COUNT_SLOTS], add_counts)
     }
 
     match &img.pixels {
@@ -462,6 +458,35 @@ fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
         PixelData::I16(v) => Some((count(v, |&x| (x as i32 + 32768) as usize), 32768.0)),
         _ => None,
     }
+}
+
+/// Sum two equal-length count arrays element-wise, reusing `a`'s allocation.
+/// The `reduce` step of every parallel counting fold in this module.
+fn add_counts(mut a: Vec<u64>, b: Vec<u64>) -> Vec<u64> {
+    for (slot, c) in a.iter_mut().zip(b) {
+        *slot += c;
+    }
+    a
+}
+
+/// Multiplier turning a value's distance from `min` into a bucket index. A
+/// degenerate range (`max <= min`, e.g. a constant image) yields `0.0`, which
+/// collapses every value into bucket 0.
+fn bucket_scale(min: f64, max: f64) -> f64 {
+    let range = max - min;
+    if range > 0.0 {
+        HISTOGRAM_BUCKETS as f64 / range
+    } else {
+        0.0
+    }
+}
+
+/// Bucket index for a value, given `min` and the [`bucket_scale`] for the
+/// range. `max` (and anything rounding past the upper edge) folds into the last
+/// bucket. Shared so that binning distinct values by their counts lands them in
+/// exactly the buckets that binning every pixel individually would.
+fn bucket_index(v: f64, min: f64, scale: f64) -> usize {
+    (((v - min) * scale) as usize).min(HISTOGRAM_BUCKETS - 1)
 }
 
 /// Derive every [`PixelStats`] field from a full-resolution value-count array.
@@ -494,8 +519,7 @@ fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelSt
     let mut sum = 0.0;
     let mut zeros = 0usize;
     let mut buckets = vec![0u64; HISTOGRAM_BUCKETS];
-    let range = max - min;
-    let scale = HISTOGRAM_BUCKETS as f64 / range;
+    let scale = bucket_scale(min, max);
     for (i, &c) in counts.iter().enumerate().take(max_idx + 1).skip(min_idx) {
         if c == 0 {
             continue;
@@ -503,12 +527,7 @@ fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelSt
         let v = physical(i);
         sum += v * c as f64;
         zeros += if v == 0.0 { c as usize } else { 0 };
-        let bucket = if range <= 0.0 {
-            0
-        } else {
-            (((v - min) * scale) as usize).min(HISTOGRAM_BUCKETS - 1)
-        };
-        buckets[bucket] += c;
+        buckets[bucket_index(v, min, scale)] += c;
     }
 
     // Median from the cumulative counts: the value at rank n/2, averaged with
@@ -608,33 +627,17 @@ fn pixel_stats_general(header: &Header, img: &ImageData) -> PixelStats {
 /// bucket 0. The work is split across threads, each filling a local bucket
 /// array that is then summed element-wise.
 pub fn histogram(values: &[f64], min: f64, max: f64) -> Vec<u64> {
-    let range = max - min;
-    if range <= 0.0 {
-        let mut buckets = vec![0u64; HISTOGRAM_BUCKETS];
-        buckets[0] = values.len() as u64;
-        return buckets;
-    }
-
-    let scale = HISTOGRAM_BUCKETS as f64 / range;
+    let scale = bucket_scale(min, max);
     values
         .par_iter()
         .fold(
             || vec![0u64; HISTOGRAM_BUCKETS],
             |mut buckets, &v| {
-                let idx = (((v - min) * scale) as usize).min(HISTOGRAM_BUCKETS - 1);
-                buckets[idx] += 1;
+                buckets[bucket_index(v, min, scale)] += 1;
                 buckets
             },
         )
-        .reduce(
-            || vec![0u64; HISTOGRAM_BUCKETS],
-            |mut a, b| {
-                for (slot, count) in a.iter_mut().zip(b) {
-                    *slot += count;
-                }
-                a
-            },
-        )
+        .reduce(|| vec![0u64; HISTOGRAM_BUCKETS], add_counts)
 }
 
 /// Median via in-place selection; averages the two central values for an even

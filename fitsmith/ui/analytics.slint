@@ -26,11 +26,13 @@ export component AnalyticsDialog inherits DialogCard {
     // clamps to that range on its own.
     in-out property <float> zoom: 1.0;
 
-    // Chart placement in the window, re-exported for the PNG snapshot crop.
-    out property <length> chart-x: chart.chart-x;
-    out property <length> chart-y: chart.chart-y;
-    out property <length> chart-w: chart.chart-w;
-    out property <length> chart-h: chart.chart-h;
+    // Where the chart sits in the window, for cropping a window snapshot down
+    // to the chart when exporting a PNG (covers the whole chart, axes and
+    // labels included).
+    out property <length> chart-x: chart.absolute-position.x;
+    out property <length> chart-y: chart.absolute-position.y;
+    out property <length> chart-w: chart.width;
+    out property <length> chart-h: chart.height;
 
     callback metric-changed(int);
     callback export-png();

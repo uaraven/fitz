@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use fitskit::FitsFile;
 
-use crate::fits_image::find_image_hdu;
+use crate::fits_image::{find_image_hdu, is_debayered_rgb_cube};
 use crate::info::{PixelStats, parse_date_obs, pixel_stats};
 
 /// A per-frame statistic that can be plotted over a session.
@@ -119,11 +119,11 @@ pub fn analyze_file(path: &Path) -> Result<FileAnalysis> {
     let (header, img) = find_image_hdu(&fits, path)?;
     let img = img.as_ref();
 
-    let time_str = header.get_string("DATE-OBS").map(str::trim);
-    let Some((time_str, time)) = time_str.and_then(|s| Some((s, parse_date_obs(s)?))) else {
+    let time_str = header.get_string("DATE-OBS").map(str::trim).unwrap_or("");
+    let Some(time) = parse_date_obs(time_str) else {
         return Ok(FileAnalysis::Skipped(SkipReason::NoDateObs));
     };
-    if crate::fits_image::is_debayered_rgb_cube(header, img) {
+    if is_debayered_rgb_cube(header, img) {
         return Ok(FileAnalysis::Skipped(SkipReason::NotMono));
     }
 
