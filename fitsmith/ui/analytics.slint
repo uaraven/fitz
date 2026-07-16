@@ -1,0 +1,147 @@
+import { Button, ComboBox, Slider } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+import { AnalyticsChart } from "chart.slint";
+import { ChartPoint, ChartTick } from "types.slint";
+
+// The Tools ▸ Analytics… modal: plots one pixel metric across the checked
+// working-set files, ordered by acquisition time (DATE-OBS). Purely
+// presentational — the controller computes every metric per file once, then
+// feeds normalized chart data; switching the metric dropdown re-plots with no
+// file re-read.
+export component AnalyticsDialog inherits DialogCard {
+    // The selectable metrics, supplied by the controller from
+    // `fitz_core::analytics::Metric::all()`; `metric-index` indexes into it.
+    in property <[string]> metric-model;
+    // Chart data (see AnalyticsChart / ChartPoint for the coordinate space).
+    in property <[ChartPoint]> points;
+    in property <[ChartTick]> x-ticks;
+    in property <[ChartTick]> y-ticks;
+    in property <string> line-commands;
+    in property <string> metric-label;
+    // How many frames made it onto the plot, and how many were skipped
+    // (no parseable DATE-OBS / already-debayered RGB).
+    in property <int> plotted-count;
+    in property <int> skipped-no-date;
+    in property <int> skipped-not-mono;
+    in-out property <int> metric-index;
+    // 1.0 = fit to width … 4.0 = 4x, scrolled horizontally. The slider
+    // clamps to that range on its own.
+    in-out property <float> zoom: 1.0;
+
+    // Where the chart sits in the window, for cropping a window snapshot down
+    // to the chart when exporting a PNG (covers the whole chart, axes and
+    // labels included).
+    out property <length> chart-x: chart.absolute-position.x;
+    out property <length> chart-y: chart.absolute-position.y;
+    out property <length> chart-w: chart.width;
+    out property <length> chart-h: chart.height;
+
+    callback metric-changed(int);
+    callback export-png();
+    callback export-csv();
+
+    // Resizable: the chart is the point of this dialog, and a longer session
+    // wants more plot. The parent owns `card-width`/`card-height` so a resize
+    // outlives a close/reopen; the minimum keeps the metric row, the chart and
+    // the footer buttons all usable.
+    resizable: true;
+    min-card-width: 560px;
+    min-card-height: 400px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: "Analytics";
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+
+        // Metric selector on the left, zoom control on the right.
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Metric:";
+                color: #c8c8c8;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                model: root.metric-model;
+                current-index <=> root.metric-index;
+                selected => {
+                    root.metric-changed(self.current-index);
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: "Zoom:";
+                color: #c8c8c8;
+                vertical-alignment: center;
+            }
+            Slider {
+                width: 140px;
+                minimum: 1.0;
+                maximum: 4.0;
+                value <=> root.zoom;
+            }
+            Text {
+                text: round(root.zoom * 10) / 10 + "x";
+                color: #c8c8c8;
+                width: 34px;
+                vertical-alignment: center;
+            }
+        }
+
+        chart := AnalyticsChart {
+            vertical-stretch: 1;
+            points: root.points;
+            x-ticks: root.x-ticks;
+            y-ticks: root.y-ticks;
+            line-commands: root.line-commands;
+            metric-label: root.metric-label;
+            zoom: root.zoom;
+        }
+
+        Text {
+            text: root.plotted-count + " plotted"
+                + (root.skipped-no-date > 0
+                    ? ", " + root.skipped-no-date + " skipped (no DATE-OBS)" : "")
+                + (root.skipped-not-mono > 0
+                    ? ", " + root.skipped-not-mono + " skipped (not mono)" : "");
+            color: #a0a0a0;
+            font-size: 12px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Button {
+                text: "Export PNG";
+                enabled: root.plotted-count > 0;
+                clicked => {
+                    root.export-png();
+                }
+            }
+            Button {
+                text: "Export CSV";
+                enabled: root.plotted-count > 0;
+                clicked => {
+                    root.export-csv();
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Close";
+                primary: true;
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}

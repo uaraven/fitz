@@ -7,6 +7,7 @@
 //! FITS, TIFF, JPEG or PNG, honoring the current debayer/stretch view.
 
 mod cache;
+mod chart;
 mod controller;
 mod doc;
 mod files;
@@ -99,6 +100,24 @@ fn main() -> Result<()> {
         &app
     ));
     forward!(on_run_export, |app| controller::run_export(&app));
+    forward!(on_open_analytics_dialog, |app| {
+        controller::open_analytics_dialog(&app)
+    });
+    forward!(on_cancel_analytics, |app| controller::cancel_analytics(
+        &app
+    ));
+    forward!(on_analytics_metric_changed, |app, index| {
+        controller::analytics_metric_changed(&app, index)
+    });
+    // The chart's geometry within the window rides along, so the PNG export can
+    // crop the window snapshot down to just the chart.
+    forward!(on_analytics_export_png, |app, x, y, w, h| {
+        controller::analytics_export_png(&app, x, y, w, h)
+    });
+    forward!(on_analytics_export_csv, |app| {
+        controller::analytics_export_csv(&app)
+    });
+    forward!(on_close_analytics, |app| controller::close_analytics(&app));
 
     app.on_request_exit(|| {
         let _ = slint::quit_event_loop();

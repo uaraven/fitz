@@ -1,5 +1,5 @@
 import { VerticalBox, TabWidget } from "std-widgets.slint";
-import { FileRow, HeaderRow, StatItem } from "types.slint";
+import { FileRow, HeaderRow, StatItem, ChartPoint, ChartTick } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
 import { StatsPanel } from "stats_panel.slint";
@@ -7,13 +7,15 @@ import { InfoPanel } from "info_panel.slint";
 import { HeaderView } from "header_view.slint";
 import { AboutDialog } from "about.slint";
 import { CompressDialog, DecompressDialog } from "operation.slint";
-import { ExportDialog, ExportProgress } from "export.slint";
+import { ExportDialog } from "export.slint";
+import { ProgressOverlay } from "dialog.slint";
+import { AnalyticsDialog } from "analytics.slint";
 import { ConfirmDialog } from "confirm.slint";
 import { Toolbar } from "toolbar.slint";
 import { StatusBar } from "status_bar.slint";
 
 // Re-export the shared structs so the generated Rust names them at the crate root.
-export { FileRow, HeaderRow, StatItem }
+export { FileRow, HeaderRow, StatItem, ChartPoint, ChartTick }
 
 export component AppWindow inherits Window {
     in property <image> preview-image;
@@ -21,7 +23,7 @@ export component AppWindow inherits Window {
     in property <length> image-height;
     in property <[FileRow]> files;
     in property <int> selected-index: -1;
-    in-out property <bool> debayer-enabled: true;
+    in-out property <bool> debayer-enabled: false;
     in-out property <bool> stretch-enabled: true;
     in-out property <bool> blinking: false;
     // The stats and info panels dock in the same spot and are mutually
@@ -86,6 +88,36 @@ export component AppWindow inherits Window {
     in property <float> export-progress: 0;
     in property <string> export-progress-text: "";
 
+    // Tools ▸ Analytics… dialog: plot one pixel metric across the checked
+    // files ordered by DATE-OBS. Rust computes all metrics per file once when
+    // the dialog opens, then re-fills the chart data on each metric switch
+    // (see AnalyticsChart / ChartPoint for the normalized coordinate space).
+    in-out property <bool> show-analytics: false;
+    // The dialog's size. Held here rather than in the dialog (which is torn
+    // down on close) so a resize survives reopening, like `file-list-width`.
+    // The dialog clamps these to its minimum and to the window.
+    in-out property <length> analytics-card-width: 760px;
+    in-out property <length> analytics-card-height: 540px;
+    // Index into `analytics-metric-model`, which the controller fills from
+    // `fitz_core::analytics::Metric::all()` — so the dropdown order and the
+    // plotted metric can't drift apart.
+    in property <[string]> analytics-metric-model;
+    in-out property <int> analytics-metric;
+    in-out property <float> analytics-zoom: 1.0;
+    in property <string> analytics-metric-label;
+    in property <int> analytics-plotted-count;
+    in property <int> analytics-skipped-no-date;
+    in property <int> analytics-skipped-not-mono;
+    in property <[ChartPoint]> analytics-points;
+    in property <string> analytics-line-commands;
+    in property <[ChartTick]> analytics-x-ticks;
+    in property <[ChartTick]> analytics-y-ticks;
+    // The batch that feeds the dialog: these drive the cancellable progress
+    // overlay while the files are read and measured, before the dialog shows.
+    in property <bool> analytics-in-progress: false;
+    in property <float> analytics-progress: 0;
+    in property <string> analytics-progress-text: "";
+
     callback open();
     callback open-directory();
     callback clear-files();
@@ -121,6 +153,19 @@ export component AppWindow inherits Window {
     callback open-export-dialog();
     callback browse-export-dir();
     callback run-export();
+    // Tools ▸ Analytics: Rust gathers the target files, computes their
+    // metrics off-thread, fills the chart data and shows the dialog.
+    callback open-analytics-dialog();
+    // Stop the running batch — no dialog opens and nothing is cached.
+    callback cancel-analytics();
+    // Metric dropdown changed — re-plot from the cached per-file metrics.
+    callback analytics-metric-changed(int);
+    // Export the chart. PNG passes the chart's window placement so Rust can
+    // crop a window snapshot down to it; CSV writes the plotted series.
+    callback analytics-export-png(length, length, length, length);
+    callback analytics-export-csv();
+    // Dialog dismissed — Rust drops the cached per-file metrics.
+    callback close-analytics();
 
     changed debayer-enabled => {
         root.toggles-changed();
@@ -259,6 +304,14 @@ export component AppWindow inherits Window {
                 enabled: root.files.length > 0;
                 activated => {
                     root.open-export-dialog();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Analytics…";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.open-analytics-dialog();
                 }
             }
         }
@@ -507,10 +560,59 @@ export component AppWindow inherits Window {
             root.show-export = false;
         }
     }
-    if root.export-in-progress: ExportProgress {
+    if root.export-in-progress: ProgressOverlay {
         width: 100%;
         height: 100%;
+        title: "Exporting…";
         progress: root.export-progress;
         message: root.export-progress-text;
+    }
+
+    // Shown while the analytics batch reads and measures the target files.
+    // Cancellable: it can run over the whole working set, and unlike an export
+    // it writes nothing, so stopping part-way leaves nothing half-done.
+    if root.analytics-in-progress: ProgressOverlay {
+        width: 100%;
+        height: 100%;
+        title: "Analyzing…";
+        progress: root.analytics-progress;
+        message: root.analytics-progress-text;
+        cancellable: true;
+        cancel => {
+            root.cancel-analytics();
+        }
+    }
+
+    // The Analytics dialog: chart data comes straight from the `analytics-*`
+    // props; Close (and a scrim click) hides it and lets Rust drop its cache.
+    if root.show-analytics: AnalyticsDialog {
+        width: 100%;
+        height: 100%;
+        card-width <=> root.analytics-card-width;
+        card-height <=> root.analytics-card-height;
+        metric-model: root.analytics-metric-model;
+        points: root.analytics-points;
+        x-ticks: root.analytics-x-ticks;
+        y-ticks: root.analytics-y-ticks;
+        line-commands: root.analytics-line-commands;
+        metric-label: root.analytics-metric-label;
+        plotted-count: root.analytics-plotted-count;
+        skipped-no-date: root.analytics-skipped-no-date;
+        skipped-not-mono: root.analytics-skipped-not-mono;
+        metric-index <=> root.analytics-metric;
+        zoom <=> root.analytics-zoom;
+        metric-changed(index) => {
+            root.analytics-metric-changed(index);
+        }
+        export-png => {
+            root.analytics-export-png(self.chart-x, self.chart-y, self.chart-w, self.chart-h);
+        }
+        export-csv => {
+            root.analytics-export-csv();
+        }
+        cancel => {
+            root.show-analytics = false;
+            root.close-analytics();
+        }
     }
 }

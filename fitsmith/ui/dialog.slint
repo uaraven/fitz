@@ -1,11 +1,39 @@
-// Shared modal-dialog chrome: a click-to-dismiss dimming scrim with a centered
-// card floated on top. Used by the Compress/Decompress dialogs and the generic
-// confirmation dialog. Purely presentational — the parent toggles visibility
-// and fills the card via `@children`.
+import { Button, ProgressIndicator } from "std-widgets.slint";
+
+// Shared modal chrome: a dimming scrim with a centered card floated on top,
+// as a click-to-dismiss dialog ([`DialogCard`]) or a batch progress overlay
+// ([`ProgressOverlay`]). Purely presentational — the parent toggles visibility
+// and fills the card.
+
+// A click-to-dismiss dialog card. Used by the Compress/Decompress, Export and
+// Analytics dialogs and the generic confirmation dialog. The parent fills the
+// card via `@children`.
 export component DialogCard inherits Rectangle {
-    in property <length> card-width: 460px;
-    in property <length> card-height;
+    in-out property <length> card-width: 460px;
+    in-out property <length> card-height;
+    // Opt in to a drag handle in the card's bottom-right corner. `card-width` /
+    // `card-height` then become the user's request rather than a fixed size:
+    // the card is held between `min-card-*` and the window it floats in. A
+    // parent that wants the resize to outlive the dialog binds the two sizes to
+    // properties of its own (the Analytics dialog does).
+    in property <bool> resizable: false;
+    in property <length> min-card-width: 480px;
+    in property <length> min-card-height: 320px;
     callback cancel();
+
+    // Never outgrow the window, and always leave the scrim visible around the
+    // card so it still reads as a modal.
+    property <length> max-card-width: max(root.min-card-width, root.width - 32px);
+    property <length> max-card-height: max(root.min-card-height, root.height - 32px);
+    // The size actually rendered. A fixed dialog gets exactly what it asked for
+    // — several size themselves from their content — so only a resizable one is
+    // clamped.
+    property <length> w: root.resizable
+        ? clamp(root.card-width, root.min-card-width, root.max-card-width)
+        : root.card-width;
+    property <length> h: root.resizable
+        ? clamp(root.card-height, root.min-card-height, root.max-card-height)
+        : root.card-height;
 
     background: #000000cc;
     scrim := TouchArea {
@@ -15,8 +43,8 @@ export component DialogCard inherits Rectangle {
     }
 
     Rectangle {
-        width: root.card-width;
-        height: root.card-height;
+        width: root.w;
+        height: root.h;
         background: #2b2b2b;
         border-radius: 10px;
         border-width: 1px;
@@ -24,5 +52,95 @@ export component DialogCard inherits Rectangle {
         // Swallow clicks on the card so they don't reach the scrim and close it.
         TouchArea { }
         @children
+
+        // Resize grip, last so it takes clicks ahead of the card's content.
+        if root.resizable: Rectangle {
+            x: parent.width - self.width - 2px;
+            y: parent.height - self.height - 2px;
+            width: 18px;
+            height: 18px;
+            Path {
+                commands: "M 17 5 L 5 17 M 17 10 L 10 17 M 17 15 L 15 17";
+                viewbox-width: 18;
+                viewbox-height: 18;
+                fill: transparent;
+                stroke: grip.has-hover || grip.pressed ? #aaaaaa : #666666;
+                stroke-width: 1.5px;
+            }
+            grip := TouchArea {
+                mouse-cursor: nwse-resize;
+                moved => {
+                    // The self-correcting drag the file-list splitter uses:
+                    // every change repositions the grip under the cursor, so
+                    // reading the *current* size each event keeps the grab
+                    // offset instead of drifting. The card is centered in the
+                    // scrim, so each edge only moves half of what the size
+                    // grows — hence the doubled delta, which lands the corner
+                    // back under the pointer.
+                    root.card-width = clamp(
+                        root.w + 2 * (self.mouse-x - self.pressed-x),
+                        root.min-card-width, root.max-card-width);
+                    root.card-height = clamp(
+                        root.h + 2 * (self.mouse-y - self.pressed-y),
+                        root.min-card-height, root.max-card-height);
+                }
+            }
+        }
+    }
+}
+
+// Modal progress overlay shown while a batch runs. The scrim swallows clicks,
+// so a stray click can't disturb the batch; a batch that can be stopped part-way
+// sets `cancellable` to offer an explicit Cancel button instead (the parent must
+// actually honor `cancel` — the overlay only reports the click). The parent
+// drives `progress` (0..1) and `message` from the worker thread.
+export component ProgressOverlay inherits Rectangle {
+    in property <string> title;
+    in property <float> progress;
+    in property <string> message;
+    in property <bool> cancellable: false;
+    callback cancel();
+
+    background: #000000cc;
+    TouchArea { }
+
+    Rectangle {
+        width: 440px;
+        // Sized by its contents, so the Cancel button doesn't need the card to
+        // hardcode a second height.
+        height: layout.preferred-height;
+        background: #2b2b2b;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: #444444;
+
+        layout := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text {
+                text: root.title;
+                font-size: 18px;
+                font-weight: 700;
+                color: white;
+            }
+            Text {
+                text: root.message;
+                color: #c8c8c8;
+                overflow: elide;
+            }
+            ProgressIndicator {
+                progress: root.progress;
+                height: 8px;
+            }
+            if root.cancellable: HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+            }
+        }
     }
 }

@@ -240,14 +240,7 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Absolute path to a bundled `test-data/` fixture.
-    fn test_data(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("test-data")
-            .join(name)
-    }
+    use crate::controller::test_data;
 
     #[test]
     fn process_one_replaces_source_and_round_trips() {
