@@ -7,6 +7,7 @@
 pub use bayer;
 pub use fitskit;
 
+pub mod analytics;
 pub mod compress;
 pub mod copy_header;
 pub mod debayer;
