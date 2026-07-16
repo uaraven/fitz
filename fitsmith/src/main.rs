@@ -7,6 +7,7 @@
 //! FITS, TIFF, JPEG or PNG, honoring the current debayer/stretch view.
 
 mod cache;
+mod chart;
 mod controller;
 mod doc;
 mod files;
