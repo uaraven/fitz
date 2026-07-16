@@ -1,4 +1,4 @@
-import { Button, ComboBox, LineEdit, CheckBox, SpinBox, ProgressIndicator } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, CheckBox, SpinBox } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 
 // The View ▸ Export… modal. Picks a destination folder and an output format
@@ -156,46 +156,6 @@ export component ExportDialog inherits DialogCard {
                 clicked => {
                     root.confirm();
                 }
-            }
-        }
-    }
-}
-
-// Modal progress overlay shown while an export batch runs. Non-dismissable: the
-// scrim swallows clicks so the batch can't be interrupted mid-file. The parent
-// drives `progress` (0..1) and `message` from the worker thread.
-export component ExportProgress inherits Rectangle {
-    in property <float> progress;
-    in property <string> message;
-
-    background: #000000cc;
-    // Swallow clicks so nothing behind the overlay reacts while exporting.
-    TouchArea { }
-
-    Rectangle {
-        width: 440px;
-        height: 160px;
-        background: #2b2b2b;
-        border-radius: 10px;
-        border-width: 1px;
-        border-color: #444444;
-        VerticalLayout {
-            padding: 24px;
-            spacing: 16px;
-            Text {
-                text: "Exporting…";
-                font-size: 18px;
-                font-weight: 700;
-                color: white;
-            }
-            Text {
-                text: root.message;
-                color: #c8c8c8;
-                overflow: elide;
-            }
-            ProgressIndicator {
-                progress: root.progress;
-                height: 8px;
             }
         }
     }

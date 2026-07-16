@@ -1,7 +1,13 @@
-// Shared modal-dialog chrome: a click-to-dismiss dimming scrim with a centered
-// card floated on top. Used by the Compress/Decompress dialogs and the generic
-// confirmation dialog. Purely presentational — the parent toggles visibility
-// and fills the card via `@children`.
+import { Button, ProgressIndicator } from "std-widgets.slint";
+
+// Shared modal chrome: a dimming scrim with a centered card floated on top,
+// as a click-to-dismiss dialog ([`DialogCard`]) or a batch progress overlay
+// ([`ProgressOverlay`]). Purely presentational — the parent toggles visibility
+// and fills the card.
+
+// A click-to-dismiss dialog card. Used by the Compress/Decompress, Export and
+// Analytics dialogs and the generic confirmation dialog. The parent fills the
+// card via `@children`.
 export component DialogCard inherits Rectangle {
     in property <length> card-width: 460px;
     in property <length> card-height;
@@ -24,5 +30,61 @@ export component DialogCard inherits Rectangle {
         // Swallow clicks on the card so they don't reach the scrim and close it.
         TouchArea { }
         @children
+    }
+}
+
+// Modal progress overlay shown while a batch runs. The scrim swallows clicks,
+// so a stray click can't disturb the batch; a batch that can be stopped part-way
+// sets `cancellable` to offer an explicit Cancel button instead (the parent must
+// actually honor `cancel` — the overlay only reports the click). The parent
+// drives `progress` (0..1) and `message` from the worker thread.
+export component ProgressOverlay inherits Rectangle {
+    in property <string> title;
+    in property <float> progress;
+    in property <string> message;
+    in property <bool> cancellable: false;
+    callback cancel();
+
+    background: #000000cc;
+    TouchArea { }
+
+    Rectangle {
+        width: 440px;
+        // Sized by its contents, so the Cancel button doesn't need the card to
+        // hardcode a second height.
+        height: layout.preferred-height;
+        background: #2b2b2b;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: #444444;
+
+        layout := VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text {
+                text: root.title;
+                font-size: 18px;
+                font-weight: 700;
+                color: white;
+            }
+            Text {
+                text: root.message;
+                color: #c8c8c8;
+                overflow: elide;
+            }
+            ProgressIndicator {
+                progress: root.progress;
+                height: 8px;
+            }
+            if root.cancellable: HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+            }
+        }
     }
 }

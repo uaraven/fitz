@@ -7,7 +7,8 @@ import { InfoPanel } from "info_panel.slint";
 import { HeaderView } from "header_view.slint";
 import { AboutDialog } from "about.slint";
 import { CompressDialog, DecompressDialog } from "operation.slint";
-import { ExportDialog, ExportProgress } from "export.slint";
+import { ExportDialog } from "export.slint";
+import { ProgressOverlay } from "dialog.slint";
 import { AnalyticsDialog } from "analytics.slint";
 import { ConfirmDialog } from "confirm.slint";
 import { Toolbar } from "toolbar.slint";
@@ -106,6 +107,11 @@ export component AppWindow inherits Window {
     in property <string> analytics-line-commands;
     in property <[ChartTick]> analytics-x-ticks;
     in property <[ChartTick]> analytics-y-ticks;
+    // The batch that feeds the dialog: these drive the cancellable progress
+    // overlay while the files are read and measured, before the dialog shows.
+    in property <bool> analytics-in-progress: false;
+    in property <float> analytics-progress: 0;
+    in property <string> analytics-progress-text: "";
 
     callback open();
     callback open-directory();
@@ -145,6 +151,8 @@ export component AppWindow inherits Window {
     // Tools ▸ Analytics: Rust gathers the target files, computes their
     // metrics off-thread, fills the chart data and shows the dialog.
     callback open-analytics-dialog();
+    // Stop the running batch — no dialog opens and nothing is cached.
+    callback cancel-analytics();
     // Metric dropdown changed — re-plot from the cached per-file metrics.
     callback analytics-metric-changed(int);
     // Export the chart. PNG passes the chart's window placement so Rust can
@@ -547,11 +555,27 @@ export component AppWindow inherits Window {
             root.show-export = false;
         }
     }
-    if root.export-in-progress: ExportProgress {
+    if root.export-in-progress: ProgressOverlay {
         width: 100%;
         height: 100%;
+        title: "Exporting…";
         progress: root.export-progress;
         message: root.export-progress-text;
+    }
+
+    // Shown while the analytics batch reads and measures the target files.
+    // Cancellable: it can run over the whole working set, and unlike an export
+    // it writes nothing, so stopping part-way leaves nothing half-done.
+    if root.analytics-in-progress: ProgressOverlay {
+        width: 100%;
+        height: 100%;
+        title: "Analyzing…";
+        progress: root.analytics-progress;
+        message: root.analytics-progress-text;
+        cancellable: true;
+        cancel => {
+            root.cancel-analytics();
+        }
     }
 
     // The Analytics dialog: chart data comes straight from the `analytics-*`

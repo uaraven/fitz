@@ -31,6 +31,8 @@ use std::cell::RefCell;
 use std::cmp::max;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use fitz_core::analytics::FileMetrics;
 use fitz_core::fitskit::CompressionType;
@@ -71,6 +73,9 @@ struct AppState {
     /// Guards analytics batches specifically — kept apart from `generation` so
     /// that merely selecting a file mid-batch doesn't discard its results.
     analytics_generation: u64,
+    /// Raised to ask the running analytics worker to stop between files. Each
+    /// batch gets a fresh flag, so cancelling one can't silence the next.
+    analytics_cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -89,6 +94,7 @@ impl AppState {
             blink_timer: Timer::default(),
             analytics: Vec::new(),
             analytics_generation: 0,
+            analytics_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -429,6 +435,16 @@ fn require_existing_dir(text: &str, empty_msg: &'static str) -> Result<PathBuf, 
         return Err(format!("Not a directory: {trimmed}"));
     }
     Ok(dir)
+}
+
+/// Absolute path to a bundled `test-data/` fixture. Shared by the controller
+/// submodules' tests so they exercise real FITS frames.
+#[cfg(test)]
+fn test_data(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test-data")
+        .join(name)
 }
 
 /// The working-set paths a bulk operation applies to: the checked rows, or the
