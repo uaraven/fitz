@@ -17,9 +17,14 @@ use crate::fits_image::{
 /// Number of buckets in the pixel-value histogram.
 pub const HISTOGRAM_BUCKETS: usize = 256;
 
+/// Multiplier turning a median absolute deviation into an estimate of the
+/// standard deviation of normally distributed data.
+const MAD_TO_SIGMA: f64 = 1.4826;
+
 /// Min, max, mean and median of a single-channel image's physical pixel values,
-/// plus the count of pixels whose physical value is exactly zero and a
-/// [`HISTOGRAM_BUCKETS`]-bin histogram of the values over the `[min, max]` range.
+/// plus robust noise/background statistics, the count of pixels whose physical
+/// value is exactly zero and a [`HISTOGRAM_BUCKETS`]-bin histogram of the values
+/// over the `[min, max]` range.
 pub struct PixelStats {
     pub min: f64,
     pub max: f64,
@@ -30,6 +35,26 @@ pub struct PixelStats {
     pub min_count: usize,
     /// Count of pixels whose value equals `max`.
     pub max_count: usize,
+    /// Number of samples these statistics were computed over.
+    pub count: usize,
+    /// Population standard deviation of the physical pixel values. Sensitive to
+    /// stars and hot pixels by construction — compare against `mad`.
+    pub sigma: f64,
+    /// Median absolute deviation from the median, scaled by [`MAD_TO_SIGMA`] so
+    /// it estimates σ for Gaussian noise while ignoring stars entirely.
+    pub mad: f64,
+    /// The most common physical pixel value — the sky background level. Ties
+    /// resolve to the lowest such value. Approximated to the center of the
+    /// largest histogram bucket for float samples, where no exact mode exists.
+    pub mode: f64,
+    /// Pixels at the sample type's saturation level. Anything above it is
+    /// unrepresentable, so "at" and "at or above" are the same set.
+    pub saturated: usize,
+    /// The saturation level itself: the physical value of the largest
+    /// representable raw sample (65535 for the unsigned-16 convention, 255 for
+    /// `U8`), or the observed maximum for float samples — where `saturated` is
+    /// therefore definitionally `max_count`.
+    pub saturation: f64,
     /// Pixel counts per bucket, evenly spanning `[min, max]`. Bucket `i` covers
     /// values in `[min + i*w, min + (i+1)*w)` where `w = (max - min) / BUCKETS`,
     /// with `max` itself folded into the last bucket.
@@ -432,7 +457,7 @@ const VALUE_COUNT_SLOTS: usize = 1 << 16;
 
 /// … and in the 8-bit one. Sizing the array to the sample domain rather than
 /// always to 65536 is what makes `counts.len() - 1` mean "the largest
-/// representable raw sample" for both types.
+/// representable raw sample" for both types — the saturation level.
 const U8_COUNT_SLOTS: usize = 1 << 8;
 
 /// Count occurrences of every raw sample value in one parallel pass, for
@@ -506,6 +531,9 @@ fn bucket_index(v: f64, min: f64, scale: f64) -> usize {
 /// and must be monotonically increasing in the index.
 fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelStats {
     let n: u64 = counts.iter().sum();
+    // The saturation level is a property of the sample type, so it is known
+    // even with no data: the largest raw sample the array can represent.
+    let saturation = physical(counts.len() - 1);
     if n == 0 {
         return PixelStats {
             min: f64::INFINITY,
@@ -515,6 +543,12 @@ fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelSt
             zeros: 0,
             min_count: 0,
             max_count: 0,
+            count: 0,
+            sigma: 0.0,
+            mad: 0.0,
+            mode: 0.0,
+            saturated: 0,
+            saturation,
             histogram: vec![0; HISTOGRAM_BUCKETS],
         };
     }
@@ -532,6 +566,7 @@ fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelSt
     let mut zeros = 0usize;
     let mut buckets = vec![0u64; HISTOGRAM_BUCKETS];
     let scale = bucket_scale(min, max);
+    let (mut best_count, mut best_idx) = (0u64, min_idx);
     for (i, &c) in counts.iter().enumerate().take(max_idx + 1).skip(min_idx) {
         if c == 0 {
             continue;
@@ -540,6 +575,24 @@ fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelSt
         sum += v * c as f64;
         zeros += if v == 0.0 { c as usize } else { 0 };
         buckets[bucket_index(v, min, scale)] += c;
+        // Strict `>` so the *first* (lowest) value wins a tie: `max_by_key`
+        // would keep the last maximum, and on a bimodal amp-glow histogram the
+        // lower of the two peaks is the sky background.
+        if c > best_count {
+            (best_count, best_idx) = (c, i);
+        }
+    }
+    let mean = sum / n as f64;
+
+    // A second walk for σ: sum the squared deviations around the known mean
+    // rather than using Σv² − (Σv)²/n, which cancels catastrophically at a sky
+    // level of 20000 ADU with noise of 10.
+    let mut sq_sum = 0.0;
+    for (i, &c) in counts.iter().enumerate().take(max_idx + 1).skip(min_idx) {
+        if c != 0 {
+            let d = physical(i) - mean;
+            sq_sum += d * d * c as f64;
+        }
     }
 
     // Median from the cumulative counts: the value at rank n/2, averaged with
@@ -554,13 +607,89 @@ fn stats_from_counts(counts: &[u64], physical: impl Fn(usize) -> f64) -> PixelSt
     PixelStats {
         min,
         max,
-        mean: sum / n as f64,
+        mean,
         median,
         zeros,
         min_count: counts[min_idx] as usize,
         max_count: counts[max_idx] as usize,
+        count: n as usize,
+        sigma: (sq_sum / n as f64).sqrt(),
+        mad: mad_from_counts(counts, n, median, &physical),
+        mode: physical(best_idx),
+        saturated: *counts.last().unwrap() as usize,
+        saturation,
         histogram: buckets,
     }
+}
+
+/// The scaled median absolute deviation from `median`, read off the same
+/// value-count array the median came from.
+///
+/// A deviation `|physical(i) − median|` grows monotonically as `i` moves away
+/// from the median in either direction, so two cursors walking outward from the
+/// central slot — always advancing whichever has the smaller deviation — visit
+/// the deviations in sorted order. That makes this an exact selection with no
+/// allocation and no sort. The even-count convention matches
+/// [`median_in_place`]: the mean of the deviations at ranks `n/2 - 1` and `n/2`
+/// (which coincide for an odd `n`), so the fast and general paths agree
+/// exactly.
+fn mad_from_counts(counts: &[u64], n: u64, median: f64, physical: &impl Fn(usize) -> f64) -> f64 {
+    // The lower central slot: `physical(lo) <= median` by construction, so
+    // every slot at or below it deviates downward and every slot above it
+    // upward.
+    let lo_start = index_at_rank(counts, (n - 1) / 2);
+    let mut lo = Some(lo_start);
+    let mut hi = next_occupied(counts, lo_start + 1);
+
+    let (r1, r2) = ((n - 1) / 2, n / 2);
+    let mut d1 = 0.0;
+    let mut cumulative = 0u64;
+    let d2 = loop {
+        let dev_lo = lo.map(|i| median - physical(i));
+        let dev_hi = hi.map(|i| physical(i) - median);
+        let take_lo = match (dev_lo, dev_hi) {
+            (Some(a), Some(b)) => a <= b,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => unreachable!("cursors exhausted before rank {r2} of {n}"),
+        };
+        let (i, dev) = if take_lo {
+            (lo.unwrap(), dev_lo.unwrap())
+        } else {
+            (hi.unwrap(), dev_hi.unwrap())
+        };
+
+        // This slot covers ranks `cumulative .. cumulative + counts[i]`.
+        if (cumulative..cumulative + counts[i]).contains(&r1) {
+            d1 = dev;
+        }
+        if (cumulative..cumulative + counts[i]).contains(&r2) {
+            // r2 >= r1, so d1 is already pinned by the time we get here.
+            break dev;
+        }
+        cumulative += counts[i];
+        if take_lo {
+            lo = prev_occupied(counts, i);
+        } else {
+            hi = next_occupied(counts, i + 1);
+        }
+    };
+
+    MAD_TO_SIGMA * (d1 + d2) / 2.0
+}
+
+/// The first occupied slot at or after `from`, or `None` past the end.
+fn next_occupied(counts: &[u64], from: usize) -> Option<usize> {
+    counts
+        .get(from..)?
+        .iter()
+        .position(|&c| c > 0)
+        .map(|i| i + from)
+}
+
+/// The last occupied slot strictly before `before`, or `None` past the start.
+fn prev_occupied(counts: &[u64], before: usize) -> Option<usize> {
+    counts[..before].iter().rposition(|&c| c > 0)
 }
 
 /// Index of the value-count slot holding the sample of (0-based) `rank` in the
@@ -613,12 +742,34 @@ fn pixel_stats_general(header: &Header, img: &ImageData) -> PixelStats {
     // value range. Per-thread bucket arrays are summed element-wise in reduce.
     let histogram = histogram(&values, min, max);
 
-    let n = values.len();
-    let (mean, median) = if n == 0 {
-        (0.0, 0.0)
+    // The center of the largest histogram bucket stands in for the mode: for
+    // continuous float values, "the most common value" has no exact answer.
+    // A degenerate range collapses every value into bucket 0, hence `min`.
+    let mode_idx = argmax_first(&histogram);
+    let mode = if max > min {
+        min + (mode_idx as f64 + 0.5) * (max - min) / HISTOGRAM_BUCKETS as f64
     } else {
+        min
+    };
+
+    let n = values.len();
+    let (mean, sigma, median, mad) = if n == 0 {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        // Both the sum and the squared-deviation sum stay sequential, for the
+        // reason the min/max comment gives above: a parallel reduction would
+        // let the reported value drift with thread scheduling.
         let sum: f64 = values.iter().sum();
-        (sum / n as f64, median_in_place(&mut values))
+        let mean = sum / n as f64;
+        let sq_sum: f64 = values.iter().map(|v| (v - mean).powi(2)).sum();
+        let sigma = (sq_sum / n as f64).sqrt();
+
+        // σ must be computed before this point: `median_in_place` only reorders
+        // `values`, but the MAD step overwrites them with their deviations.
+        let median = median_in_place(&mut values);
+        values.iter_mut().for_each(|v| *v = (*v - median).abs());
+        let mad = MAD_TO_SIGMA * median_in_place(&mut values);
+        (mean, sigma, median, mad)
     };
 
     PixelStats {
@@ -629,8 +780,30 @@ fn pixel_stats_general(header: &Header, img: &ImageData) -> PixelStats {
         zeros,
         min_count,
         max_count,
+        count: n,
+        sigma,
+        mad,
+        mode,
+        // Float samples have no representable ceiling to saturate against, so
+        // the observed maximum is the best available stand-in — which makes the
+        // saturated count definitionally `max_count`.
+        saturated: max_count,
+        saturation: max,
         histogram,
     }
+}
+
+/// Index of the largest element, resolving ties to the lowest index. Unlike
+/// `max_by_key`, which keeps the *last* maximum — on a bimodal histogram the
+/// lower peak is the sky background, so the first one is the one we want.
+fn argmax_first(counts: &[u64]) -> usize {
+    let mut best = 0;
+    for (i, &c) in counts.iter().enumerate() {
+        if c > counts[best] {
+            best = i;
+        }
+    }
+    best
 }
 
 /// Bin `values` into a [`HISTOGRAM_BUCKETS`]-bin histogram spanning `[min, max]`.
@@ -671,6 +844,7 @@ fn median_in_place(values: &mut [f64]) -> f64 {
 mod tests {
     use super::*;
     use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
+    use fitskit::HeaderValue;
     use tempfile::TempDir;
 
     #[test]
@@ -833,8 +1007,172 @@ mod tests {
         assert_eq!(stats.max_count, 6);
         assert_eq!(stats.zeros, 6);
         assert_eq!((stats.mean, stats.median), (0.0, 0.0));
+        // No spread and a single value: both noise estimates vanish and the
+        // mode is that value.
+        assert_eq!((stats.sigma, stats.mad, stats.mode), (0.0, 0.0, 0.0));
+        assert_eq!(stats.count, 6);
         assert_eq!(stats.histogram[0], 6);
         assert_eq!(stats.histogram.iter().sum::<u64>(), 6);
+    }
+
+    /// An unsigned-16 header (BITPIX 16 with BZERO 32768), the convention every
+    /// real frame here uses: raw sample `r` carries the physical value
+    /// `r + 32768`, so the I16 ceiling of 32767 is a physical 65535.
+    fn unsigned16_header() -> Header {
+        let mut header = Header::default();
+        header.set("BSCALE", HeaderValue::Float(1.0), None);
+        header.set("BZERO", HeaderValue::Float(32768.0), None);
+        header
+    }
+
+    #[test]
+    fn robust_stats_match_hand_computed_values() {
+        // Values 10,10,10,10,20,20,30,100 with no BSCALE/BZERO, so physical
+        // values are the raw samples. By hand: mean = 210/8 = 26.25; median =
+        // (10+20)/2 = 15 (ranks 3 and 4); mode = 10 (four of them); the squared
+        // deviations about the mean sum to 6587.5, so sigma = sqrt(823.4375);
+        // the deviations about the median are 5,5,5,5,5,5,15,85, whose central
+        // pair averages to 5, so mad = 1.4826 * 5.
+        let img = ImageData::new(
+            vec![4, 2],
+            PixelData::I16(vec![10, 10, 10, 10, 20, 20, 30, 100]),
+        );
+        let stats = pixel_stats(&Header::default(), &img);
+
+        assert_eq!(stats.count, 8);
+        assert_eq!(stats.mean, 26.25);
+        assert_eq!(stats.median, 15.0);
+        assert_eq!(stats.mode, 10.0);
+        assert!(
+            (stats.sigma - 823.4375_f64.sqrt()).abs() < 1e-9,
+            "{}",
+            stats.sigma
+        );
+        assert!(
+            (stats.mad - MAD_TO_SIGMA * 5.0).abs() < 1e-9,
+            "{}",
+            stats.mad
+        );
+        // Nothing near the I16 ceiling, which with no BZERO is a physical 32767.
+        assert_eq!(stats.saturation, 32767.0);
+        assert_eq!(stats.saturated, 0);
+    }
+
+    #[test]
+    fn mode_breaks_ties_to_the_lowest_value() {
+        // Two values, two pixels each: the lower one wins.
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![3, 7, 3, 7]));
+        assert_eq!(pixel_stats(&Header::default(), &img).mode, 3.0);
+    }
+
+    #[test]
+    fn mad_averages_the_two_central_deviations_for_an_even_count() {
+        // 0,1,2,10: median = 1.5, deviations sort to 0.5, 0.5, 1.5, 8.5, whose
+        // two central values (ranks 1 and 2) average to 1.0 — the same
+        // even-count convention `median_in_place` uses.
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0, 1, 2, 10]));
+        let stats = pixel_stats(&Header::default(), &img);
+        assert_eq!(stats.median, 1.5);
+        assert_eq!(stats.mad, MAD_TO_SIGMA);
+        // The general path must land on exactly the same value.
+        assert_eq!(pixel_stats_general(&Header::default(), &img).mad, stats.mad);
+    }
+
+    #[test]
+    fn mad_is_robust_to_outliers_that_inflate_sigma() {
+        // A flat background of 1000±1 (33 pixels at each of 999/1000/1001) with
+        // four stars at 30000. The stars drag sigma up by orders of magnitude;
+        // the MAD never notices them. This is the entire reason MAD exists.
+        let mut pixels: Vec<i16> = (0..99).map(|i| 999 + (i % 3)).collect();
+        pixels.extend([30000; 4]);
+        let img = ImageData::new(vec![103, 1], PixelData::I16(pixels));
+        let stats = pixel_stats(&Header::default(), &img);
+
+        // The median is 1000 and the median deviation from it is 1 ADU, so the
+        // stars leave mad at 1.4826 — as if they weren't in the frame at all.
+        assert_eq!(stats.median, 1000.0);
+        assert!((stats.mad - MAD_TO_SIGMA).abs() < 1e-9, "{}", stats.mad);
+        assert!(
+            stats.sigma > 100.0 * stats.mad,
+            "{} vs {}",
+            stats.sigma,
+            stats.mad
+        );
+    }
+
+    #[test]
+    fn saturated_counts_pixels_at_the_sample_maximum() {
+        // Three pixels at the unsigned-16 ceiling (raw 32767 = physical 65535).
+        let img = ImageData::new(
+            vec![2, 3],
+            PixelData::I16(vec![0, 100, 32767, 32767, 32767, 5]),
+        );
+        let stats = pixel_stats(&unsigned16_header(), &img);
+        assert_eq!(stats.saturation, 65535.0);
+        assert_eq!(stats.saturated, 3);
+        assert_eq!(stats.max, 65535.0);
+    }
+
+    #[test]
+    fn saturation_level_follows_the_sample_type() {
+        // The same shape as an 8-bit frame: saturation is 255, not the 65535 a
+        // fixed-size count array would report. Nothing here is saturated.
+        let img = ImageData::new(vec![2, 3], PixelData::U8(vec![0, 100, 200, 200, 200, 5]));
+        let stats = pixel_stats(&Header::default(), &img);
+        assert_eq!(stats.saturation, 255.0);
+        assert_eq!(stats.saturated, 0);
+
+        // …and pixels at 255 are counted against it.
+        let img = ImageData::new(vec![2, 2], PixelData::U8(vec![255, 255, 1, 2]));
+        assert_eq!(pixel_stats(&Header::default(), &img).saturated, 2);
+    }
+
+    #[test]
+    fn robust_stats_hold_their_invariants_on_real_data() {
+        for name in ["uncompressed.fit", "compressed.fits.fz"] {
+            let input = test_data(name);
+            let fits = FitsFile::from_file(&input).unwrap();
+            let (header, img) = find_image_hdu(&fits, &input).unwrap();
+            let stats = pixel_stats(header, img.as_ref());
+
+            // Real sky frames are star-sparse, so the robust noise estimate must
+            // come in below the outlier-sensitive one.
+            assert!(
+                stats.mad <= stats.sigma,
+                "{name}: {} {}",
+                stats.mad,
+                stats.sigma
+            );
+            assert!(stats.min <= stats.mode && stats.mode <= stats.max, "{name}");
+            assert_eq!(stats.count, 3008 * 3008);
+            // Both frames are unsigned-16.
+            assert_eq!(stats.saturation, 65535.0);
+        }
+    }
+
+    #[test]
+    fn mode_agrees_between_paths_only_as_a_background_estimate() {
+        // The fast path reports the exact most-common value; the general path
+        // can only report the center of the largest histogram bucket — and that
+        // bucket need not even contain the exact mode, since the distribution
+        // within a bucket is skewed. So the two agree on the background *level*
+        // (here, to well under 1% of the frame's value range) rather than on a
+        // value, which is why `fast_path_matches_general_path_on_real_data`
+        // deliberately leaves `mode` out.
+        let input = test_data("uncompressed.fit");
+        let fits = FitsFile::from_file(&input).unwrap();
+        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let img = img.as_ref();
+
+        let fast = pixel_stats(header, img);
+        let general = pixel_stats_general(header, img);
+        let range = fast.max - fast.min;
+        assert!(
+            (fast.mode - general.mode).abs() < 0.01 * range,
+            "{} vs {} (range {range})",
+            fast.mode,
+            general.mode
+        );
     }
 
     #[test]
@@ -857,9 +1195,22 @@ mod tests {
         assert_eq!(fast.min_count, general.min_count);
         assert_eq!(fast.max_count, general.max_count);
         assert_eq!(fast.histogram, general.histogram);
+        assert_eq!(fast.count, general.count);
+        // `saturated`/`saturation` are deliberately not compared: only the fast
+        // path knows the sample type's ceiling, while the general path can only
+        // fall back on the observed maximum.
+        // MAD is a selection over the same multiset of deviations, with the
+        // same even-count convention on both paths, so there is no arithmetic
+        // to drift: it must match exactly.
+        assert_eq!(fast.mad, general.mad);
         // The fast path sums value*count over ≤65536 slots instead of every
-        // pixel individually, so the mean may differ in the last few ulps.
+        // pixel individually, so the mean — and sigma, which is summed the same
+        // way around it — may differ in the last few ulps.
         assert!((fast.mean - general.mean).abs() < 1e-9 * general.mean.abs().max(1.0));
+        assert!((fast.sigma - general.sigma).abs() < 1e-9 * general.sigma.abs().max(1.0));
+        // `mode` is deliberately not compared here: the general path can only
+        // approximate it to a histogram bucket. See
+        // `mode_agrees_between_paths_only_to_histogram_bucket_width`.
     }
 
     #[test]
