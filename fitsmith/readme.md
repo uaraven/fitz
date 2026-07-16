@@ -46,6 +46,9 @@ and the CLI behave identically.
        chart.
      - **Reading the chart** — hover a point for its time and value; the zoom slider runs from
        fit-to-width up to 4x, scrolling horizontally.
+     - **Export** — **Export PNG** saves the chart exactly as drawn, and **Export CSV** saves
+       the plotted series as `time_iso,epoch_seconds,value` rows. Both cover the metric
+       currently on screen.
 
 
 For example here is the mean ADU chart clearly showing when the wildfire smoke arrived and affected seeing and total brightness

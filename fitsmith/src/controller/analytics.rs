@@ -6,13 +6,20 @@
 //! dropdown re-plots from the cache with no re-read ([`set_metric`] is pure
 //! arithmetic). Zoom needs no controller code — the dialog's slider clamps
 //! itself to [1, 4] and the chart reads the bound property directly.
+//!
+//! Both exports write what is currently plotted: the PNG is the live chart
+//! cropped out of a window snapshot (one rendering path — no second plotter to
+//! keep in sync), the CSV the same series as rows.
 
+use std::fs::File;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::{Context, Result};
 use fitz_core::analytics::{self, FileAnalysis, FileMetrics, Metric, Series, SkipReason};
-use slint::{ComponentHandle, ModelRc, VecModel, Weak};
+use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
 
 use crate::files::{display_name, is_fits_path};
 use crate::view::format_stat;
@@ -217,16 +224,137 @@ pub fn close_analytics(app: &AppWindow) {
 /// Build the series for the currently selected metric from the cached metrics
 /// and push its normalized geometry into the chart's properties.
 fn replot(app: &AppWindow) {
-    let metric = metric_for_index(app.get_analytics_metric());
-    let series = STATE.with(|s| analytics::build_series(&s.borrow().analytics, metric));
+    let series = current_series(app);
     let plot = plot(&series);
 
-    app.set_analytics_metric_label(metric.label().into());
+    app.set_analytics_metric_label(series.metric.label().into());
     app.set_analytics_plotted_count(series.points.len() as i32);
     app.set_analytics_points(ModelRc::new(VecModel::from(plot.points)));
     app.set_analytics_x_ticks(ModelRc::new(VecModel::from(plot.x_ticks)));
     app.set_analytics_y_ticks(ModelRc::new(VecModel::from(plot.y_ticks)));
     app.set_analytics_line_commands(plot.line.into());
+}
+
+/// The series currently on the chart, rebuilt from the cached metrics.
+fn current_series(app: &AppWindow) -> Series {
+    let metric = metric_for_index(app.get_analytics_metric());
+    STATE.with(|s| analytics::build_series(&s.borrow().analytics, metric))
+}
+
+/// A default export file name for the plotted metric, e.g. `mean-adu.png`.
+fn export_file_name(metric: Metric, extension: &str) -> String {
+    let slug: String = metric
+        .label()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    format!("analytics-{}.{extension}", slug.to_ascii_lowercase())
+}
+
+/// A snapshot crop, in physical pixels.
+#[derive(PartialEq, Debug)]
+struct Crop {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+}
+
+/// Convert the chart's logical-pixel rectangle within the window into physical
+/// pixels of a `img_w` x `img_h` snapshot, clamped to the image. HiDPI displays
+/// render more pixels than the layout's logical units, hence `scale`. Returns
+/// `None` if the rectangle lands outside the snapshot or has no area, so a
+/// degenerate export fails cleanly instead of writing an empty PNG.
+fn crop_rect(rect: (f32, f32, f32, f32), scale: f32, img_w: u32, img_h: u32) -> Option<Crop> {
+    let (x, y, w, h) = rect;
+    let phys = |v: f32, max: u32| (v * scale).round().clamp(0.0, max as f32) as u32;
+    let (x0, y0) = (phys(x, img_w), phys(y, img_h));
+    let (x1, y1) = (phys(x + w, img_w), phys(y + h, img_h));
+    (x1 > x0 && y1 > y0).then(|| Crop {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    })
+}
+
+/// Copy `crop` out of an RGBA snapshot as a tightly packed RGB8 buffer (the
+/// form [`fitz_core::export::write_png`] takes). The chart is fully opaque, so
+/// dropping alpha loses nothing.
+fn crop_to_rgb8(snapshot: &SharedPixelBuffer<Rgba8Pixel>, crop: &Crop) -> Vec<u8> {
+    let (stride, pixels) = (snapshot.width() as usize, snapshot.as_slice());
+    let mut rgb = Vec::with_capacity(crop.w as usize * crop.h as usize * 3);
+    for row in 0..crop.h as usize {
+        let start = (crop.y as usize + row) * stride + crop.x as usize;
+        for px in &pixels[start..start + crop.w as usize] {
+            rgb.extend_from_slice(&[px.r, px.g, px.b]);
+        }
+    }
+    rgb
+}
+
+/// Export the chart as a PNG. The dialog passes the chart's position and size
+/// within the window; the snapshot is taken *before* the save dialog opens, so
+/// the native file picker can't end up rendered into the image.
+pub fn analytics_export_png(app: &AppWindow, x: f32, y: f32, w: f32, h: f32) {
+    match export_png(app, (x, y, w, h)) {
+        Ok(Some(path)) => app.set_status_text(format!("Chart saved to {}", path.display()).into()),
+        Ok(None) => {}
+        Err(e) => app.set_status_text(format!("PNG export failed: {e:#}").into()),
+    }
+}
+
+/// Snapshot, crop and write the chart; `Ok(None)` if the user cancelled.
+fn export_png(app: &AppWindow, rect: (f32, f32, f32, f32)) -> Result<Option<PathBuf>> {
+    let window = app.window();
+    let snapshot = window
+        .take_snapshot()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("cannot capture the window")?;
+    let crop = crop_rect(
+        rect,
+        window.scale_factor(),
+        snapshot.width(),
+        snapshot.height(),
+    )
+    .context("the chart is not visible")?;
+    let rgb = crop_to_rgb8(&snapshot, &crop);
+
+    let metric = metric_for_index(app.get_analytics_metric());
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("PNG image", &["png"])
+        .set_file_name(export_file_name(metric, "png"))
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    fitz_core::export::write_png(&path, crop.w as usize, crop.h as usize, &rgb)?;
+    Ok(Some(path))
+}
+
+/// Export the plotted series as CSV.
+pub fn analytics_export_csv(app: &AppWindow) {
+    match export_csv(app) {
+        Ok(Some(path)) => app.set_status_text(format!("CSV saved to {}", path.display()).into()),
+        Ok(None) => {}
+        Err(e) => app.set_status_text(format!("CSV export failed: {e:#}").into()),
+    }
+}
+
+/// Write the current series as CSV; `Ok(None)` if the user cancelled.
+fn export_csv(app: &AppWindow) -> Result<Option<PathBuf>> {
+    let series = current_series(app);
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("CSV file", &["csv"])
+        .set_file_name(export_file_name(series.metric, "csv"))
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    let file = File::create(&path).with_context(|| format!("cannot write {}", path.display()))?;
+    analytics::write_csv(&series, BufWriter::new(file))
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    Ok(Some(path))
 }
 
 // --- plotting (pure) -----------------------------------------------------
@@ -507,6 +635,104 @@ mod tests {
         // Out-of-range (and Slint's -1 "no selection") fall back to the default.
         assert_eq!(metric_for_index(-1), DEFAULT_METRIC);
         assert_eq!(metric_for_index(99), DEFAULT_METRIC);
+    }
+
+    /// A `w` x `h` snapshot whose every pixel encodes its own coordinates, so a
+    /// crop's contents identify exactly which region was taken.
+    fn snapshot(w: u32, h: u32) -> SharedPixelBuffer<Rgba8Pixel> {
+        let mut buf = SharedPixelBuffer::new(w, h);
+        for (i, px) in buf.make_mut_slice().iter_mut().enumerate() {
+            let (x, y) = (i as u32 % w, i as u32 / w);
+            *px = Rgba8Pixel {
+                r: x as u8,
+                g: y as u8,
+                b: 7,
+                a: 255,
+            };
+        }
+        buf
+    }
+
+    #[test]
+    fn crop_rect_scales_to_physical_pixels_and_clamps() {
+        // Non-HiDPI: the logical rectangle is the physical one.
+        assert_eq!(
+            crop_rect((10.0, 20.0, 30.0, 40.0), 1.0, 200, 200),
+            Some(Crop {
+                x: 10,
+                y: 20,
+                w: 30,
+                h: 40
+            })
+        );
+        // HiDPI: every edge scales, so the crop keeps covering the same chart.
+        assert_eq!(
+            crop_rect((10.0, 20.0, 30.0, 40.0), 2.0, 400, 400),
+            Some(Crop {
+                x: 20,
+                y: 40,
+                w: 60,
+                h: 80
+            })
+        );
+        // A rectangle running past the snapshot is clamped to what exists.
+        assert_eq!(
+            crop_rect((90.0, 90.0, 50.0, 50.0), 1.0, 100, 100),
+            Some(Crop {
+                x: 90,
+                y: 90,
+                w: 10,
+                h: 10
+            })
+        );
+        // Nothing to crop: zero-sized, or entirely off the snapshot.
+        assert_eq!(crop_rect((10.0, 10.0, 0.0, 40.0), 1.0, 100, 100), None);
+        assert_eq!(crop_rect((150.0, 10.0, 40.0, 40.0), 1.0, 100, 100), None);
+    }
+
+    #[test]
+    fn crop_to_rgb8_copies_just_the_cropped_region() {
+        let snap = snapshot(8, 6);
+        let crop = Crop {
+            x: 2,
+            y: 1,
+            w: 3,
+            h: 2,
+        };
+        let rgb = crop_to_rgb8(&snap, &crop);
+
+        // Tightly packed RGB8: three bytes per pixel, alpha dropped.
+        assert_eq!(rgb.len(), 3 * 3 * 2);
+        // Each pixel carries its source coordinates, so the first and last
+        // pixels pin the region down to the corner.
+        assert_eq!(&rgb[..3], &[2, 1, 7]);
+        assert_eq!(&rgb[rgb.len() - 3..], &[4, 2, 7]);
+
+        // A full-frame crop reproduces the whole snapshot, row by row.
+        let all = crop_to_rgb8(
+            &snap,
+            &Crop {
+                x: 0,
+                y: 0,
+                w: 8,
+                h: 6,
+            },
+        );
+        assert_eq!(all.len(), 8 * 6 * 3);
+        assert_eq!(&all[..3], &[0, 0, 7]);
+        assert_eq!(&all[8 * 3..8 * 3 + 3], &[0, 1, 7], "row 1 starts at x=0");
+    }
+
+    #[test]
+    fn export_file_name_slugifies_the_metric() {
+        assert_eq!(
+            export_file_name(Metric::Mean, "png"),
+            "analytics-mean-adu.png"
+        );
+        assert_eq!(
+            export_file_name(Metric::MaxPixelCount, "csv"),
+            "analytics-max-adu-count.csv"
+        );
     }
 
     #[test]
