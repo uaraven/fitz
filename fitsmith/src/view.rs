@@ -93,7 +93,9 @@ fn stat(label: &str, value: String) -> StatItem {
 }
 
 /// Whole numbers without a decimal point, fractional ones to three places.
-fn format_stat(v: f64) -> String {
+/// Shared with the analytics chart's axis/tooltip labels so a metric reads the
+/// same in the stats panel and on the plot.
+pub fn format_stat(v: f64) -> String {
     if v.fract() == 0.0 {
         format!("{v:.0}")
     } else {

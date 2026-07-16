@@ -14,12 +14,15 @@
 //!   ([`operation_targets`], [`set_row_status`], [`algorithm_for_index`], …);
 //! - [`viewer`] — selecting, navigating, loading/rendering off-thread, and blink;
 //! - [`convert`] — the compress / decompress batch operations;
-//! - [`export`] — the export dialog and its batch.
+//! - [`export`] — the export dialog and its batch;
+//! - [`analytics`] — the analytics batch and its time-series chart.
 
+mod analytics;
 mod convert;
 mod export;
 mod viewer;
 
+pub use analytics::*;
 pub use convert::*;
 pub use export::*;
 pub use viewer::*;
@@ -29,6 +32,7 @@ use std::cmp::max;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use fitz_core::analytics::FileMetrics;
 use fitz_core::fitskit::CompressionType;
 use fitz_core::preview::PreviewParams;
 use slint::{Model, ModelRc, Timer, VecModel};
@@ -60,6 +64,13 @@ struct AppState {
     generation: u64,
     /// One-shot timer that advances blink after the current frame's dwell.
     blink_timer: Timer,
+    /// Every analyzed frame's metrics for the open Analytics dialog, collected
+    /// once so switching the plotted metric needs no file re-read. Cleared when
+    /// the dialog closes.
+    analytics: Vec<FileMetrics>,
+    /// Guards analytics batches specifically — kept apart from `generation` so
+    /// that merely selecting a file mid-batch doesn't discard its results.
+    analytics_generation: u64,
 }
 
 impl AppState {
@@ -76,6 +87,8 @@ impl AppState {
             selected: None,
             generation: 0,
             blink_timer: Timer::default(),
+            analytics: Vec::new(),
+            analytics_generation: 0,
         }
     }
 }
