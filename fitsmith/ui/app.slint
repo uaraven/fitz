@@ -93,6 +93,11 @@ export component AppWindow inherits Window {
     // the dialog opens, then re-fills the chart data on each metric switch
     // (see AnalyticsChart / ChartPoint for the normalized coordinate space).
     in-out property <bool> show-analytics: false;
+    // The dialog's size. Held here rather than in the dialog (which is torn
+    // down on close) so a resize survives reopening, like `file-list-width`.
+    // The dialog clamps these to its minimum and to the window.
+    in-out property <length> analytics-card-width: 760px;
+    in-out property <length> analytics-card-height: 540px;
     // Index into `analytics-metric-model`, which the controller fills from
     // `fitz_core::analytics::Metric::all()` — so the dropdown order and the
     // plotted metric can't drift apart.
@@ -583,6 +588,8 @@ export component AppWindow inherits Window {
     if root.show-analytics: AnalyticsDialog {
         width: 100%;
         height: 100%;
+        card-width <=> root.analytics-card-width;
+        card-height <=> root.analytics-card-height;
         metric-model: root.analytics-metric-model;
         points: root.analytics-points;
         x-ticks: root.analytics-x-ticks;

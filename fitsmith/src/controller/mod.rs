@@ -82,8 +82,8 @@ impl AppState {
     fn new() -> Self {
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
-        let max_mem = sys.total_memory();
-        let cache_capacity = max(CACHE_CAPACITY_BYTES, (max_mem / 8) as usize);
+        let max_mem = sys.available_memory();
+        let cache_capacity = max(CACHE_CAPACITY_BYTES, (max_mem * 4 / 5) as usize);
 
         Self {
             paths: Vec::new(),
