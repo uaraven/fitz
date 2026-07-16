@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use fitskit::{FitsFile, Header, HeaderValue, ImageData, PixelData};
 use tempfile::TempDir;
 
-use crate::fits_image::BAYERPAT;
+use crate::fits_image::{BAYERPAT, BZERO, round_to_u16};
 
 /// Absolute path to a file under the workspace's `test-data/` directory.
 pub(crate) fn test_data(filename: &str) -> PathBuf {
@@ -70,6 +70,45 @@ pub(crate) fn write_mosaic_fits_with_metadata(
         "COMMENT",
         "captured by fitz test suite",
     ));
+    fits.to_file(path).unwrap();
+}
+
+/// Write a 2D mono frame in the unsigned-16 convention (I16 samples with
+/// BZERO 32768, so physical values span 0..=65535) holding a synthetic star
+/// field: a flat `background`, a fixed low-amplitude ripple standing in for
+/// noise, and one 2D Gaussian per `(x, y, sigma_x, sigma_y, peak)`. Values above
+/// the 16-bit ceiling clip there, exactly as a sensor's would.
+///
+/// The ripple is deterministic rather than random: the background's MAD sets the
+/// detection threshold, so a seeded RNG would let a star-detection test flake on
+/// its seed.
+pub(crate) fn write_star_field_fits(
+    path: &Path,
+    width: usize,
+    height: usize,
+    background: f64,
+    stars: &[(f64, f64, f64, f64, f64)],
+) {
+    let mut pixels = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            let ripple = ((x * 7 + y * 13) % 5) as f64;
+            let mut v = background + ripple;
+            for &(sx, sy, sigma_x, sigma_y, peak) in stars {
+                let dx = (x as f64 - sx) / sigma_x;
+                let dy = (y as f64 - sy) / sigma_y;
+                v += peak * (-0.5 * (dx * dx + dy * dy)).exp();
+            }
+            // Physical value to raw sample under BZERO 32768.
+            pixels.push((round_to_u16(v) as i32 - 32768) as i16);
+        }
+    }
+
+    let img = ImageData::new(vec![width, height], PixelData::I16(pixels));
+    let mut fits = FitsFile::with_primary_image(img);
+    fits.primary_mut()
+        .header
+        .set(BZERO, HeaderValue::Float(32768.0), None);
     fits.to_file(path).unwrap();
 }
 
