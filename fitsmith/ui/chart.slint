@@ -1,0 +1,194 @@
+import { Palette } from "std-widgets.slint";
+import { ChartPoint, ChartTick } from "types.slint";
+
+// A time-series line chart with point marks: the plot area of the analytics
+// dialog (not a dialog itself). Purely presentational — the controller feeds
+// screen-normalized 0..1 points, the matching SVG `line-commands` string for
+// the series line (Slint can't repeat Path elements with `for`, slint#754),
+// and pre-formatted tick labels. Y always fits the widget; X stretches by
+// `zoom` inside a horizontal Flickable, so zoom > 1 scrolls sideways and
+// session gaps (meridian flip, clouds) stay visible as real gaps. Hovering a
+// mark shows a time/value tooltip. All colors derive from the active color
+// scheme, so the chart is legible on light and dark themes alike.
+export component AnalyticsChart inherits Rectangle {
+    in property <[ChartPoint]> points;
+    in property <[ChartTick]> x-ticks;
+    in property <[ChartTick]> y-ticks;
+    // SVG path commands for the series line, in the same normalized 0..1
+    // coordinate space as the points (viewbox below stretches it to fit).
+    in property <string> line-commands;
+    // 1.0 = fit the width; up to 4.0 = 4x wider, scrolled horizontally.
+    in property <float> zoom: 1.0;
+    // Y-axis title (the plotted metric's name).
+    in property <string> metric-label;
+
+    // Where the chart sits in the window, for cropping a window snapshot down
+    // to the chart when exporting a PNG (covers the whole chart, axes and
+    // labels included).
+    out property <length> chart-x: self.absolute-position.x;
+    out property <length> chart-y: self.absolute-position.y;
+    out property <length> chart-w: self.width;
+    out property <length> chart-h: self.height;
+
+    // Theme palette, keyed on the active color scheme (same pattern as the
+    // file list's error/tooltip colors).
+    property <bool> dark-theme: Palette.color-scheme == ColorScheme.dark;
+    property <color> plot-bg: root.dark-theme ? #1e1e1e : #fdfdfd;
+    property <color> axis-color: root.dark-theme ? #666666 : #999999;
+    property <color> grid-color: root.dark-theme ? #333333 : #e4e4e4;
+    property <color> line-color: root.dark-theme ? #4da3e8 : #0a5ea8;
+    property <color> mark-color: root.dark-theme ? #7fc0f5 : #0a5ea8;
+    property <color> mark-hover: root.dark-theme ? #ffffff : #063d6e;
+    property <color> label-color: root.dark-theme ? #b0b0b0 : #555555;
+    property <color> tip-bg: root.dark-theme ? #2b2b2b : #fbfbfb;
+    property <color> tip-fg: root.dark-theme ? #e0e0e0 : #202020;
+    property <color> tip-border: root.dark-theme ? #555555 : #cccccc;
+
+    // Fixed gutters for the axis labels; the plot fills the rest.
+    property <length> y-axis-w: 64px;
+    property <length> x-axis-h: 22px;
+    property <length> title-h: 18px;
+    property <length> area-h: root.height - root.x-axis-h - root.title-h;
+    property <length> viewport-w: root.width - root.y-axis-w;
+    // The scrollable plot width: fit at zoom 1, wider beyond.
+    property <length> content-w: root.viewport-w * root.zoom;
+
+    preferred-height: 300px;
+
+    // Y-axis title, top-left above the tick labels.
+    Text {
+        x: 0;
+        y: 0;
+        height: root.title-h;
+        text: root.metric-label;
+        color: root.label-color;
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    // Y tick labels, right-aligned against the plot's left edge. Fixed while
+    // the plot scrolls (Y always fits, only X zooms).
+    for tick in root.y-ticks: Text {
+        x: 0;
+        y: root.title-h + tick.pos * root.area-h - self.height / 2;
+        width: root.y-axis-w - 8px;
+        horizontal-alignment: right;
+        text: tick.label;
+        color: root.label-color;
+        font-size: 11px;
+    }
+
+    flick := Flickable {
+        x: root.y-axis-w;
+        y: root.title-h;
+        width: root.viewport-w;
+        height: root.area-h + root.x-axis-h;
+        viewport-width: root.content-w;
+        viewport-height: self.height;
+
+        // Plot background and frame (the axes).
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: root.content-w;
+            height: root.area-h;
+            background: root.plot-bg;
+            border-width: 1px;
+            border-color: root.axis-color;
+        }
+
+        // Gridlines: horizontal per Y tick, vertical per X tick. They live in
+        // the scrolled content so vertical lines track their timestamps.
+        for tick in root.y-ticks: Rectangle {
+            x: 0;
+            y: tick.pos * root.area-h;
+            width: root.content-w;
+            height: 1px;
+            background: root.grid-color;
+        }
+        for tick in root.x-ticks: Rectangle {
+            x: tick.pos * root.content-w;
+            y: 0;
+            width: 1px;
+            height: root.area-h;
+            background: root.grid-color;
+        }
+
+        // X tick labels, below the plot; they scroll with their gridlines.
+        // Clamped inside the content so the first/last labels aren't half cut
+        // off at the plot edges.
+        for tick in root.x-ticks: Text {
+            x: clamp(tick.pos * root.content-w - self.width / 2, 0px, root.content-w - self.width);
+            y: root.area-h + 5px;
+            text: tick.label;
+            color: root.label-color;
+            font-size: 11px;
+        }
+
+        // The series line. The 0..1 viewbox with `fill` stretches the
+        // normalized commands to the (zoomed) plot size; stroke width stays
+        // in logical pixels.
+        Path {
+            x: 0;
+            y: 0;
+            width: root.content-w;
+            height: root.area-h;
+            commands: root.line-commands;
+            viewbox-width: 1.0;
+            viewbox-height: 1.0;
+            fit: fill;
+            stroke: root.line-color;
+            stroke-width: 2px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+
+        // Point marks with a hover tooltip each (the file-list hover pattern,
+        // inline instead of a PopupWindow so it tracks the scrolled content).
+        for point in root.points: mark := Rectangle {
+            x: point.x * root.content-w - self.width / 2;
+            y: point.y * root.area-h - self.height / 2;
+            width: 9px;
+            height: 9px;
+            border-radius: 4.5px;
+            background: touch.has-hover ? root.mark-hover : root.mark-color;
+            touch := TouchArea { }
+
+            if touch.has-hover: Rectangle {
+                // Above the mark, or below when too close to the top edge.
+                x: (mark.width - tip-layout.preferred-width) / 2;
+                y: point.y * root.area-h < 56px
+                    ? mark.height + 4px
+                    : -tip-layout.preferred-height - 4px;
+                width: tip-layout.preferred-width;
+                height: tip-layout.preferred-height;
+                background: root.tip-bg;
+                border-width: 1px;
+                border-color: root.tip-border;
+                border-radius: 4px;
+                tip-layout := VerticalLayout {
+                    padding: 7px;
+                    spacing: 2px;
+                    Text {
+                        text: point.time-label;
+                        color: root.tip-fg;
+                        font-size: 11px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: point.value-label;
+                        color: root.tip-fg;
+                        font-size: 11px;
+                    }
+                }
+            }
+        }
+    }
+
+    if root.points.length == 0: Text {
+        x: root.y-axis-w + (root.viewport-w - self.width) / 2;
+        y: root.title-h + (root.area-h - self.height) / 2;
+        text: "No data to plot";
+        color: root.label-color;
+    }
+}

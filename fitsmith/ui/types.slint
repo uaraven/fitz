@@ -25,3 +25,22 @@ export struct StatItem {
     label: string,
     value: string,
 }
+
+// One sample on the analytics chart. `x`/`y` are screen-normalized 0..1
+// coordinates within the plot area — (0, 0) is the top-left corner, so the
+// controller maps time to `x` and (inverted) metric value to `y`; the Slint
+// side stays layout-only. The labels feed the hover tooltip.
+export struct ChartPoint {
+    x: float,
+    y: float,
+    time-label: string,
+    value-label: string,
+}
+
+// One axis tick: a screen-normalized 0..1 position along its axis (measured
+// from the left for X, from the top for Y — same convention as ChartPoint)
+// and the label to draw there.
+export struct ChartTick {
+    pos: float,
+    label: string,
+}
