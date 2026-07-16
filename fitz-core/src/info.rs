@@ -430,16 +430,25 @@ pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
 /// Number of distinct raw sample values in the 16-bit fast path.
 const VALUE_COUNT_SLOTS: usize = 1 << 16;
 
+/// Smallest sample count worth giving its own parallel chunk (and hence its own
+/// [`VALUE_COUNT_SLOTS`]-slot array): four times the per-chunk overhead, so that
+/// bookkeeping stays a fraction of the counting.
+const MIN_COUNT_CHUNK: usize = 4 * VALUE_COUNT_SLOTS;
+
 /// Count occurrences of every raw sample value in one parallel pass, for
 /// sample types whose values index into a 65536-slot array (`U8`, `I16`).
 /// Returns the counts plus the `offset` mapping an index back to its raw
 /// sample value (`raw = index - offset`), or `None` for wider/float samples.
 fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
     fn count<T: Sync>(v: &[T], idx: impl Fn(&T) -> usize + Sync + Send) -> Vec<u64> {
-        // One chunk per thread: each chunk costs a 65536-slot allocation and
-        // each merge a 65536-element add, so splitting finer than the thread
-        // count makes that bookkeeping rival the counting itself.
-        let chunk = v.len().div_ceil(rayon::current_num_threads()).max(1);
+        // Every chunk costs a 65536-slot allocation to zero and a 65536-element
+        // add to merge, so a chunk must count enough samples to earn that back:
+        // spread the work one chunk per thread, but never split so fine that the
+        // bookkeeping dominates. A small frame stays on a single chunk.
+        let chunk = v
+            .len()
+            .div_ceil(rayon::current_num_threads())
+            .max(MIN_COUNT_CHUNK);
         v.par_chunks(chunk)
             .fold(
                 || vec![0u64; VALUE_COUNT_SLOTS],

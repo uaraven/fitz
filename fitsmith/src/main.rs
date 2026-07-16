@@ -99,11 +99,13 @@ fn main() -> Result<()> {
         &app
     ));
     forward!(on_run_export, |app| controller::run_export(&app));
-    // Phase-2 placeholder: shows the dialog with the mock chart data baked
-    // into app.slint. Phase 3 replaces this with controller::analytics
-    // (gather targets, compute metrics off-thread, plot, and wire
-    // metric-changed / export-png / export-csv / close-analytics).
-    forward!(on_open_analytics_dialog, |app| app.set_show_analytics(true));
+    forward!(on_open_analytics_dialog, |app| {
+        controller::open_analytics_dialog(&app)
+    });
+    forward!(on_analytics_metric_changed, |app, index| {
+        controller::analytics_metric_changed(&app, index)
+    });
+    forward!(on_close_analytics, |app| controller::close_analytics(&app));
 
     app.on_request_exit(|| {
         let _ = slint::quit_event_loop();

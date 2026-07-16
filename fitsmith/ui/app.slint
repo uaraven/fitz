@@ -22,7 +22,7 @@ export component AppWindow inherits Window {
     in property <length> image-height;
     in property <[FileRow]> files;
     in property <int> selected-index: -1;
-    in-out property <bool> debayer-enabled: true;
+    in-out property <bool> debayer-enabled: false;
     in-out property <bool> stretch-enabled: true;
     in-out property <bool> blinking: false;
     // The stats and info panels dock in the same spot and are mutually
@@ -91,46 +91,21 @@ export component AppWindow inherits Window {
     // files ordered by DATE-OBS. Rust computes all metrics per file once when
     // the dialog opens, then re-fills the chart data on each metric switch
     // (see AnalyticsChart / ChartPoint for the normalized coordinate space).
-    //
-    // The defaults below are phase-2 placeholder data (a mock session with a
-    // cloud gap) so the dialog renders before the controller exists; the
-    // controller overwrites all of them when it opens the dialog.
     in-out property <bool> show-analytics: false;
-    in-out property <int> analytics-metric: 3; // Mean ADU
+    // Index into `analytics-metric-model`, which the controller fills from
+    // `fitz_core::analytics::Metric::all()` — so the dropdown order and the
+    // plotted metric can't drift apart.
+    in property <[string]> analytics-metric-model;
+    in-out property <int> analytics-metric;
     in-out property <float> analytics-zoom: 1.0;
-    in property <string> analytics-metric-label: "Mean ADU";
-    in property <int> analytics-plotted-count: 11;
-    in property <int> analytics-skipped-no-date: 1;
-    in property <int> analytics-skipped-not-mono: 0;
-    in property <[ChartPoint]> analytics-points: [
-        { x: 0.00, y: 0.80, time-label: "22:00:12", value-label: "1100.2" },
-        { x: 0.08, y: 0.72, time-label: "22:12:11", value-label: "1180.5" },
-        { x: 0.16, y: 0.65, time-label: "22:24:14", value-label: "1250.0" },
-        { x: 0.24, y: 0.55, time-label: "22:36:09", value-label: "1350.7" },
-        { x: 0.32, y: 0.58, time-label: "22:48:13", value-label: "1320.3" },
-        { x: 0.40, y: 0.45, time-label: "23:00:10", value-label: "1450.9" },
-        { x: 0.70, y: 0.30, time-label: "00:15:02", value-label: "1600.1" },
-        { x: 0.78, y: 0.25, time-label: "00:27:05", value-label: "1650.6" },
-        { x: 0.86, y: 0.35, time-label: "00:39:01", value-label: "1550.4" },
-        { x: 0.94, y: 0.20, time-label: "00:51:07", value-label: "1700.8" },
-        { x: 1.00, y: 0.15, time-label: "01:00:03", value-label: "1750.2" },
-    ];
-    in property <string> analytics-line-commands:
-        "M 0 0.8 L 0.08 0.72 L 0.16 0.65 L 0.24 0.55 L 0.32 0.58 L 0.4 0.45 "
-        + "L 0.7 0.3 L 0.78 0.25 L 0.86 0.35 L 0.94 0.2 L 1 0.15";
-    in property <[ChartTick]> analytics-x-ticks: [
-        { pos: 0.0, label: "22:00" },
-        { pos: 0.3333, label: "23:00" },
-        { pos: 0.6667, label: "00:00" },
-        { pos: 1.0, label: "01:00" },
-    ];
-    in property <[ChartTick]> analytics-y-ticks: [
-        { pos: 0.1, label: "1800" },
-        { pos: 0.3, label: "1600" },
-        { pos: 0.5, label: "1400" },
-        { pos: 0.7, label: "1200" },
-        { pos: 0.9, label: "1000" },
-    ];
+    in property <string> analytics-metric-label;
+    in property <int> analytics-plotted-count;
+    in property <int> analytics-skipped-no-date;
+    in property <int> analytics-skipped-not-mono;
+    in property <[ChartPoint]> analytics-points;
+    in property <string> analytics-line-commands;
+    in property <[ChartTick]> analytics-x-ticks;
+    in property <[ChartTick]> analytics-y-ticks;
 
     callback open();
     callback open-directory();
@@ -584,6 +559,7 @@ export component AppWindow inherits Window {
     if root.show-analytics: AnalyticsDialog {
         width: 100%;
         height: 100%;
+        metric-model: root.analytics-metric-model;
         points: root.analytics-points;
         x-ticks: root.analytics-x-ticks;
         y-ticks: root.analytics-y-ticks;

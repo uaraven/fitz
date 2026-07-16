@@ -7,9 +7,11 @@ import { ChartPoint, ChartTick } from "types.slint";
 // working-set files, ordered by acquisition time (DATE-OBS). Purely
 // presentational — the controller computes every metric per file once, then
 // feeds normalized chart data; switching the metric dropdown re-plots with no
-// file re-read. The metric list must stay in the same order as
-// `fitz_core::analytics::Metric::all()`.
+// file re-read.
 export component AnalyticsDialog inherits DialogCard {
+    // The selectable metrics, supplied by the controller from
+    // `fitz_core::analytics::Metric::all()`; `metric-index` indexes into it.
+    in property <[string]> metric-model;
     // Chart data (see AnalyticsChart / ChartPoint for the coordinate space).
     in property <[ChartPoint]> points;
     in property <[ChartTick]> x-ticks;
@@ -61,14 +63,7 @@ export component AnalyticsDialog inherits DialogCard {
                 vertical-alignment: center;
             }
             ComboBox {
-                model: [
-                    "Min ADU",
-                    "Max ADU",
-                    "Median ADU",
-                    "Mean ADU",
-                    "Max-ADU pixel count",
-                    "Min-ADU pixel count",
-                ];
+                model: root.metric-model;
                 current-index <=> root.metric-index;
                 selected => {
                     root.metric-changed(self.current-index);
