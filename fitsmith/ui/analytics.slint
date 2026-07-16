@@ -40,8 +40,13 @@ export component AnalyticsDialog inherits DialogCard {
     callback export-png();
     callback export-csv();
 
-    card-width: 760px;
-    card-height: 540px;
+    // Resizable: the chart is the point of this dialog, and a longer session
+    // wants more plot. The parent owns `card-width`/`card-height` so a resize
+    // outlives a close/reopen; the minimum keeps the metric row, the chart and
+    // the footer buttons all usable.
+    resizable: true;
+    min-card-width: 560px;
+    min-card-height: 400px;
 
     VerticalLayout {
         padding: 24px;
