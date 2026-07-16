@@ -108,6 +108,14 @@ fn main() -> Result<()> {
     forward!(on_analytics_metric_changed, |app, index| {
         controller::analytics_metric_changed(&app, index)
     });
+    // The chart's geometry within the window rides along, so the PNG export can
+    // crop the window snapshot down to just the chart.
+    forward!(on_analytics_export_png, |app, x, y, w, h| {
+        controller::analytics_export_png(&app, x, y, w, h)
+    });
+    forward!(on_analytics_export_csv, |app| {
+        controller::analytics_export_csv(&app)
+    });
     forward!(on_close_analytics, |app| controller::close_analytics(&app));
 
     app.on_request_exit(|| {
