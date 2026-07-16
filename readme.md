@@ -28,6 +28,45 @@ cargo run -p fitz -- --help     # run the CLI
 cargo run -p fitsmith           # run the GUI
 ```
 
+The `edition = "2024"` crates need a recent stable Rust toolchain (install via
+[rustup](https://rustup.rs/)).
+
+### System dependencies
+
+The `fitz` and `fitz-core` crates are pure Rust and build with no extra system libraries.
+The **FitSmith** GUI, however, pulls in [Slint](https://slint.dev/), which links `fontconfig`
+at build time and uses the platform's windowing/graphics stack at runtime. If you only need
+the CLI, you can skip all of this and build just those crates:
+
+```shell
+cargo build -p fitz             # CLI only — no GUI system deps needed
+```
+
+To build the whole workspace (including FitSmith):
+
+- **macOS** — no extra packages; everything Slint needs ships with the system. Build with the
+  Xcode command-line tools installed (`xcode-select --install`).
+- **Linux** — install the `fontconfig` development package (it provides `fontconfig.pc` for
+  pkg-config, needed at build time). The runtime Wayland/X11/OpenGL libraries are loaded
+  dynamically and are present on any normal desktop install.
+
+  ```shell
+  # Fedora / RHEL
+  sudo dnf install fontconfig-devel
+
+  # Debian / Ubuntu
+  sudo apt install libfontconfig1-dev
+
+  # Arch
+  sudo pacman -S fontconfig
+  ```
+
+- **Windows** — no extra packages; build with the MSVC toolchain (install the "Desktop
+  development with C++" workload from the Visual Studio Build Tools).
+
+If FitSmith fails to build with a `pkg-config ... fontconfig was not found` error, the
+`fontconfig` dev package above is what's missing.
+
 ## Note
 
 This is a small personal project and as such it is not thouroughly tested and not optimized in
