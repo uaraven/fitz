@@ -23,6 +23,10 @@ pub enum Metric {
     Mean,
     MaxPixelCount,
     MinPixelCount,
+    Sigma,
+    Mad,
+    Mode,
+    Saturated,
 }
 
 impl Metric {
@@ -35,10 +39,16 @@ impl Metric {
             Metric::Mean => "Mean ADU",
             Metric::MaxPixelCount => "Max-ADU count",
             Metric::MinPixelCount => "Min-ADU count",
+            Metric::Sigma => "Noise sigma",
+            Metric::Mad => "Noise MAD",
+            Metric::Mode => "Sky background",
+            Metric::Saturated => "Saturated pixels",
         }
     }
 
-    /// Every metric, in the order a selection dropdown should list them.
+    /// Every metric, in the order a selection dropdown should list them. New
+    /// metrics are appended, never inserted: a stored dropdown index has to keep
+    /// meaning the same thing across versions.
     pub fn all() -> &'static [Metric] {
         &[
             Metric::Min,
@@ -47,6 +57,10 @@ impl Metric {
             Metric::Mean,
             Metric::MaxPixelCount,
             Metric::MinPixelCount,
+            Metric::Sigma,
+            Metric::Mad,
+            Metric::Mode,
+            Metric::Saturated,
         ]
     }
 
@@ -59,6 +73,10 @@ impl Metric {
             Metric::Mean => stats.mean,
             Metric::MaxPixelCount => stats.max_count as f64,
             Metric::MinPixelCount => stats.min_count as f64,
+            Metric::Sigma => stats.sigma,
+            Metric::Mad => stats.mad,
+            Metric::Mode => stats.mode,
+            Metric::Saturated => stats.saturated as f64,
         }
     }
 }
@@ -298,7 +316,20 @@ mod tests {
         assert_eq!(Metric::Mean.value(&m.stats), 7.5);
         assert_eq!(Metric::MinPixelCount.value(&m.stats), 1.0);
         assert_eq!(Metric::MaxPixelCount.value(&m.stats), 1.0);
-        assert_eq!(Metric::all().len(), 6);
+
+        // The 4x4 fixture stores sequential values 0..15, one pixel each: every
+        // value ties for most common, so the mode is the lowest of them, and
+        // nothing reaches the I16 ceiling (a physical 32767 with no BZERO).
+        assert_eq!(Metric::Mode.value(&m.stats), 0.0);
+        assert_eq!(Metric::Saturated.value(&m.stats), 0.0);
+        assert_eq!(Metric::Sigma.value(&m.stats), m.stats.sigma);
+        assert_eq!(Metric::Mad.value(&m.stats), m.stats.mad);
+        // A uniform 0..15 spread is nothing like Gaussian, so the scaled MAD
+        // (1.4826 * 4 = 5.9304) overshoots the true sigma here — the metrics
+        // read their stat, they don't reinterpret it.
+        assert_eq!(Metric::Mad.value(&m.stats), 1.4826 * 4.0);
+
+        assert_eq!(Metric::all().len(), 10);
     }
 
     #[test]

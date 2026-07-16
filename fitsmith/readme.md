@@ -37,8 +37,15 @@ and the CLI behave identically.
    pixels. Every metric is measured in a single read per file, so switching between them
    re-plots instantly with no re-read; a progress dialog tracks the batch and can cancel it.
    Drag the dialog's bottom-right corner to resize it.
-     - **Metrics** — min, max, median and mean ADU, plus the number of pixels sitting exactly
-       at the minimum or maximum ADU.
+     - **Metrics** — min, max, median and mean ADU; the number of pixels sitting exactly at the
+       minimum or maximum ADU; noise sigma and noise MAD; sky background; and saturated pixels.
+       Sky background is the frame's most common value, and saturated pixels are those at the
+       pixel format's ceiling (65535 for 16-bit unsigned data, 255 for 8-bit).
+     - **Noise sigma vs noise MAD** — both estimate the noise, but sigma is the standard
+       deviation over every pixel, so stars and hot pixels inflate it, while MAD is a median
+       of deviations and ignores them. Plotting both is the point: they track each other on a
+       clean session, and sigma pulling away from MAD marks the frames where something else
+       arrived — a satellite trail, a passing cloud lit by the moon, a tracking error.
      - **Time axis** — frames are plotted at their real acquisition time (`DATE-OBS`), so a
        break in the session (clouds, a meridian flip) shows up as a gap in the line rather
        than being closed up. Frames with no readable `DATE-OBS`, and already-debayered RGB

@@ -535,5 +535,13 @@ mod tests {
             export_file_name(Metric::MaxPixelCount, "csv"),
             "analytics-max-adu-count.csv"
         );
+        // The slugifier replaces every non-ASCII-alphanumeric char with '-', so
+        // a "Noise σ" label would slug to a bare "analytics-noise-.png". The
+        // label spells sigma out instead — the fix belongs in the label, not in
+        // a special case here.
+        assert_eq!(
+            export_file_name(Metric::Sigma, "png"),
+            "analytics-noise-sigma.png"
+        );
     }
 }
