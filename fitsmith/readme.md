@@ -31,6 +31,25 @@ and the CLI behave identically.
      - **TIFF** — bits per pixel (8, 16, or 32) and optional DEFLATE compression.
      - **JPEG** — encoder quality (1–100).
      - **PNG** — no options (written as 8-bit RGB).
+ - **Analytics** — the Tools menu's Analytics… charts one pixel metric across the working set
+   (checked rows, or all when none are checked) over the course of a session, to spot trends
+   and problem frames — sky brightness creeping up as the night goes on, a jump in saturated
+   pixels. Every metric is measured in a single read per file, so switching between them
+   re-plots instantly with no re-read; a progress dialog tracks the batch and can cancel it.
+   Drag the dialog's bottom-right corner to resize it.
+     - **Metrics** — min, max, median and mean ADU, plus the number of pixels sitting exactly
+       at the minimum or maximum ADU.
+     - **Time axis** — frames are plotted at their real acquisition time (`DATE-OBS`), so a
+       break in the session (clouds, a meridian flip) shows up as a gap in the line rather
+       than being closed up. Frames with no readable `DATE-OBS`, and already-debayered RGB
+       frames (whose ADU statistics aren't meaningful), are skipped and counted under the
+       chart.
+     - **Reading the chart** — hover a point for its time and value; the zoom slider runs from
+       fit-to-width up to 4x, scrolling horizontally.
+
+
+For example here is the mean ADU chart clearly showing when the wildfire smoke arrived and affected seeing and total brightness
+![](../docs/analytics-mean-adu.png)
 
 ## Building and running
 
