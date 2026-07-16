@@ -202,6 +202,7 @@ mod tests {
     fn series(samples: &[(f64, f64)]) -> Series {
         Series {
             metric: Metric::Mean,
+            unavailable: 0,
             points: samples
                 .iter()
                 .map(|&(time, value)| SamplePoint {

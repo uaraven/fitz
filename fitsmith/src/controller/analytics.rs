@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use fitz_core::analytics::{self, FileAnalysis, FileMetrics, Metric, Series, SkipReason};
+use fitz_core::analytics::{
+    self, AnalyzeOptions, FileAnalysis, FileMetrics, Metric, Series, SkipReason,
+};
 use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
 
 use crate::AppWindow;
@@ -112,7 +114,7 @@ fn analyze_batch(
             return None;
         }
         progress(i, path);
-        match analytics::analyze_file(path) {
+        match analytics::analyze_file(path, &AnalyzeOptions::default()) {
             Ok(FileAnalysis::Analyzed(m)) => batch.metrics.push(m),
             Ok(FileAnalysis::Skipped(SkipReason::NoDateObs)) => batch.no_date += 1,
             Ok(FileAnalysis::Skipped(SkipReason::NotMono)) => batch.not_mono += 1,
