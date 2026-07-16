@@ -430,28 +430,28 @@ pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
 /// Number of distinct raw sample values in the 16-bit fast path.
 const VALUE_COUNT_SLOTS: usize = 1 << 16;
 
-/// Smallest sample count worth giving its own parallel chunk (and hence its own
-/// [`VALUE_COUNT_SLOTS`]-slot array): four times the per-chunk overhead, so that
-/// bookkeeping stays a fraction of the counting.
-const MIN_COUNT_CHUNK: usize = 4 * VALUE_COUNT_SLOTS;
+/// … and in the 8-bit one. Sizing the array to the sample domain rather than
+/// always to 65536 is what makes `counts.len() - 1` mean "the largest
+/// representable raw sample" for both types.
+const U8_COUNT_SLOTS: usize = 1 << 8;
 
 /// Count occurrences of every raw sample value in one parallel pass, for
-/// sample types whose values index into a 65536-slot array (`U8`, `I16`).
-/// Returns the counts plus the `offset` mapping an index back to its raw
-/// sample value (`raw = index - offset`), or `None` for wider/float samples.
+/// sample types whose values index into a small array (`U8`, `I16`). Returns
+/// the counts plus the `offset` mapping an index back to its raw sample value
+/// (`raw = index - offset`), or `None` for wider/float samples.
 fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
-    fn count<T: Sync>(v: &[T], idx: impl Fn(&T) -> usize + Sync + Send) -> Vec<u64> {
-        // Every chunk costs a 65536-slot allocation to zero and a 65536-element
+    fn count<T: Sync>(v: &[T], slots: usize, idx: impl Fn(&T) -> usize + Sync + Send) -> Vec<u64> {
+        // Every chunk costs a `slots`-slot allocation to zero and a `slots`-element
         // add to merge, so a chunk must count enough samples to earn that back:
         // spread the work one chunk per thread, but never split so fine that the
         // bookkeeping dominates. A small frame stays on a single chunk.
         let chunk = v
             .len()
             .div_ceil(rayon::current_num_threads())
-            .max(MIN_COUNT_CHUNK);
+            .max(4 * slots);
         v.par_chunks(chunk)
             .fold(
-                || vec![0u64; VALUE_COUNT_SLOTS],
+                || vec![0u64; slots],
                 |mut c, chunk| {
                     for x in chunk {
                         c[idx(x)] += 1;
@@ -459,12 +459,15 @@ fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
                     c
                 },
             )
-            .reduce(|| vec![0u64; VALUE_COUNT_SLOTS], add_counts)
+            .reduce(|| vec![0u64; slots], add_counts)
     }
 
     match &img.pixels {
-        PixelData::U8(v) => Some((count(v, |&x| x as usize), 0.0)),
-        PixelData::I16(v) => Some((count(v, |&x| (x as i32 + 32768) as usize), 32768.0)),
+        PixelData::U8(v) => Some((count(v, U8_COUNT_SLOTS, |&x| x as usize), 0.0)),
+        PixelData::I16(v) => Some((
+            count(v, VALUE_COUNT_SLOTS, |&x| (x as i32 + 32768) as usize),
+            32768.0,
+        )),
         _ => None,
     }
 }
