@@ -69,6 +69,9 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
                 );
             }
             Some(stats) => {
+                // Split across lines by meaning rather than crowding everything
+                // onto `Pixels:`; each label pads into the same column as the
+                // metadata fields above.
                 let _ = writeln!(
                     out,
                     "  Pixels:      min={} max={} mean={} median={} zeros={}",
@@ -77,6 +80,27 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
                     trim_float(stats.mean),
                     trim_float(stats.median),
                     stats.zeros,
+                );
+                let _ = writeln!(
+                    out,
+                    "  Noise:       sigma={} mad={}",
+                    trim_float(stats.sigma),
+                    trim_float(stats.mad),
+                );
+                let _ = writeln!(out, "  Background:  mode={}", trim_float(stats.mode));
+                // The fraction comes from the stats' own sample count, so it
+                // stays right for any future per-plane statistics.
+                let percent = if stats.count > 0 {
+                    stats.saturated as f64 / stats.count as f64 * 100.0
+                } else {
+                    0.0
+                };
+                let _ = writeln!(
+                    out,
+                    "  Saturated:   {} of {} ({}%)",
+                    stats.saturated,
+                    stats.count,
+                    trim_float((percent * 1000.0).round() / 1000.0),
                 );
                 // The histogram is the last thing in the report: a title aligned
                 // with the other fields, then the bar chart centered horizontally.
