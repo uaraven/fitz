@@ -28,7 +28,7 @@ slint::include_modules!();
 /// process-global class setting that must be applied before the menu is built.
 /// "Enter Full Screen" (also auto-added to the View menu) is unaffected.
 #[cfg(target_os = "macos")]
-fn disable_automatic_window_tabbing() {
+fn diable_macos_auto_menu() {
     use objc2::runtime::Bool;
     use objc2::{class, msg_send};
     // Safety: a class message to the AppKit-provided NSWindow with a BOOL arg.
@@ -39,7 +39,7 @@ fn disable_automatic_window_tabbing() {
 
 fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
-    disable_automatic_window_tabbing();
+    diable_macos_auto_menu();
     let app = AppWindow::new()?;
     app.set_status_text("No image — add files to view".into());
     app.set_app_version(env!("CARGO_PKG_VERSION").into());
