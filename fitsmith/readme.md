@@ -16,7 +16,12 @@ and the CLI behave identically.
  - **Blink** — step or blink through the working set to compare frames; decoded images are
    kept in an LRU cache so re-selection and blinking re-render from memory.
  - **Inspect** — a Headers tab and a docked stats panel show the FITS metadata and pixel
-   statistics for the selected frame.
+   statistics for the selected frame. The stats panel puts the pixel summary (min/max/mean/median
+   ADU and the zero-pixel count) and the frame's star metrics (star count, plus median HFR, FWHM
+   and eccentricity when any stars are detected) in two label columns beside the value histogram.
+   The star column is hidden for a frame with no detectable stars, and the whole panel falls back
+   to a placeholder for an already-debayered RGB cube (where single-channel statistics aren't
+   meaningful).
  - **Compress / Decompress** — the Tools menu tile-compresses files to `.fz` (pick the
    algorithm) or decompresses them back. The operation runs over the checked rows, or the
    whole working set when none are checked. Choose whether to keep the originals or replace

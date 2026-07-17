@@ -11,7 +11,7 @@
 use libfitz::fits_image::is_debayered_rgb_cube;
 use libfitz::fitskit::{Header, HeaderValue, ImageData, Keyword};
 use libfitz::info::{
-    HISTOGRAM_BUCKETS, InfoRequest, SummaryField, header_info_from, pixel_stats,
+    HISTOGRAM_BUCKETS, InfoRequest, StarReport, SummaryField, header_info_from, pixel_stats,
 };
 use libfitz::preview::PreviewImage;
 
@@ -32,6 +32,22 @@ pub struct StatSummary {
     pub zeros: usize,
     /// [`HISTOGRAM_BUCKETS`] bar heights in `[0, 1]`.
     pub histogram: Vec<f32>,
+    /// The frame's star metrics, or `None` when [`detection_plane`] can't build a
+    /// plane from this image (the same shapes that also carry no `PixelStats`).
+    ///
+    /// [`detection_plane`]: libfitz::fits_image::detection_plane
+    pub stars: Option<StarSummary>,
+}
+
+/// The frame's star metrics for the stats panel: how many stars were accepted
+/// and the median of each shape measurement across them. The shape medians are
+/// `None` when detection found no stars (a starless frame still has a count — it
+/// is zero).
+pub struct StarSummary {
+    pub count: usize,
+    pub hfr: Option<f64>,
+    pub fwhm: Option<f64>,
+    pub eccentricity: Option<f64>,
 }
 
 /// Everything the UI needs about one loaded file, cached as a unit.
@@ -51,10 +67,19 @@ impl LoadedDoc {
     /// preview. Runs on the worker thread.
     pub fn build(header: &Header, img: &ImageData, preview: PreviewImage) -> Self {
         let headers = header.iter().map(header_card).collect();
-        // The default request computes nothing beyond the header: the info panel
-        // shows metadata only, so it skips the expensive passes — the stats
-        // panel computes what it needs separately.
-        let info = header_info_from(header, img, InfoRequest::default()).summary();
+        // Request star detection so the stats panel can show star metrics: the
+        // one pass here (on a cached, worker-thread build) feeds both the info
+        // summary and the panel's star column. Pixel statistics stay a separate
+        // call below. The info panel itself still shows metadata only.
+        let hi = header_info_from(
+            header,
+            img,
+            InfoRequest {
+                stars: true,
+                ..Default::default()
+            },
+        );
+        let info = hi.summary();
         let stats = (!is_debayered_rgb_cube(header, img)).then(|| {
             let s = pixel_stats(header, img);
             StatSummary {
@@ -64,6 +89,7 @@ impl LoadedDoc {
                 median: s.median,
                 zeros: s.zeros,
                 histogram: normalize_histogram(&s.histogram),
+                stars: hi.stars.as_ref().map(star_summary),
             }
         });
         LoadedDoc {
@@ -72,6 +98,18 @@ impl LoadedDoc {
             info,
             stats,
         }
+    }
+}
+
+/// Extract the panel's star metrics from a [`StarReport`]. The plane dimensions
+/// the report also carries aren't shown here; the panel reports the numbers.
+fn star_summary(report: &StarReport) -> StarSummary {
+    let s = &report.stats;
+    StarSummary {
+        count: s.count,
+        hfr: s.hfr,
+        fwhm: s.fwhm,
+        eccentricity: s.eccentricity,
     }
 }
 
