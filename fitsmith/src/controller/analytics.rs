@@ -1,11 +1,19 @@
-//! The Tools ▸ Analytics batch and chart: analyze every target file off the UI
-//! thread, cache each frame's metrics, and turn the chosen metric's series into
-//! the normalized geometry `chart.slint` draws.
+//! The Tools ▸ Analytics and Tools ▸ Star metrics batches and chart: analyze
+//! every target file off the UI thread, cache each frame's metrics, and turn the
+//! chosen metric's series into the normalized geometry `chart.slint` draws.
 //!
-//! Every phase-1 metric is computed in one pixel read per file, so switching the
-//! dropdown re-plots from the cache with no re-read ([`set_metric`] is pure
-//! arithmetic). Zoom needs no controller code — the dialog's slider clamps
-//! itself to [1, 4] and the chart reads the bound property directly.
+//! Two menu entries, one dialog. They differ in four things — the title, which
+//! metrics the dropdown lists, whether the batch detects stars, and the export
+//! file-name prefix — and share everything else: the chart, the zoom slider, the
+//! progress overlay, the cancel path, both exports, the resizable card. So the
+//! family travels as state ([`AppState::analytics_family`]) rather than as a
+//! copy of the widget tree, and each entry point is a thin call into
+//! [`open_chart_dialog`].
+//!
+//! Every metric of the open family is computed in one file read each, so
+//! switching the dropdown re-plots from the cache with no re-read. Zoom needs no
+//! controller code — the dialog's slider clamps itself to [1, 4] and the chart
+//! reads the bound property directly.
 //!
 //! Both exports write what is currently plotted: the PNG is the live chart
 //! cropped out of a window snapshot (one rendering path — no second plotter to
@@ -19,7 +27,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use fitz_core::analytics::{
-    self, AnalyzeOptions, FileAnalysis, FileMetrics, Metric, Series, SkipReason,
+    self, AnalyzeOptions, FileAnalysis, FileMetrics, Metric, MetricFamily, Series, SkipReason,
 };
 use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
 
@@ -29,35 +37,64 @@ use crate::files::{display_name, is_fits_path};
 
 use super::{AppState, STATE, operation_targets, set_row_status};
 
-/// Map a metric dropdown index to its [`Metric`]. The dialog's ComboBox model is
-/// built from [`Metric::all`], so the index is just a position in that list;
-/// anything out of range falls back to the default metric.
-fn metric_for_index(index: i32) -> Metric {
+/// Map a metric dropdown index to its [`Metric`] within `family`. The dialog's
+/// ComboBox model is built from [`Metric::of_family`], so the index is just a
+/// position in that family's list; anything out of range falls back to the
+/// family's default metric.
+fn metric_for_index(family: MetricFamily, index: i32) -> Metric {
     usize::try_from(index)
         .ok()
-        .and_then(|i| Metric::all().get(i).copied())
-        .unwrap_or(DEFAULT_METRIC)
+        .and_then(|i| Metric::of_family(family).get(i).copied())
+        .unwrap_or(default_metric(family))
 }
 
-/// The metric plotted when the dialog first opens.
-const DEFAULT_METRIC: Metric = Metric::Mean;
+/// The metric plotted when a family's dialog first opens.
+fn default_metric(family: MetricFamily) -> Metric {
+    match family {
+        MetricFamily::Pixel => Metric::Mean,
+        // The metric people actually cull subs on.
+        MetricFamily::Star => Metric::Hfr,
+    }
+}
 
-/// Open the Analytics dialog: gather the target FITS files (the checked rows, or
-/// all of them when none are checked) and start the batch. The dialog itself
-/// only appears once the metrics are in, so it never shows an empty chart that
-/// then fills in.
+/// The dialog's title for a family.
+fn family_title(family: MetricFamily) -> &'static str {
+    match family {
+        MetricFamily::Pixel => "Analytics",
+        MetricFamily::Star => "Star metrics",
+    }
+}
+
+/// Tools ▸ Analytics…: the pixel metrics. Never detects stars, so it stays
+/// exactly as fast as it has always been.
 pub fn open_analytics_dialog(app: &AppWindow) {
+    open_chart_dialog(app, MetricFamily::Pixel);
+}
+
+/// Tools ▸ Star metrics…: star count, HFR, FWHM and eccentricity. Detects stars
+/// because that is the entire point of opening it — the menu entry *is* the
+/// opt-in, so there is no checkbox to forget.
+pub fn open_star_metrics_dialog(app: &AppWindow) {
+    open_chart_dialog(app, MetricFamily::Star);
+}
+
+/// Open the chart dialog for one metric family: gather the target FITS files
+/// (the checked rows, or all of them when none are checked) and start the batch.
+/// The dialog itself only appears once the metrics are in, so it never shows an
+/// empty chart that then fills in.
+fn open_chart_dialog(app: &AppWindow, family: MetricFamily) {
     let targets = operation_targets(is_fits_path);
+    app.set_analytics_title(family_title(family).into());
     app.set_analytics_metric_model(ModelRc::new(VecModel::from(
-        Metric::all()
+        Metric::of_family(family)
             .iter()
             .map(|m| m.label().into())
             .collect::<Vec<slint::SharedString>>(),
     )));
     app.set_analytics_metric(
-        Metric::all()
+        Metric::of_family(family)
             .iter()
-            .position(|&m| m == DEFAULT_METRIC)
+            .position(|&m| m == default_metric(family))
             .unwrap_or(0) as i32,
     );
     app.set_analytics_zoom(1.0);
@@ -67,6 +104,7 @@ pub fn open_analytics_dialog(app: &AppWindow) {
     let (generation, cancel) = STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.analytics.clear();
+        st.analytics_family = family;
         let generation = abort_batch(&mut st);
         st.analytics_cancel = Arc::new(AtomicBool::new(false));
         (generation, st.analytics_cancel.clone())
@@ -76,7 +114,12 @@ pub fn open_analytics_dialog(app: &AppWindow) {
         app.set_status_text("No FITS files to analyze".into());
         return;
     }
-    spawn_analysis(app.as_weak(), targets, generation, cancel);
+    spawn_analysis(app.as_weak(), targets, family, generation, cancel);
+}
+
+/// The family the open dialog is showing.
+fn current_family() -> MetricFamily {
+    STATE.with(|s| s.borrow().analytics_family)
 }
 
 /// Signal the running worker to stop between files and bump the generation so a
@@ -104,17 +147,23 @@ struct Batch {
 /// without finishing the queue. Holds no UI types, so it is testable directly.
 fn analyze_batch(
     targets: &[PathBuf],
+    family: MetricFamily,
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, &Path),
     mut failed: impl FnMut(&Path, String),
 ) -> Option<Batch> {
+    // Only the star family pays for detection: this is what keeps Analytics
+    // from silently getting slower now that the machinery exists.
+    let opts = AnalyzeOptions {
+        detect_stars: family == MetricFamily::Star,
+    };
     let mut batch = Batch::default();
     for (i, path) in targets.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
         progress(i, path);
-        match analytics::analyze_file(path, &AnalyzeOptions::default()) {
+        match analytics::analyze_file(path, &opts) {
             Ok(FileAnalysis::Analyzed(m)) => batch.metrics.push(m),
             Ok(FileAnalysis::Skipped(SkipReason::NoDateObs)) => batch.no_date += 1,
             Ok(FileAnalysis::Skipped(SkipReason::NotMono)) => batch.not_mono += 1,
@@ -135,6 +184,7 @@ fn analyze_batch(
 fn spawn_analysis(
     weak: Weak<AppWindow>,
     targets: Vec<PathBuf>,
+    family: MetricFamily,
     generation: u64,
     cancel: Arc<AtomicBool>,
 ) {
@@ -149,6 +199,7 @@ fn spawn_analysis(
         let total = targets.len();
         let batch = analyze_batch(
             &targets,
+            family,
             &cancel,
             |i, path| {
                 let progress = i as f32 / total as f32;
@@ -231,26 +282,44 @@ fn replot(app: &AppWindow) {
 
     app.set_analytics_metric_label(series.metric.label().into());
     app.set_analytics_plotted_count(series.points.len() as i32);
+    app.set_analytics_unavailable_note(unavailable_note(&series).into());
     app.set_analytics_points(ModelRc::new(VecModel::from(plot.points)));
     app.set_analytics_x_ticks(ModelRc::new(VecModel::from(plot.x_ticks)));
     app.set_analytics_y_ticks(ModelRc::new(VecModel::from(plot.y_ticks)));
     app.set_analytics_line_commands(plot.line.into());
 }
 
+/// How to word the frames that analyzed fine but have no value for the plotted
+/// metric. Family-specific, hence a controller-built string: in the star dialog
+/// the reason is always that detection found nothing — itself worth reading, a
+/// run of starless frames is a cloud indicator. Empty when there are none.
+fn unavailable_note(series: &Series) -> String {
+    match (series.unavailable, series.metric.family()) {
+        (0, _) => String::new(),
+        (n, MetricFamily::Star) => format!("{n} with no stars detected"),
+        (n, MetricFamily::Pixel) => format!("{n} without a value"),
+    }
+}
+
 /// The series currently on the chart, rebuilt from the cached metrics.
 fn current_series(app: &AppWindow) -> Series {
-    let metric = metric_for_index(app.get_analytics_metric());
+    let metric = metric_for_index(current_family(), app.get_analytics_metric());
     STATE.with(|s| analytics::build_series(&s.borrow().analytics, metric))
 }
 
-/// A default export file name for the plotted metric, e.g. `mean-adu.png`.
+/// A default export file name for the plotted metric, e.g. `analytics-mean-adu.png`
+/// or `star-hfr.png` — the prefix says which dialog it came out of.
 fn export_file_name(metric: Metric, extension: &str) -> String {
     let slug: String = metric
         .label()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    format!("analytics-{}.{extension}", slug.to_ascii_lowercase())
+    let prefix = match metric.family() {
+        MetricFamily::Pixel => "analytics",
+        MetricFamily::Star => "star",
+    };
+    format!("{prefix}-{}.{extension}", slug.to_ascii_lowercase())
 }
 
 /// Prompt for an export path, offering a name derived from the plotted metric.
@@ -337,7 +406,7 @@ fn export_png(app: &AppWindow, rect: (f32, f32, f32, f32)) -> Result<Option<Path
     .context("the chart is not visible")?;
     let rgb = crop_to_rgb8(&snapshot, &crop);
 
-    let metric = metric_for_index(app.get_analytics_metric());
+    let metric = metric_for_index(current_family(), app.get_analytics_metric());
     let Some(path) = prompt_export_path(metric, "PNG image", "png") else {
         return Ok(None);
     };
@@ -380,6 +449,7 @@ mod tests {
         let (mut order, mut failures) = (Vec::new(), Vec::new());
         let batch = analyze_batch(
             &targets,
+            MetricFamily::Pixel,
             &cancel,
             |i, path| order.push((i, path.to_path_buf())),
             |path, msg| failures.push((path.to_path_buf(), msg)),
@@ -390,6 +460,8 @@ mod tests {
         // tile-compressed, decompressed transparently), so both measure.
         assert_eq!(batch.metrics.len(), 2);
         assert_eq!((batch.no_date, batch.not_mono), (0, 0));
+        // The pixel family must not have paid for star detection.
+        assert!(batch.metrics.iter().all(|m| m.stars.is_none()));
         // The unreadable path is reported once and doesn't abort the batch.
         assert_eq!(batch.failed, 1);
         assert_eq!(failures.len(), 1);
@@ -412,6 +484,7 @@ mod tests {
         let mut seen = Vec::new();
         let stopped = analyze_batch(
             &targets,
+            MetricFamily::Pixel,
             &cancel,
             |_, path| {
                 seen.push(path.to_path_buf());
@@ -425,20 +498,72 @@ mod tests {
         // Already cancelled before the first file: nothing is read at all.
         let cancel = AtomicBool::new(true);
         let mut count = 0;
-        let stopped = analyze_batch(&targets, &cancel, |_, _| count += 1, |_, _| {});
+        let stopped = analyze_batch(
+            &targets,
+            MetricFamily::Pixel,
+            &cancel,
+            |_, _| count += 1,
+            |_, _| {},
+        );
         assert!(stopped.is_none());
         assert_eq!(count, 0);
     }
 
     #[test]
+    fn analyze_batch_detects_stars_only_for_the_star_family() {
+        // The star family's whole reason for existing: its batch measures
+        // stars on a real mosaic.
+        let targets = vec![test_data("uncompressed.fit")];
+        let cancel = AtomicBool::new(false);
+        let batch =
+            analyze_batch(&targets, MetricFamily::Star, &cancel, |_, _| {}, |_, _| {}).unwrap();
+
+        let stars = batch.metrics[0].stars.as_ref().expect("stars measured");
+        assert!(stars.count > 0);
+        assert!(Metric::Hfr.value(&batch.metrics[0]).is_some());
+
+        // Same file, pixel family: no detection, and so no star metric has an
+        // answer. This is the test that Analytics did not silently start paying
+        // for star detection.
+        let batch =
+            analyze_batch(&targets, MetricFamily::Pixel, &cancel, |_, _| {}, |_, _| {}).unwrap();
+        assert!(batch.metrics[0].stars.is_none());
+        assert_eq!(Metric::Hfr.value(&batch.metrics[0]), None);
+    }
+
+    #[test]
     fn metric_index_maps_to_the_dropdown_order() {
-        // The ComboBox model is built from Metric::all(), so index == position.
-        for (i, &m) in Metric::all().iter().enumerate() {
-            assert_eq!(metric_for_index(i as i32), m);
+        // Each dialog's ComboBox model is built from its own family's list, so
+        // an index is a position within that family — this is what keeps a
+        // stored index meaning what it meant.
+        for family in [MetricFamily::Pixel, MetricFamily::Star] {
+            for (i, &m) in Metric::of_family(family).iter().enumerate() {
+                assert_eq!(metric_for_index(family, i as i32), m);
+            }
+            // Out-of-range (and Slint's -1 "no selection") fall back to the
+            // family's default, never to the other family's metric.
+            assert_eq!(metric_for_index(family, -1), default_metric(family));
+            assert_eq!(metric_for_index(family, 99), default_metric(family));
+            assert_eq!(default_metric(family).family(), family);
         }
-        // Out-of-range (and Slint's -1 "no selection") fall back to the default.
-        assert_eq!(metric_for_index(-1), DEFAULT_METRIC);
-        assert_eq!(metric_for_index(99), DEFAULT_METRIC);
+        // The star list is short: an index valid in the pixel dialog must not
+        // silently address something in the star one.
+        assert_eq!(metric_for_index(MetricFamily::Star, 9), Metric::Hfr);
+    }
+
+    #[test]
+    fn unavailable_note_words_itself_per_family() {
+        let note = |metric, unavailable| {
+            unavailable_note(&Series {
+                metric,
+                points: Vec::new(),
+                unavailable,
+            })
+        };
+        // Nothing missing: no note at all, not "0 with no stars".
+        assert_eq!(note(Metric::Hfr, 0), "");
+        assert_eq!(note(Metric::Hfr, 2), "2 with no stars detected");
+        assert_eq!(note(Metric::Mean, 2), "2 without a value");
     }
 
     /// A `w` x `h` snapshot whose every pixel encodes its own coordinates, so a
@@ -544,6 +669,19 @@ mod tests {
         assert_eq!(
             export_file_name(Metric::Sigma, "png"),
             "analytics-noise-sigma.png"
+        );
+
+        // A star metric exports under its own prefix, so the two dialogs' files
+        // don't collide in a download folder. All four star labels are ASCII,
+        // so the slugifier needs no help this time.
+        assert_eq!(export_file_name(Metric::Hfr, "png"), "star-hfr.png");
+        assert_eq!(
+            export_file_name(Metric::Eccentricity, "csv"),
+            "star-eccentricity.csv"
+        );
+        assert_eq!(
+            export_file_name(Metric::StarCount, "png"),
+            "star-star-count.png"
         );
     }
 }

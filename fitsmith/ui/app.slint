@@ -88,19 +88,25 @@ export component AppWindow inherits Window {
     in property <float> export-progress: 0;
     in property <string> export-progress-text: "";
 
-    // Tools ▸ Analytics… dialog: plot one pixel metric across the checked
-    // files ordered by DATE-OBS. Rust computes all metrics per file once when
-    // the dialog opens, then re-fills the chart data on each metric switch
-    // (see AnalyticsChart / ChartPoint for the normalized coordinate space).
+    // The chart dialog behind Tools ▸ Analytics… and Tools ▸ Star metrics…:
+    // plot one metric across the checked files ordered by DATE-OBS. Rust
+    // computes all of that family's metrics per file once when the dialog
+    // opens, then re-fills the chart data on each metric switch (see
+    // AnalyticsChart / ChartPoint for the normalized coordinate space).
+    //
+    // One property set serves both: which family is on screen is the
+    // controller's state, and the two dialogs are never open at once. They
+    // therefore share a remembered card size too — they are the same dialog.
     in-out property <bool> show-analytics: false;
+    in property <string> analytics-title;
     // The dialog's size. Held here rather than in the dialog (which is torn
     // down on close) so a resize survives reopening, like `file-list-width`.
     // The dialog clamps these to its minimum and to the window.
     in-out property <length> analytics-card-width: 760px;
     in-out property <length> analytics-card-height: 540px;
     // Index into `analytics-metric-model`, which the controller fills from
-    // `fitz_core::analytics::Metric::all()` — so the dropdown order and the
-    // plotted metric can't drift apart.
+    // `fitz_core::analytics::Metric::of_family()` — so the dropdown order and
+    // the plotted metric can't drift apart.
     in property <[string]> analytics-metric-model;
     in-out property <int> analytics-metric;
     in-out property <float> analytics-zoom: 1.0;
@@ -108,6 +114,8 @@ export component AppWindow inherits Window {
     in property <int> analytics-plotted-count;
     in property <int> analytics-skipped-no-date;
     in property <int> analytics-skipped-not-mono;
+    // Frames with no value for the plotted metric, worded by the controller.
+    in property <string> analytics-unavailable-note;
     in property <[ChartPoint]> analytics-points;
     in property <string> analytics-line-commands;
     in property <[ChartTick]> analytics-x-ticks;
@@ -153,9 +161,13 @@ export component AppWindow inherits Window {
     callback open-export-dialog();
     callback browse-export-dir();
     callback run-export();
-    // Tools ▸ Analytics: Rust gathers the target files, computes their
-    // metrics off-thread, fills the chart data and shows the dialog.
+    // Tools ▸ Analytics / Tools ▸ Star metrics: Rust gathers the target files,
+    // computes that family's metrics off-thread, fills the chart data and shows
+    // the dialog. Two entries rather than a mode switch inside one: only the
+    // star batch pays for star detection, and a user picks the question from
+    // the menu, not from a control in the dialog.
     callback open-analytics-dialog();
+    callback open-star-metrics-dialog();
     // Stop the running batch — no dialog opens and nothing is cached.
     callback cancel-analytics();
     // Metric dropdown changed — re-plot from the cached per-file metrics.
@@ -312,6 +324,13 @@ export component AppWindow inherits Window {
                 enabled: root.files.length > 0;
                 activated => {
                     root.open-analytics-dialog();
+                }
+            }
+            MenuItem {
+                title: "Star metrics…";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.open-star-metrics-dialog();
                 }
             }
         }
@@ -588,6 +607,7 @@ export component AppWindow inherits Window {
     if root.show-analytics: AnalyticsDialog {
         width: 100%;
         height: 100%;
+        title-text: root.analytics-title;
         card-width <=> root.analytics-card-width;
         card-height <=> root.analytics-card-height;
         metric-model: root.analytics-metric-model;
@@ -599,6 +619,7 @@ export component AppWindow inherits Window {
         plotted-count: root.analytics-plotted-count;
         skipped-no-date: root.analytics-skipped-no-date;
         skipped-not-mono: root.analytics-skipped-not-mono;
+        unavailable-note: root.analytics-unavailable-note;
         metric-index <=> root.analytics-metric;
         zoom <=> root.analytics-zoom;
         metric-changed(index) => {
