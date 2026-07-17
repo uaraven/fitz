@@ -405,8 +405,9 @@ mod tests {
         )
         .unwrap();
 
-        // Both bundled frames are raw mosaics carrying a DATE-OBS (the second
-        // tile-compressed, decompressed transparently), so both measure.
+        // Both bundled frames are raw mosaics carrying an acquisition time
+        // (DATE-LOC, else DATE-OBS; the second tile-compressed, decompressed
+        // transparently), so both measure.
         assert_eq!(batch.metrics.len(), 2);
         assert_eq!((batch.no_date, batch.not_mono), (0, 0));
         // The pixel family must not have paid for star detection.

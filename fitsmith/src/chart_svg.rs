@@ -24,8 +24,7 @@ const HEIGHT: f32 = 360.0;
 // it came from. They are duplicated rather than shared because Slint owns the
 // live values and Rust can't read them off a component that isn't rendering.
 const Y_AXIS_W: f32 = 64.0;
-/// Tall enough for both label rows: an X tick draws its local date above its
-/// time.
+/// Tall enough for both label rows: an X tick draws its date above its time.
 const X_AXIS_H: f32 = 34.0;
 const TITLE_H: f32 = 18.0;
 const AREA_H: f32 = HEIGHT - X_AXIS_H - TITLE_H;
@@ -214,14 +213,13 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart::plot_in;
-    use chrono::FixedOffset;
+    use crate::chart::plot;
     use libfitz::analytics::{Metric, SamplePoint, Series};
     use std::path::PathBuf;
 
-    /// A three-frame session an hour apart, with a rising metric. Rendered
-    /// against a fixed +02:00 zone rather than the machine's, so the labels
-    /// these tests pin are the same wherever they run.
+    /// A three-frame session an hour apart, with a rising metric. Times are
+    /// labeled in UTC, so the labels these tests pin are the same wherever they
+    /// run.
     fn sample_plot() -> Plot {
         let lo = libfitz::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let series = Series {
@@ -237,7 +235,7 @@ mod tests {
                 })
                 .collect(),
         };
-        plot_in(&series, &FixedOffset::east_opt(2 * 3600).unwrap())
+        plot(&series)
     }
 
     #[test]
@@ -261,14 +259,14 @@ mod tests {
         assert!(doc.contains(&format!("cx=\"{:.2}\"", Y_AXIS_W + PAD)));
         assert!(doc.contains(&format!("cx=\"{:.2}\"", WIDTH - PAD)));
 
-        // Each mark carries its reading — the full local stamp — and the metric
+        // Each mark carries its reading — the full UTC stamp — and the metric
         // titles the Y axis.
-        assert!(doc.contains("<title>2026-06-23 01:00:00 — 150</title>"));
+        assert!(doc.contains("<title>2026-06-22 23:00:00 — 150</title>"));
         assert!(doc.contains(">Mean (ADU)</text>"));
 
-        // X ticks label two rows: the local date, once, above every time.
-        assert_eq!(doc.matches(">2026-06-23</text>").count(), 1);
-        assert!(doc.contains(">01:00</text>"));
+        // X ticks label two rows: the UTC date, once, above every time.
+        assert_eq!(doc.matches(">2026-06-22</text>").count(), 1);
+        assert!(doc.contains(">23:00</text>"));
     }
 
     #[test]

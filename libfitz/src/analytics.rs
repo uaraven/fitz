@@ -1,5 +1,6 @@
 //! Time-series analytics over a set of FITS frames: compute per-frame metrics,
-//! key each frame by its `DATE-OBS` acquisition time, and assemble a
+//! key each frame by its acquisition time (`DATE-LOC`, else `DATE-OBS`), and
+//! assemble a
 //! time-ordered series for one chosen metric. Pure and `Send` — no GUI types, no
 //! terminal I/O — so both the FitSmith dialogs and a future CLI subcommand can
 //! drive it.
@@ -155,8 +156,8 @@ pub struct AnalyzeOptions {
 /// carries on and the dialog shows per-reason skip counts).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SkipReason {
-    /// No `DATE-OBS` header, or one that doesn't parse — the frame has no
-    /// place on the time axis.
+    /// No usable acquisition time — neither `DATE-LOC` nor `DATE-OBS` is
+    /// present and parseable, so the frame has no place on the time axis.
     NoDateObs,
     /// An already-debayered RGB cube — ADU statistics are only meaningful on
     /// raw, non-debayered frames (mirrors `header_info_with`, which
@@ -181,9 +182,11 @@ pub enum FileAnalysis {
 /// call with no file re-read.
 pub struct FileMetrics {
     pub path: PathBuf,
-    /// `DATE-OBS` as seconds since the Unix epoch (see [`parse_date_obs`]).
+    /// Acquisition time as seconds since the Unix epoch (see [`parse_date_obs`]),
+    /// from `DATE-LOC` if present, else `DATE-OBS`.
     pub time: f64,
-    /// The raw `DATE-OBS` string, for tooltips and CSV output.
+    /// The raw acquisition-time string (`DATE-LOC` or `DATE-OBS`), for tooltips
+    /// and CSV output.
     pub time_str: String,
     pub stats: PixelStats,
     /// `None` when the batch did not ask for star detection — distinct from
@@ -213,7 +216,8 @@ pub struct Series {
 }
 
 /// Analyze one FITS file: read its image (transparently decompressing `.fz`
-/// inputs), key it by `DATE-OBS`, compute its pixel statistics, and — when
+/// inputs), key it by `DATE-LOC` (falling back to `DATE-OBS`), compute its pixel
+/// statistics, and — when
 /// `opts` asks — detect its stars. Returns [`FileAnalysis::Skipped`] for frames
 /// that can't participate in the series; only actual read/decode failures are
 /// `Err`.
@@ -223,8 +227,15 @@ pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> 
     let (header, img) = find_image_hdu(&fits, path)?;
     let img = img.as_ref();
 
-    let time_str = header.get_string("DATE-OBS").map(str::trim).unwrap_or("");
-    let Some(time) = parse_date_obs(time_str) else {
+    // Prefer DATE-LOC (the observer's local wall clock) so the chart reads in
+    // the time of night the session was actually shot; fall back to DATE-OBS
+    // (UTC) when DATE-LOC is absent or unparseable. Both share the same
+    // YYYY-MM-DDTHH:MM:SS[.sss] format, and the chart renders the epoch as-is
+    // (no zone conversion), so a local string plots as local time.
+    let Some((time_str, time)) = ["DATE-LOC", "DATE-OBS"].into_iter().find_map(|key| {
+        let s = header.get_string(key).map(str::trim).unwrap_or("");
+        parse_date_obs(s).map(|t| (s.to_string(), t))
+    }) else {
         return Ok(FileAnalysis::Skipped(SkipReason::NoDateObs));
     };
     if is_debayered_rgb_cube(header, img) {
@@ -340,6 +351,52 @@ mod tests {
     }
 
     #[test]
+    fn analyze_file_prefers_date_loc_over_date_obs() {
+        // A frame carrying both keys: DATE-LOC (local wall clock) wins, so the
+        // series reads in the observer's time rather than the UTC DATE-OBS.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("both.fits");
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0; 4]));
+        let mut fits = FitsFile::with_primary_image(img);
+        let header = &mut fits.primary_mut().header;
+        header.set(
+            "DATE-OBS",
+            HeaderValue::String("2026-06-22T00:00:00".to_string()),
+            None,
+        );
+        header.set(
+            "DATE-LOC",
+            HeaderValue::String("2026-06-21T20:00:00".to_string()),
+            None,
+        );
+        fits.to_file(&input).unwrap();
+
+        let m = metrics(&input);
+        assert_eq!(m.time_str, "2026-06-21T20:00:00");
+        assert_eq!(m.time, parse_date_obs("2026-06-21T20:00:00").unwrap());
+    }
+
+    #[test]
+    fn analyze_file_falls_back_to_date_obs_when_date_loc_blank() {
+        // A present-but-blank DATE-LOC must not win; fall back to DATE-OBS.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("blank_loc.fits");
+        let img = ImageData::new(vec![2, 2], PixelData::I16(vec![0; 4]));
+        let mut fits = FitsFile::with_primary_image(img);
+        let header = &mut fits.primary_mut().header;
+        header.set("DATE-LOC", HeaderValue::String("   ".to_string()), None);
+        header.set(
+            "DATE-OBS",
+            HeaderValue::String("2026-06-22T00:00:00".to_string()),
+            None,
+        );
+        fits.to_file(&input).unwrap();
+
+        let m = metrics(&input);
+        assert_eq!(m.time_str, "2026-06-22T00:00:00");
+    }
+
+    #[test]
     fn analyze_file_skips_rgb_cube_as_not_mono() {
         // A debayered RGB cube with a valid DATE-OBS: skipped for its shape,
         // not for its timestamp.
@@ -358,15 +415,21 @@ mod tests {
 
     #[test]
     fn analyze_file_reads_real_data_including_compressed() {
-        // uncompressed.fit carries DATE-OBS 2026-05-31T04:57:09.004664 and the
-        // .fz frame (a different exposure) 2026-05-28T02:42:57.2632740; the
-        // compressed variant must decompress transparently and still analyze.
+        // Both frames carry DATE-LOC, which wins over DATE-OBS: uncompressed.fit
+        // has DATE-LOC 2026-05-31T00:57:09.0046645 (DATE-OBS is the UTC
+        // 04:57:09) and the .fz frame (a different exposure) has DATE-LOC
+        // 2026-05-27T22:42:57.2632740. The compressed variant must decompress
+        // transparently — DATE-LOC lives on the tile-compressed HDU's header —
+        // and still analyze.
         let raw = metrics(&test_data("uncompressed.fit"));
         let fz = metrics(&test_data("compressed.fits.fz"));
-        assert_eq!(raw.time, 1780203429.004664);
+        assert_eq!(
+            raw.time,
+            parse_date_obs("2026-05-31T00:57:09.0046645").unwrap()
+        );
         assert_eq!(
             fz.time,
-            parse_date_obs("2026-05-28T02:42:57.2632740").unwrap()
+            parse_date_obs("2026-05-27T22:42:57.2632740").unwrap()
         );
         assert!(fz.stats.max >= fz.stats.median && fz.stats.median >= fz.stats.min);
     }
