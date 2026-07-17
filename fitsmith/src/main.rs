@@ -120,6 +120,12 @@ fn main() -> Result<()> {
         controller::analytics_export_csv(&app)
     });
     forward!(on_close_analytics, |app| controller::close_analytics(&app));
+    forward!(on_open_aberration_dialog, |app| {
+        controller::open_aberration_dialog(&app)
+    });
+    forward!(on_close_aberration, |app| controller::close_aberration(
+        &app
+    ));
 
     app.on_request_exit(|| {
         let _ = slint::quit_event_loop();

@@ -20,11 +20,13 @@
 mod analytics;
 mod convert;
 mod export;
+mod inspect;
 mod viewer;
 
 pub use analytics::*;
 pub use convert::*;
 pub use export::*;
+pub use inspect::*;
 pub use viewer::*;
 
 use std::cell::RefCell;
