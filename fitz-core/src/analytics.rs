@@ -166,6 +166,11 @@ pub enum SkipReason {
 
 /// The outcome of analyzing one file: either its metrics or the reason it was
 /// skipped. Read failures are genuine `Err`s, not skips.
+// The variants are lopsided (a `FileMetrics` against a one-byte reason), but
+// boxing to even them out would buy an allocation and an indirection on every
+// access to save moving 240 bytes once per file — a file whose statistics
+// already own a 2 KB histogram on the heap.
+#[allow(clippy::large_enum_variant)]
 pub enum FileAnalysis {
     Analyzed(FileMetrics),
     Skipped(SkipReason),

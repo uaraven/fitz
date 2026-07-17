@@ -26,7 +26,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         input,
         InfoRequest {
             pixel_stats: opts.pixel,
-            stars: false,
+            stars: opts.stars,
         },
     )?;
 
@@ -123,8 +123,77 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
         }
     }
 
+    // Star metrics are their own request (`--stars`), independent of `--pixel`:
+    // detection builds its threshold from the detection plane's own background,
+    // never from the frame's PixelStats, so neither flag implies the other.
+    if opts.stars {
+        push_stars(&mut out, &info);
+    }
+
     print!("{out}");
     Ok(())
+}
+
+/// Append the `--stars` report: the four metrics, and — when detection ran on a
+/// plane that isn't the frame — the note saying so.
+fn push_stars(out: &mut String, info: &fitz_core::info::HeaderInfo) {
+    let Some(report) = &info.stars else {
+        // An unsupported shape, not a broken file: making this a per-file error
+        // would print `fitz: <path>: <err>` and fail the whole batch's exit code
+        // over a debayered cube. Mirrors the `--pixel` notice above.
+        let _ = writeln!(
+            out,
+            "  Stars:       star metrics are not supported for debayered images"
+        );
+        return;
+    };
+
+    let stats = &report.stats;
+    match (stats.hfr, stats.fwhm, stats.eccentricity) {
+        (Some(hfr), Some(fwhm), Some(ecc)) => {
+            let _ = writeln!(
+                out,
+                "  Stars:       count={} hfr={} fwhm={} eccentricity={}",
+                stats.count,
+                trim_float(round_to(hfr, 2)),
+                trim_float(round_to(fwhm, 2)),
+                trim_float(round_to(ecc, 2)),
+            );
+        }
+        // An outcome, not an error — and a cloud indicator in its own right, so
+        // it must be reported rather than silently printing a bare count.
+        _ => {
+            let _ = writeln!(out, "  Stars:       none detected");
+        }
+    }
+
+    if let Some(note) = star_plane_note(info) {
+        let _ = writeln!(out, "  {:<1$}{note}", "", FIELD_LABEL_WIDTH);
+    }
+}
+
+/// The note naming the plane the star metrics were measured on, or `None` when
+/// that plane *is* the frame and there is nothing to explain.
+///
+/// This is where the half-resolution caveat meets the person who would otherwise
+/// file "fitz reports half of NINA's HFR" as a bug. A readme note is easy to
+/// miss; the line under the number is not. The rule is a comparison against the
+/// reported plane size, never a re-derivation of `detection_plane`'s halving.
+fn star_plane_note(info: &fitz_core::info::HeaderInfo) -> Option<String> {
+    let report = info.stars.as_ref()?;
+    (report.plane_width != info.width || report.plane_height != info.height).then(|| {
+        format!(
+            "measured on the green super-pixel plane, {} x {}",
+            report.plane_width, report.plane_height
+        )
+    })
+}
+
+/// Round to `places` decimal places. Star shapes are measurements good to a
+/// couple of digits; `trim_float`'s six would be reporting noise.
+fn round_to(v: f64, places: i32) -> f64 {
+    let scale = 10f64.powi(places);
+    (v * scale).round() / scale
 }
 
 /// Append the header's raw FITS cards to `out`, one card per line with trailing
@@ -250,6 +319,49 @@ fn render_histogram(hist: &[u64], width: usize, rows: usize, log: bool) -> Strin
 mod tests {
     use super::*;
     use crate::test_support::test_data;
+    use fitz_core::info::header_info_with;
+
+    /// `info --stars` on a bundled frame.
+    fn star_info(filename: &str) -> fitz_core::info::HeaderInfo {
+        header_info_with(
+            &test_data(filename),
+            InfoRequest {
+                stars: true,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn star_plane_note_appears_only_when_the_plane_is_not_the_frame() {
+        // A CFA mosaic detects on its half-resolution green super-pixel plane,
+        // so its HFR needs the caveat that reads about half of NINA's number.
+        let mosaic = star_info("uncompressed.fit");
+        assert_eq!(mosaic.bayerpat.as_deref(), Some("GRBG"));
+        assert_eq!(
+            star_plane_note(&mosaic).as_deref(),
+            Some("measured on the green super-pixel plane, 1504 x 1504")
+        );
+
+        // A mono frame detects on itself: nothing to explain, so no note.
+        let mut mono = star_info("uncompressed.fit");
+        let report = mono.stars.as_mut().unwrap();
+        (report.plane_width, report.plane_height) = (mono.width, mono.height);
+        assert_eq!(star_plane_note(&mono), None);
+
+        // Nothing measured at all: nothing to caption.
+        mono.stars = None;
+        assert_eq!(star_plane_note(&mono), None);
+    }
+
+    #[test]
+    fn round_to_keeps_two_places() {
+        // Star shapes are good to a couple of digits; trim_float's six would be
+        // reporting noise.
+        assert_eq!(round_to(2.41379, 2), 2.41);
+        assert_eq!(trim_float(round_to(3.0, 2)), "3");
+    }
 
     #[test]
     fn render_histogram_shape_and_scaling() {
