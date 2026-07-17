@@ -19,9 +19,9 @@ and the CLI behave identically.
    statistics for the selected frame. The stats panel puts the pixel summary (min/max/mean/median
    ADU, the noise sigma and MAD, and the zero-pixel count) and the frame's star metrics (star count, plus median HFR, FWHM
    and eccentricity when any stars are detected) in two label columns beside the value histogram.
-   The star column is hidden for a frame with no detectable stars, and the whole panel falls back
-   to a placeholder for an already-debayered RGB cube (where single-channel statistics aren't
-   meaningful).
+   The star column is hidden for a frame with no detectable stars. For an already-debayered RGB
+   cube the statistics and star metrics are measured on the green channel (the plane with the most
+   signal), and the ADU labels are suffixed with `(G)` to say so.
  - **Compress / Decompress** — the Tools menu tile-compresses files to `.fz` (pick the
    algorithm) or decompresses them back. The operation runs over the checked rows, or the
    whole working set when none are checked. Choose whether to keep the originals or replace
@@ -53,9 +53,13 @@ and the CLI behave identically.
        arrived — a satellite trail, a passing cloud lit by the moon, a tracking error.
      - **Time axis** — frames are plotted at their real acquisition time (`DATE-OBS`), so a
        break in the session (clouds, a meridian flip) shows up as a gap in the line rather
-       than being closed up. Frames with no readable `DATE-OBS`, and already-debayered RGB
-       frames (whose ADU statistics aren't meaningful), are skipped and counted under the
-       chart. `DATE-OBS` is UTC by FITS convention, but the axis is labeled in **your** local
+       than being closed up. Frames with no readable `DATE-OBS` are skipped and counted under
+       the chart; an already-debayered RGB frame is measured on its green channel (the plane
+       with the most signal), so it plots alongside mono and mosaic frames rather than being
+       skipped. A floating-point RGB cube's green channel is mapped to the 0–65535 range by a
+       fixed full-scale conversion (physical `1.0` → 65535), so it stays comparable with the
+       16-bit frames around it and reads the same across the session rather than being rescaled
+       per frame. `DATE-OBS` is UTC by FITS convention, but the axis is labeled in **your** local
        timezone — the clock you observed by. Each tick reads as a date over a time, with the
        date shown on the first tick and again wherever the session crosses local midnight.
      - **Reading the chart** — hover a point for its local date, time and value; the zoom
@@ -90,7 +94,9 @@ and the CLI behave identically.
        pixel averages one 2x2 cell's two green sites. This is not a bug to work around: every
        frame in a session comes off the same sensor, so the trend — the only thing a time
        series shows — is unaffected. Compare fitz's numbers against fitz's, not against NINA's.
-     - Already-debayered RGB frames are skipped, as they are in Analytics.
+     - **An already-debayered RGB frame measures on its green channel at full resolution** —
+       so its HFR/FWHM read about *twice* a raw mosaic's half-resolution numbers. Same caveat,
+       opposite sign; within a homogeneous session the trend is still what matters.
 
 
 For example here is the mean ADU chart clearly showing when the wildfire smoke arrived and affected seeing and total brightness

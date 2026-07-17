@@ -62,19 +62,29 @@ fn info_items(fields: &[SummaryField]) -> ModelRc<StatItem> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// The labeled statistics for the panel, or empty for an already-debayered RGB
-/// cube (where single-channel pixel stats aren't meaningful).
+/// The labeled statistics for the panel, or empty when there are no stats. For
+/// an already-debayered RGB cube the numbers are its green channel's, so each
+/// ADU label carries a `(G)` suffix ([`StatSummary::channel`]) — otherwise a
+/// frame's numbers would read as if measured across all channels.
 fn stat_items(stats: &Option<StatSummary>) -> ModelRc<StatItem> {
     let items = match stats {
-        Some(s) => vec![
-            stat("Min ADU", format_stat(s.min)),
-            stat("Max ADU", format_stat(s.max)),
-            stat("Mean ADU", format_stat(s.mean)),
-            stat("Median ADU", format_stat(s.median)),
-            stat("Sigma ADU", format_stat(s.sigma)),
-            stat("MAD ADU", format_stat(s.mad)),
-            stat("Zeros", s.zeros.to_string()),
-        ],
+        Some(s) => {
+            // The channel suffix disambiguates an RGB cube's per-channel numbers;
+            // for a single-channel frame it's absent and the label is unchanged.
+            let adu = |name: &str| match s.channel {
+                Some(ch) => format!("{name} ADU ({ch})"),
+                None => format!("{name} ADU"),
+            };
+            vec![
+                stat(&adu("Min"), format_stat(s.min)),
+                stat(&adu("Max"), format_stat(s.max)),
+                stat(&adu("Mean"), format_stat(s.mean)),
+                stat(&adu("Median"), format_stat(s.median)),
+                stat(&adu("Sigma"), format_stat(s.sigma)),
+                stat(&adu("MAD"), format_stat(s.mad)),
+                stat("Zeros", s.zeros.to_string()),
+            ]
+        }
         None => Vec::new(),
     };
     ModelRc::new(VecModel::from(items))
@@ -161,6 +171,7 @@ mod tests {
             zeros: 7,
             histogram: Vec::new(),
             stars: None,
+            channel: None,
         }
     }
 
@@ -179,6 +190,32 @@ mod tests {
                 "Sigma ADU: 12.750",
                 "MAD ADU: 8",
                 "Zeros: 7",
+            ]
+        );
+    }
+
+    #[test]
+    fn rgb_cube_stats_label_the_green_channel() {
+        // An RGB cube's numbers are its green channel's, so each ADU label gains
+        // a `(G)` suffix; the channel-free Zeros row is untouched.
+        let stats = StatSummary {
+            channel: Some("G"),
+            ..summary()
+        };
+        let labels: Vec<String> = stat_items(&Some(stats))
+            .iter()
+            .map(|s| s.label.to_string())
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Min ADU (G)",
+                "Max ADU (G)",
+                "Mean ADU (G)",
+                "Median ADU (G)",
+                "Sigma ADU (G)",
+                "MAD ADU (G)",
+                "Zeros",
             ]
         );
     }

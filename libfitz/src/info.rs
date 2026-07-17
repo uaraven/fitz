@@ -11,8 +11,8 @@ use fitskit::{FitsFile, Header, ImageData, PixelData};
 use rayon::prelude::*;
 
 use crate::fits_image::{
-    bscale_bzero, detection_plane, find_image_hdu, get_bayerpat, is_debayered_rgb_cube,
-    scaled_pixels,
+    bscale_bzero, detection_plane, find_image_hdu, get_bayerpat, green_plane,
+    is_debayered_rgb_cube, scaled_pixels,
 };
 use crate::stars::{StarDetectOptions, StarStats, detect_stars, plane_background};
 
@@ -92,11 +92,11 @@ pub struct HeaderInfo {
     pub focal_ratio: Option<f64>,
     pub date_obs: Option<String>,
     pub header: Header,
-    /// Only computed when the caller asks via [`InfoRequest::pixel_stats`], and
-    /// never for an already-debayered RGB cube.
+    /// Only computed when the caller asks via [`InfoRequest::pixel_stats`]. For
+    /// an already-debayered RGB cube these describe its green channel.
     pub pixel_stats: Option<PixelStats>,
-    /// Only computed when the caller asks via [`InfoRequest::stars`], and never
-    /// for an already-debayered RGB cube.
+    /// Only computed when the caller asks via [`InfoRequest::stars`]. For an
+    /// already-debayered RGB cube detection runs on its green channel.
     pub stars: Option<StarReport>,
 }
 
@@ -150,9 +150,9 @@ pub fn header_info_with(input: &Path, req: InfoRequest) -> Result<HeaderInfo> {
 /// callers that already hold a decoded `(header, img)` (e.g. the GUI's loader)
 /// reuse the same summary without a second read.
 ///
-/// Everything `req` asks for is skipped for an already-debayered RGB cube, where
-/// it would be meaningless: mixing the R/G/B planes gives a nonsense statistic,
-/// and star detection has no green plane to run on until Part 2 gives it one.
+/// For an already-debayered RGB cube, both statistics and star metrics are
+/// measured on the frame's green channel ([`green_plane`]) — green carries the
+/// most signal on a Bayer-derived frame — rather than being skipped.
 pub fn header_info_from(header: &Header, img: &ImageData, req: InfoRequest) -> HeaderInfo {
     let is_rgb_cube = is_debayered_rgb_cube(header, img);
     let channels = if is_rgb_cube { 3 } else { 1 };
@@ -162,10 +162,8 @@ pub fn header_info_from(header: &Header, img: &ImageData, req: InfoRequest) -> H
     let bitpix = img.bitpix().to_i64();
     let is_unsigned16 = bitpix == 16 && header.get_float("BZERO").unwrap_or(0.0) == 32768.0;
 
-    let pixel_stats = (req.pixel_stats && !is_rgb_cube).then(|| pixel_stats(header, img));
-    let stars = (req.stars && !is_rgb_cube)
-        .then(|| star_report(header, img))
-        .flatten();
+    let pixel_stats = req.pixel_stats.then(|| pixel_stats(header, img));
+    let stars = req.stars.then(|| star_report(header, img)).flatten();
 
     HeaderInfo {
         width,
@@ -489,6 +487,13 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
 /// counts on raw samples translate exactly to physical values. Wider or float
 /// samples fall back to the general fold+sort path.
 pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
+    // An already-debayered RGB cube has three interleaved planes; the fast
+    // value-count path below would blend them into one meaningless statistic.
+    // Reduce to the green channel (the plane star detection also measures on)
+    // and take the general `f64` path over just those samples.
+    if is_debayered_rgb_cube(header, img) {
+        return stats_from_values(&mut green_plane(header, img).values);
+    }
     let (bscale, bzero) = bscale_bzero(header);
     if bscale > 0.0
         && let Some((counts, offset)) = value_counts(img)
@@ -898,7 +903,8 @@ mod tests {
     use super::*;
     use crate::stars::tests::REAL_MOSAIC_STAR_COUNT;
     use crate::test_support::{
-        test_data, write_mosaic_fits, write_rgb_cube_fits, write_star_field_fits,
+        test_data, write_mosaic_fits, write_rgb_cube_f32_fits, write_rgb_cube_fits,
+        write_star_field_fits,
     };
     use fitskit::HeaderValue;
     use tempfile::TempDir;
@@ -1025,8 +1031,11 @@ mod tests {
     }
 
     #[test]
-    fn header_info_with_pixels_on_rgb_cube_has_no_stats() {
-        // Pixel stats aren't meaningful for an already-debayered RGB cube.
+    fn header_info_with_pixels_on_rgb_cube_measures_the_green_channel() {
+        // An already-debayered RGB cube reports pixel stats over its green
+        // channel only. The fixture's planes are sequential: for a 4x3 frame
+        // (n=12) the green plane holds values 12..=23, so min=12, max=23 and the
+        // count is one plane's worth (12), not all three (36).
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&input, 4, 3);
@@ -1038,7 +1047,42 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(info.pixel_stats.is_none());
+        let stats = info.pixel_stats.expect("green-channel stats");
+        assert_eq!((stats.min, stats.max), (12.0, 23.0));
+        assert_eq!(stats.count, 12);
+    }
+
+    #[test]
+    fn header_info_with_pixels_on_float_rgb_cube_uses_the_unsigned16_range() {
+        // A float cube's green channel is quantized by the fixed full-scale map
+        // (1.0 -> 65535), so its ADU numbers are comparable with a 16-bit CFA
+        // frame's, not the sub-1.0 floats the fixture stores. The fixture's green
+        // values run 12/36..23/36 (~0.33..0.64), so they map into the
+        // ~21845..41870 range — large ADU values, but well short of 65535, which
+        // is what tells the fixed map apart from a per-frame max-normalization.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("rgb_f32.fits");
+        write_rgb_cube_f32_fits(&input, 4, 3);
+        let info = header_info_with(
+            &input,
+            InfoRequest {
+                pixel_stats: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stats = info.pixel_stats.expect("green-channel stats");
+        assert!(
+            stats.min > 21000.0 && stats.min < 22000.0,
+            "min {}",
+            stats.min
+        );
+        assert!(
+            stats.max > 41000.0 && stats.max < 42000.0,
+            "max {}",
+            stats.max
+        );
+        assert_eq!(stats.count, 12);
     }
 
     #[test]
@@ -1087,9 +1131,10 @@ mod tests {
     }
 
     #[test]
-    fn header_info_with_stars_on_an_rgb_cube_has_no_stars() {
-        // Star detection has no green plane to run on until Part 2 gives it
-        // one — an unsupported shape, reported as such rather than an error.
+    fn header_info_with_stars_on_an_rgb_cube_detects_on_the_full_res_green_plane() {
+        // Star detection on an already-debayered cube runs on its green channel
+        // at the frame's full resolution — the plane *is* the frame (no
+        // super-pixel halving), so no half-resolution caveat applies.
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&input, 4, 3);
@@ -1101,8 +1146,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(info.stars.is_none());
-        assert!(info.pixel_stats.is_none());
+        let report = info.stars.expect("stars measured");
+        assert_eq!((report.plane_width, report.plane_height), (4, 3));
+        assert!(info.pixel_stats.is_some());
     }
 
     #[test]

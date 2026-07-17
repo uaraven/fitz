@@ -117,7 +117,6 @@ export component AppWindow inherits Window {
     in property <string> analytics-metric-label;
     in property <int> analytics-plotted-count;
     in property <int> analytics-skipped-no-date;
-    in property <int> analytics-skipped-not-mono;
     // Frames with no value for the plotted metric, worded by the controller.
     in property <string> analytics-unavailable-note;
     in property <[ChartPoint]> analytics-points;
@@ -627,7 +626,6 @@ export component AppWindow inherits Window {
         metric-label: root.analytics-metric-label;
         plotted-count: root.analytics-plotted-count;
         skipped-no-date: root.analytics-skipped-no-date;
-        skipped-not-mono: root.analytics-skipped-not-mono;
         unavailable-note: root.analytics-unavailable-note;
         metric-index <=> root.analytics-metric;
         zoom <=> root.analytics-zoom;
