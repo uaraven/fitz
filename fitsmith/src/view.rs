@@ -71,6 +71,8 @@ fn stat_items(stats: &Option<StatSummary>) -> ModelRc<StatItem> {
             stat("Max ADU", format_stat(s.max)),
             stat("Mean ADU", format_stat(s.mean)),
             stat("Median ADU", format_stat(s.median)),
+            stat("Sigma ADU", format_stat(s.sigma)),
+            stat("MAD ADU", format_stat(s.mad)),
             stat("Zeros", s.zeros.to_string()),
         ],
         None => Vec::new(),
@@ -154,6 +156,8 @@ mod tests {
             max: 65535.0,
             mean: 1234.5,
             median: 1000.0,
+            sigma: 12.75,
+            mad: 8.0,
             zeros: 7,
             histogram: Vec::new(),
             stars: None,
@@ -172,6 +176,8 @@ mod tests {
                 "Max ADU: 65535",
                 "Mean ADU: 1234.500",
                 "Median ADU: 1000",
+                "Sigma ADU: 12.750",
+                "MAD ADU: 8",
                 "Zeros: 7",
             ]
         );

@@ -29,6 +29,12 @@ pub struct StatSummary {
     pub max: f64,
     pub mean: f64,
     pub median: f64,
+    /// Population standard deviation of the pixel values — noise inflated by
+    /// stars and hot pixels. Compare against `mad`.
+    pub sigma: f64,
+    /// Median absolute deviation (scaled to estimate σ), the robust noise
+    /// measure that ignores stars.
+    pub mad: f64,
     pub zeros: usize,
     /// [`HISTOGRAM_BUCKETS`] bar heights in `[0, 1]`.
     pub histogram: Vec<f32>,
@@ -87,6 +93,8 @@ impl LoadedDoc {
                 max: s.max,
                 mean: s.mean,
                 median: s.median,
+                sigma: s.sigma,
+                mad: s.mad,
                 zeros: s.zeros,
                 histogram: normalize_histogram(&s.histogram),
                 stars: hi.stars.as_ref().map(star_summary),
