@@ -216,14 +216,14 @@ mod tests {
     use super::*;
     use crate::chart::plot_in;
     use chrono::FixedOffset;
-    use fitz_core::analytics::{Metric, SamplePoint, Series};
+    use libfitz::analytics::{Metric, SamplePoint, Series};
     use std::path::PathBuf;
 
     /// A three-frame session an hour apart, with a rising metric. Rendered
     /// against a fixed +02:00 zone rather than the machine's, so the labels
     /// these tests pin are the same wherever they run.
     fn sample_plot() -> Plot {
-        let lo = fitz_core::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let lo = libfitz::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let series = Series {
             metric: Metric::Mean,
             unavailable: 0,

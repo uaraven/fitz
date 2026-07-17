@@ -2,9 +2,9 @@ use std::fs::File;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-pub use fitz_core::debayer::OutputFormat;
-use fitz_core::debayer::{DebayeredImage, OutputSamples, encode_rgb_as_source, to_output_samples};
-use fitz_core::fits_image::{CFA_KEYWORDS, write_pixel_fits};
+pub use libfitz::debayer::OutputFormat;
+use libfitz::debayer::{DebayeredImage, OutputSamples, encode_rgb_as_source, to_output_samples};
+use libfitz::fits_image::{CFA_KEYWORDS, write_pixel_fits};
 use tiff::encoder::{TiffEncoder, colortype};
 
 use crate::io_prompt::{ensure_can_write, print_load_rgb_notice, print_progress, print_step};
@@ -19,7 +19,7 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
     print_progress(opts.verbose, input, output);
 
     print_step(opts.verbose, "reading");
-    let d = fitz_core::debayer::debayer(input, &opts.core)?;
+    let d = libfitz::debayer::debayer(input, &opts.core)?;
 
     print_load_rgb_notice(opts.verbose, input, d.notice);
 

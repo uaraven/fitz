@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use fitz_core::fitskit::CompressionType;
+use libfitz::fitskit::CompressionType;
 
 pub struct Options {
     pub keep: bool,
@@ -26,7 +26,7 @@ impl Default for Options {
 
 #[derive(Default)]
 pub struct DebayerOptions {
-    pub core: fitz_core::debayer::DebayerOptions,
+    pub core: libfitz::debayer::DebayerOptions,
     pub yes: bool,
     pub verbose: bool,
     pub output: Option<PathBuf>,
@@ -34,10 +34,10 @@ pub struct DebayerOptions {
 }
 
 pub struct StretchOptions {
-    pub core: fitz_core::stretch::StretchOptions,
+    pub core: libfitz::stretch::StretchOptions,
     pub yes: bool,
     pub verbose: bool,
-    pub format: fitz_core::debayer::OutputFormat,
+    pub format: libfitz::debayer::OutputFormat,
     pub output: Option<PathBuf>,
     pub multi_file: bool,
 }
@@ -45,10 +45,10 @@ pub struct StretchOptions {
 impl Default for StretchOptions {
     fn default() -> Self {
         StretchOptions {
-            core: fitz_core::stretch::StretchOptions::default(),
+            core: libfitz::stretch::StretchOptions::default(),
             yes: false,
             verbose: false,
-            format: fitz_core::debayer::OutputFormat::Fits,
+            format: libfitz::debayer::OutputFormat::Fits,
             output: None,
             multi_file: false,
         }
@@ -75,7 +75,7 @@ pub struct InfoOptions {
 
 pub struct PreviewOptions {
     pub verbose: bool,
-    pub core: fitz_core::stretch::StretchOptions,
+    pub core: libfitz::stretch::StretchOptions,
     /// Force kitty graphics protocol rendering, bypassing auto-detection.
     pub force_kitty: bool,
     /// Force true-color ASCII rendering, bypassing auto-detection.
@@ -88,10 +88,10 @@ pub struct PreviewOptions {
 }
 
 pub struct SplitChannelOptions {
-    pub core: fitz_core::split_channel::SplitChannelOptions,
+    pub core: libfitz::split_channel::SplitChannelOptions,
     pub yes: bool,
     pub verbose: bool,
-    pub format: fitz_core::split_channel::ChannelFormat,
+    pub format: libfitz::split_channel::ChannelFormat,
     pub r_prefix: Option<String>,
     pub r_dir: Option<PathBuf>,
     pub g_prefix: Option<String>,
@@ -103,10 +103,10 @@ pub struct SplitChannelOptions {
 impl Default for SplitChannelOptions {
     fn default() -> Self {
         SplitChannelOptions {
-            core: fitz_core::split_channel::SplitChannelOptions::default(),
+            core: libfitz::split_channel::SplitChannelOptions::default(),
             yes: false,
             verbose: false,
-            format: fitz_core::split_channel::ChannelFormat::I16,
+            format: libfitz::split_channel::ChannelFormat::I16,
             r_prefix: None,
             r_dir: None,
             g_prefix: None,

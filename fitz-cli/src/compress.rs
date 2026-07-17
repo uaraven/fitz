@@ -12,10 +12,10 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
 
     print_step(opts.verbose, "reading");
     print_step(opts.verbose, "compressing");
-    let core_opts = fitz_core::compress::CompressOptions {
+    let core_opts = libfitz::compress::CompressOptions {
         algorithm: opts.algorithm,
     };
-    let out_fits = fitz_core::compress::compress(input, &core_opts)?;
+    let out_fits = libfitz::compress::compress(input, &core_opts)?;
 
     print_step(opts.verbose, "writing");
     out_fits
