@@ -127,6 +127,7 @@ fn spawn_export(
         app.set_export_in_progress(true);
         app.set_export_progress(0.0);
         app.set_export_progress_text("".into());
+        app.set_export_progress_detail("".into());
         app.set_busy(true);
         app.set_stage_text("".into());
     });
@@ -136,11 +137,13 @@ fn spawn_export(
         let mut failed = 0usize;
         for (i, input) in targets.iter().enumerate() {
             let progress = i as f32 / total as f32;
-            let text = format!("{} ({}/{})", display_name(input), i + 1, total);
+            let text = display_name(input);
+            let detail = format!("{}/{}", i + 1, total);
             let weak_progress = weak.clone();
             let _ = weak_progress.upgrade_in_event_loop(move |app| {
                 app.set_export_progress(progress);
                 app.set_export_progress_text(text.into());
+                app.set_export_progress_detail(detail.into());
             });
 
             let output = export_output_path(input, &dir, ext);

@@ -1,27 +1,31 @@
 import { StatItem } from "types.slint";
 
-// A docked panel of image statistics: the numeric summary on the left, a value
-// histogram (normalized bar heights, 0..1) on the right. Shown below the image
-// when "Show stats" is on, shrinking the image area to fit. Empty `stats` (an
-// already-debayered RGB cube) shows a placeholder and hides the histogram.
+// A docked panel of image statistics: the numeric pixel summary and the star
+// metrics in two label columns on the left, a value histogram (normalized bar
+// heights, 0..1) on the right. Shown below the image when "Show stats" is on,
+// shrinking the image area to fit. Empty `stats` (an already-debayered RGB cube)
+// shows a placeholder and hides the histogram; empty `star-stats` (no detectable
+// stars, or that same RGB cube) hides the star column.
 export component StatsPanel inherits Rectangle {
     in property <[StatItem]> stats;
+    in property <[StatItem]> star-stats;
     in property <[float]> histogram;
 
     property <bool> has-stats: root.stats.length > 0;
+    property <bool> has-stars: root.star-stats.length > 0;
 
-    height: 150px;
+    height: 170px;
     background: #1b1b1b;
 
     HorizontalLayout {
         padding: 10px;
         spacing: 16px;
 
-        // Numeric summary.
+        // Numeric pixel summary.
         VerticalLayout {
-            width: 200px;
+            width: 160px;
             spacing: 4px;
-            alignment: center;
+            alignment: start;
             Text {
                 text: root.has-stats ? "Statistics" : "No pixel statistics";
                 color: #d0d0d0;
@@ -34,7 +38,27 @@ export component StatsPanel inherits Rectangle {
             }
         }
 
-        // Histogram: one bottom-anchored bar per bucket.
+        // Star metrics — its own column beside the pixel summary, hidden when
+        // the frame has no star metrics to show.
+        VerticalLayout {
+            width: 160px;
+            spacing: 4px;
+            alignment: start;
+            visible: root.has-stars;
+            Text {
+                text: "Stars";
+                color: #d0d0d0;
+                font-weight: 700;
+            }
+            for s in root.star-stats: Text {
+                text: s.label + ": " + s.value;
+                color: #a0a0a0;
+                font-size: 12px;
+            }
+        }
+
+        // Histogram: one bottom-anchored bar per bucket. It takes the remaining
+        // width, so the star column above narrows it rather than crowding it out.
         Rectangle {
             background: #101010;
             border-color: #303030;
