@@ -38,8 +38,11 @@ export component AppWindow inherits Window {
     // FITS header cards for the Headers tab.
     in property <[HeaderRow]> header-rows;
     // Pixel statistics (empty for an already-debayered RGB cube) and the
-    // matching 0..1 histogram bar heights for the stats panel.
+    // matching 0..1 histogram bar heights for the stats panel. `star-stats` is
+    // the panel's separate star-metrics column (count, HFR, FWHM, eccentricity),
+    // empty when the frame carries no star metrics.
     in property <[StatItem]> stats;
+    in property <[StatItem]> star-stats;
     in property <[float]> histogram;
     // Curated metadata summary (label/value pairs, as `fitz info` reports) for
     // the info panel.
@@ -463,6 +466,7 @@ export component AppWindow inherits Window {
                         // (mutually exclusive), shrinking the image area to fit.
                         if root.show-stats: StatsPanel {
                             stats: root.stats;
+                            star-stats: root.star-stats;
                             histogram: root.histogram;
                         }
                         if root.show-info: InfoPanel {
