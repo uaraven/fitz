@@ -38,8 +38,11 @@ export component AppWindow inherits Window {
     // FITS header cards for the Headers tab.
     in property <[HeaderRow]> header-rows;
     // Pixel statistics (empty for an already-debayered RGB cube) and the
-    // matching 0..1 histogram bar heights for the stats panel.
+    // matching 0..1 histogram bar heights for the stats panel. `star-stats` is
+    // the panel's separate star-metrics column (count, HFR, FWHM, eccentricity),
+    // empty when the frame carries no star metrics.
     in property <[StatItem]> stats;
+    in property <[StatItem]> star-stats;
     in property <[float]> histogram;
     // Curated metadata summary (label/value pairs, as `fitz info` reports) for
     // the info panel.
@@ -87,6 +90,7 @@ export component AppWindow inherits Window {
     in property <bool> export-in-progress: false;
     in property <float> export-progress: 0;
     in property <string> export-progress-text: "";
+    in property <string> export-progress-detail: "";
 
     // The chart dialog behind Tools ▸ Analytics… and Tools ▸ Star metrics…:
     // plot one metric across the checked files ordered by DATE-OBS. Rust
@@ -125,6 +129,7 @@ export component AppWindow inherits Window {
     in property <bool> analytics-in-progress: false;
     in property <float> analytics-progress: 0;
     in property <string> analytics-progress-text: "";
+    in property <string> analytics-progress-detail: "";
 
     callback open();
     callback open-directory();
@@ -463,6 +468,7 @@ export component AppWindow inherits Window {
                         // (mutually exclusive), shrinking the image area to fit.
                         if root.show-stats: StatsPanel {
                             stats: root.stats;
+                            star-stats: root.star-stats;
                             histogram: root.histogram;
                         }
                         if root.show-info: InfoPanel {
@@ -586,6 +592,7 @@ export component AppWindow inherits Window {
         title: "Exporting…";
         progress: root.export-progress;
         message: root.export-progress-text;
+        detail: root.export-progress-detail;
     }
 
     // Shown while the analytics batch reads and measures the target files.
@@ -597,6 +604,7 @@ export component AppWindow inherits Window {
         title: "Analyzing…";
         progress: root.analytics-progress;
         message: root.analytics-progress-text;
+        detail: root.analytics-progress-detail;
         cancellable: true;
         cancel => {
             root.cancel-analytics();

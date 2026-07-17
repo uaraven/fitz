@@ -41,6 +41,15 @@ export component FileList inherits Rectangle {
     background: #262626;
     forward-focus: fs;
 
+    // Keep the highlighted row on screen: whenever the selection moves — via
+    // blink, keyboard navigation or a click on a partially-visible row — nudge
+    // the list just enough to reveal it.
+    changed selected-index => {
+        if (root.selected-index >= 0) {
+            list.ensure-visible(root.selected-index * root.row-height, root.row-height);
+        }
+    }
+
     fs := FocusScope {
         init => {
             self.focus();
@@ -146,7 +155,6 @@ export component FileList inherits Rectangle {
                     }
                     Text {
                         text: row.name;
-                        overflow: elide;
                         // Dark text keeps the name legible on the pale-red error
                         // background used by light themes; white everywhere else.
                         color: rowrect.is-error && !rowrect.selected ? root.err-text : white;

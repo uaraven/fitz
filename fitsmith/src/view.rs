@@ -18,6 +18,7 @@ pub fn show_doc(app: &AppWindow, doc: &LoadedDoc) {
     app.set_header_rows(header_rows(doc));
     app.set_info(info_items(&doc.info));
     app.set_stats(stat_items(&doc.stats));
+    app.set_star_stats(star_items(&doc.stats));
     app.set_histogram(histogram(&doc.stats));
 }
 
@@ -29,6 +30,7 @@ pub fn clear(app: &AppWindow) {
     app.set_header_rows(ModelRc::new(VecModel::<HeaderRow>::default()));
     app.set_info(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_stats(ModelRc::new(VecModel::<StatItem>::default()));
+    app.set_star_stats(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
 }
 
@@ -65,14 +67,37 @@ fn info_items(fields: &[SummaryField]) -> ModelRc<StatItem> {
 fn stat_items(stats: &Option<StatSummary>) -> ModelRc<StatItem> {
     let items = match stats {
         Some(s) => vec![
-            stat("min", format_stat(s.min)),
-            stat("max", format_stat(s.max)),
-            stat("mean", format_stat(s.mean)),
-            stat("median", format_stat(s.median)),
-            stat("zeros", s.zeros.to_string()),
+            stat("Min ADU", format_stat(s.min)),
+            stat("Max ADU", format_stat(s.max)),
+            stat("Mean ADU", format_stat(s.mean)),
+            stat("Median ADU", format_stat(s.median)),
+            stat("Sigma ADU", format_stat(s.sigma)),
+            stat("MAD ADU", format_stat(s.mad)),
+            stat("Zeros", s.zeros.to_string()),
         ],
         None => Vec::new(),
     };
+    ModelRc::new(VecModel::from(items))
+}
+
+/// The star metrics for the panel's second column: always the star count, plus
+/// the shape medians when detection found any stars. Empty when the frame has no
+/// star metrics (an already-debayered RGB cube, or a shape detection can't run
+/// on) — the panel then hides the column.
+fn star_items(stats: &Option<StatSummary>) -> ModelRc<StatItem> {
+    let mut items = Vec::new();
+    if let Some(stars) = stats.as_ref().and_then(|s| s.stars.as_ref()) {
+        items.push(stat("Stars", stars.count.to_string()));
+        if let Some(hfr) = stars.hfr {
+            items.push(stat("HFR", format_star(hfr)));
+        }
+        if let Some(fwhm) = stars.fwhm {
+            items.push(stat("FWHM", format_star(fwhm)));
+        }
+        if let Some(ecc) = stars.eccentricity {
+            items.push(stat("Eccentricity", format_star(ecc)));
+        }
+    }
     ModelRc::new(VecModel::from(items))
 }
 
@@ -100,5 +125,109 @@ pub fn format_stat(v: f64) -> String {
         format!("{v:.0}")
     } else {
         format!("{v:.3}")
+    }
+}
+
+/// Star shapes (HFR/FWHM/eccentricity) to two decimal places — they are
+/// measurements good to a couple of digits, matching what `fitz info --stars`
+/// prints; more would be reporting noise.
+fn format_star(v: f64) -> String {
+    format!("{v:.2}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::doc::StarSummary;
+    use slint::Model;
+
+    /// Flatten a `StatItem` model back into `"label: value"` strings for
+    /// assertions.
+    fn rows(model: &ModelRc<StatItem>) -> Vec<String> {
+        model
+            .iter()
+            .map(|s| format!("{}: {}", s.label, s.value))
+            .collect()
+    }
+
+    fn summary() -> StatSummary {
+        StatSummary {
+            min: 0.0,
+            max: 65535.0,
+            mean: 1234.5,
+            median: 1000.0,
+            sigma: 12.75,
+            mad: 8.0,
+            zeros: 7,
+            histogram: Vec::new(),
+            stars: None,
+        }
+    }
+
+    #[test]
+    fn pixel_stats_carry_adu_labels() {
+        // The renamed labels: Max ADU etc., and whole numbers print without a
+        // decimal point while fractional means keep three places.
+        let items = stat_items(&Some(summary()));
+        assert_eq!(
+            rows(&items),
+            [
+                "Min ADU: 0",
+                "Max ADU: 65535",
+                "Mean ADU: 1234.500",
+                "Median ADU: 1000",
+                "Sigma ADU: 12.750",
+                "MAD ADU: 8",
+                "Zeros: 7",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_pixel_stats_is_an_empty_column() {
+        assert!(rows(&stat_items(&None)).is_empty());
+    }
+
+    #[test]
+    fn star_column_lists_count_and_present_shapes() {
+        // A frame with detected stars: count plus the three shapes, each rounded
+        // to two places.
+        let stats = StatSummary {
+            stars: Some(StarSummary {
+                count: 42,
+                hfr: Some(2.418),
+                fwhm: Some(3.001),
+                eccentricity: Some(0.5),
+            }),
+            ..summary()
+        };
+        assert_eq!(
+            rows(&star_items(&Some(stats))),
+            ["Stars: 42", "HFR: 2.42", "FWHM: 3.00", "Eccentricity: 0.50"]
+        );
+    }
+
+    #[test]
+    fn starless_frame_shows_only_the_count() {
+        // Detection ran but found nothing: the count (zero) is a real
+        // measurement, but there are no shapes to report.
+        let stats = StatSummary {
+            stars: Some(StarSummary {
+                count: 0,
+                hfr: None,
+                fwhm: None,
+                eccentricity: None,
+            }),
+            ..summary()
+        };
+        assert_eq!(rows(&star_items(&Some(stats))), ["Stars: 0"]);
+    }
+
+    #[test]
+    fn no_star_metrics_is_an_empty_column() {
+        // No StarSummary at all (an RGB cube, or a shape detection can't run on):
+        // the panel hides the column.
+        assert!(rows(&star_items(&Some(summary()))).is_empty());
+        assert!(rows(&star_items(&None)).is_empty());
     }
 }

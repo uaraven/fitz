@@ -194,6 +194,7 @@ fn spawn_analysis(
         app.set_analytics_in_progress(true);
         app.set_analytics_progress(0.0);
         app.set_analytics_progress_text("".into());
+        app.set_analytics_progress_detail("".into());
         app.set_busy(true);
         app.set_stage_text("".into());
     });
@@ -205,10 +206,12 @@ fn spawn_analysis(
             &cancel,
             |i, path| {
                 let progress = i as f32 / total as f32;
-                let text = format!("{} ({}/{})", display_name(path), i + 1, total);
+                let text = display_name(path);
+                let detail = format!("{}/{}", i + 1, total);
                 let _ = weak.clone().upgrade_in_event_loop(move |app| {
                     app.set_analytics_progress(progress);
                     app.set_analytics_progress_text(text.into());
+                    app.set_analytics_progress_detail(detail.into());
                 });
             },
             |path, msg| {
