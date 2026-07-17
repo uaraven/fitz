@@ -10,6 +10,7 @@ import { CompressDialog, DecompressDialog } from "operation.slint";
 import { ExportDialog } from "export.slint";
 import { ProgressOverlay } from "dialog.slint";
 import { AnalyticsDialog } from "analytics.slint";
+import { AberrationDialog } from "aberration.slint";
 import { ConfirmDialog } from "confirm.slint";
 import { Toolbar } from "toolbar.slint";
 import { StatusBar } from "status_bar.slint";
@@ -130,6 +131,14 @@ export component AppWindow inherits Window {
     in property <string> analytics-progress-text: "";
     in property <string> analytics-progress-detail: "";
 
+    // The aberration inspector: a static 3×3 mosaic of crops from the selected
+    // frame's preview. Rust crops the nine tiles and fills `aberration-tiles`
+    // (row-major) plus `aberration-tile-size` (their 1:1 pixel side), then shows
+    // the dialog; operates on the current selection only, so it needs no batch.
+    in-out property <bool> show-aberration: false;
+    in property <[image]> aberration-tiles;
+    in property <length> aberration-tile-size;
+
     callback open();
     callback open-directory();
     callback clear-files();
@@ -183,6 +192,10 @@ export component AppWindow inherits Window {
     callback analytics-export-csv();
     // Dialog dismissed — Rust drops the cached per-file metrics.
     callback close-analytics();
+    // Tools ▸ Aberration Inspector: Rust crops the nine tiles from the selected
+    // frame's preview and shows the dialog; close drops the tile images.
+    callback open-aberration-dialog();
+    callback close-aberration();
 
     changed debayer-enabled => {
         root.toggles-changed();
@@ -336,6 +349,15 @@ export component AppWindow inherits Window {
                 enabled: root.files.length > 0;
                 activated => {
                     root.open-star-metrics-dialog();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Aberration Inspector…";
+                // A per-frame inspection: needs a selected frame, not a batch.
+                enabled: root.selected-index >= 0;
+                activated => {
+                    root.open-aberration-dialog();
                 }
             }
         }
@@ -641,6 +663,21 @@ export component AppWindow inherits Window {
         cancel => {
             root.show-analytics = false;
             root.close-analytics();
+        }
+    }
+
+    // The Aberration Inspector: a static 3×3 mosaic of the selected frame's
+    // preview. Close (and a scrim click) hides it and lets Rust drop the tiles.
+    if root.show-aberration: AberrationDialog {
+        width: 100%;
+        height: 100%;
+        tiles: root.aberration-tiles;
+        tile-size: root.aberration-tile-size;
+        close => {
+            root.close-aberration();
+        }
+        cancel => {
+            root.close-aberration();
         }
     }
 }

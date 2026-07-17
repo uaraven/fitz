@@ -1,0 +1,147 @@
+import { Button, Slider } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+import { Scrollbar } from "scrolling.slint";
+
+// The aberration inspector: a 3×3 mosaic of SZ×SZ crops taken from the selected
+// frame's rendered preview — four corners, four edge midpoints, and the center —
+// so stars in the corners can be compared with stars in the center without
+// panning a full-resolution image. Zoomable 1x–2x with the slider to magnify
+// star shapes, panned with the scrollbars once a tile grows past the view. The
+// debayer/stretch state is inherited from the View menu at open time;
+// otherwise read-only. Built on the shared DialogCard chrome for the scrim and
+// click-outside dismissal every dialog gets. Purely presentational — the
+// controller crops the tiles from the resident preview and fills `tiles`.
+export component AberrationDialog inherits DialogCard {
+    // The nine tile images in row-major order: TL, TC, TR, ML, C, MR, BL, BC, BR.
+    in property <[image]> tiles;
+    // The tile side in pixels, i.e. the crop at 1:1 (zoom 1x, view permitting).
+    in property <length> tile-size;
+    // 1.0 = tiles at their fitted/1:1 base size … 2.0 = doubled, panned. The
+    // slider clamps to that range on its own; the scroll handler clamps too.
+    in-out property <float> zoom: 1.0;
+    callback close();
+
+    property <length> gutter: 6px;
+    property <length> pad: 20px;
+    // The Close/zoom row plus the layout spacing above it.
+    property <length> footer: 34px + 12px;
+
+    // Size the card near the 3×3 grid at 1:1, but never larger than the window
+    // (the dialog fills it, so `root.width`/`root.height` are the window's). A
+    // floor keeps the zoom row and Close button usable for tiny frames.
+    property <length> ideal: 3 * root.tile-size + 2 * root.gutter + 2 * root.pad;
+    card-width: clamp(root.ideal, 380px, root.width - 40px);
+    card-height: clamp(root.ideal + root.footer, 320px, root.height - 40px);
+
+    VerticalLayout {
+        padding: root.pad;
+        spacing: 12px;
+
+        viewport := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            // The cell size that fits all nine tiles in the view at zoom 1,
+            // never upscaled past 1:1, then magnified by `zoom`.
+            property <length> fit-cell: min(
+                (self.width - 2 * root.gutter) / 3,
+                (self.height - 2 * root.gutter) / 3);
+            property <length> base-cell: min(root.tile-size, self.fit-cell);
+            property <length> cell: self.base-cell * root.zoom;
+            property <length> grid-w: 3 * self.cell + 2 * root.gutter;
+            property <length> grid-h: self.grid-w;
+
+            flick := Flickable {
+                width: parent.width;
+                height: parent.height;
+                // Pad the viewport to the visible area when the grid is smaller,
+                // so it centers; grow to the grid when larger, so it can be panned.
+                viewport-width: max(viewport.grid-w, self.width);
+                viewport-height: max(viewport.grid-h, self.height);
+
+                GridLayout {
+                    x: (flick.viewport-width - viewport.grid-w) / 2;
+                    y: (flick.viewport-height - viewport.grid-h) / 2;
+                    width: viewport.grid-w;
+                    height: viewport.grid-h;
+                    spacing: root.gutter;
+                    for tile[i] in root.tiles: Rectangle {
+                        row: floor(i / 3);
+                        col: mod(i, 3);
+                        width: viewport.cell;
+                        height: viewport.cell;
+                        border-width: 1px;
+                        border-color: #444444;
+                        Image {
+                            width: 100%;
+                            height: 100%;
+                            image-fit: fill;
+                            source: tile;
+                        }
+                    }
+                }
+            }
+
+            // Scrollbars on the right / bottom edges (each shortened when the
+            // other shows), matching the main image view. They only appear once
+            // a tile is zoomed past the view.
+            Scrollbar {
+                horizontal: false;
+                width: 6px;
+                x: parent.width - self.width - 2px;
+                y: 2px;
+                height: parent.height - 4px - (hbar.visible ? 8px : 0px);
+                content: flick.viewport-height;
+                view: flick.height;
+                pos: -flick.viewport-y;
+                moved(p) => {
+                    flick.viewport-y = -p;
+                }
+            }
+            hbar := Scrollbar {
+                horizontal: true;
+                height: 6px;
+                x: 2px;
+                y: parent.height - self.height - 2px;
+                width: parent.width - 4px - (self.visible ? 8px : 0px);
+                content: flick.viewport-width;
+                view: flick.width;
+                pos: -flick.viewport-x;
+                moved(p) => {
+                    flick.viewport-x = -p;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Zoom:";
+                color: #c8c8c8;
+                vertical-alignment: center;
+            }
+            Slider {
+                width: 120px;
+                minimum: 1.0;
+                maximum: 2.0;
+                value <=> root.zoom;
+            }
+            Text {
+                text: round(root.zoom * 10) / 10 + "x";
+                color: #c8c8c8;
+                width: 34px;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Close";
+                primary: true;
+                clicked => {
+                    root.close();
+                }
+            }
+        }
+    }
+}

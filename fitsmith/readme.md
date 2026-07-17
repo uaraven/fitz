@@ -98,6 +98,18 @@ and the CLI behave identically.
        so its HFR/FWHM read about *twice* a raw mosaic's half-resolution numbers. Same caveat,
        opposite sign; within a homogeneous session the trend is still what matters.
 
+ - **Aberration Inspector** — the Tools menu's Aberration Inspector… shows a 3×3 mosaic of
+   crops from nine fixed regions of the *selected* frame — the four corners, the four
+   edge-midpoints, and the center — so corner-to-corner focus and optical aberration (coma,
+   astigmatism, tilt) can be judged at a glance without panning around a full-resolution image.
+   Each tile is a square crop, ~10% of the shorter frame axis (capped at 256px), taken from
+   the same debayered/stretched preview the main view shows and displayed 1:1. A zoom slider
+   magnifies the tiles from 1x up to 2x to make star shapes easier to judge; scrollbars appear
+   to pan once a tile grows past the view.
+   It is a per-frame inspection, not a batch: it operates on the current selection only, needs
+   no file re-read (it crops the resident preview), and is a static snapshot of the current
+   debayer/stretch state.
+
 
 For example here is the mean ADU chart clearly showing when the wildfire smoke arrived and affected seeing and total brightness
 ![](../docs/analytics-mean-adu.png)
