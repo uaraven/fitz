@@ -17,7 +17,7 @@ and the CLI behave identically.
    kept in an LRU cache so re-selection and blinking re-render from memory.
  - **Inspect** — a Headers tab and a docked stats panel show the FITS metadata and pixel
    statistics for the selected frame. The stats panel puts the pixel summary (min/max/mean/median
-   ADU and the zero-pixel count) and the frame's star metrics (star count, plus median HFR, FWHM
+   ADU, the noise sigma and MAD, and the zero-pixel count) and the frame's star metrics (star count, plus median HFR, FWHM
    and eccentricity when any stars are detected) in two label columns beside the value histogram.
    The star column is hidden for a frame with no detectable stars, and the whole panel falls back
    to a placeholder for an already-debayered RGB cube (where single-channel statistics aren't
