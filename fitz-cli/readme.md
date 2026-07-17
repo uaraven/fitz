@@ -181,7 +181,7 @@ Each of the above is only shown when the corresponding header keyword is present
 
 Pass `--pixel` to additionally read the pixel data (transparently decompressing a tile-compressed input first) and print:
 
- - **Pixel statistics** — min, max, mean and median of the physical pixel values, plus the count of pixels whose value is exactly zero. Pixel statistics are not supported for already-debayered RGB images; for those a notice is printed instead.
+ - **Pixel statistics** — min, max, mean and median of the physical pixel values, plus the count of pixels whose value is exactly zero. For an already-debayered RGB cube the statistics are measured on the green channel (the plane with the most signal), and a `Channel: green (of RGB cube)` line precedes them to say so. A *floating-point* RGB cube (which has no fixed ADU ceiling — drizzle output is often in `[0, 1]`) has its green channel mapped to the 0–65535 range by a fixed full-scale conversion (physical `1.0` → 65535, values above it clamped), so its numbers are comparable with a normal 16-bit frame's rather than landing near zero. The scale is fixed rather than per-frame, so the same star reads the same ADU across a session.
  - **Noise** — two estimates of the frame's noise, reported together because the gap between them is itself the interesting number. `sigma` is the standard deviation of every pixel, so stars, hot pixels and satellite trails all inflate it. `mad` is the median absolute deviation from the median (scaled by 1.4826, so it estimates the same quantity for Gaussian noise) — a selection rather than a sum, so a handful of bright outliers cannot move it. On a clean frame the two are close; a `sigma` well above `mad` means signal (or trouble) rather than redundancy.
  - **Background** — `mode`, the most common pixel value, which for a typical sky frame is the background level. Ties resolve to the lowest such value, so a bimodal frame (e.g. amp glow) reports the sky peak rather than the glow.
  - **Saturated** — the number of pixels at the sample type's saturation level, and what fraction of the frame that is. The level is derived from the pixel format (65535 for the usual 16-bit unsigned data, 255 for 8-bit), not from a `DATAMAX` header keyword: anything above it is unrepresentable, so "at" and "over" are the same set of pixels. For floating-point data — which has no such ceiling — the observed maximum is used instead.
@@ -196,9 +196,9 @@ Pass `--stars` to detect the frame's stars and report:
 
 Each is the median across the accepted stars, so one satellite trail cannot move the number. Blobs that are too small (hot pixels), too large (nebulosity), clipped at the sensor's ceiling, or touching the frame border are rejected before measuring — a saturated or truncated star has no usable shape.
 
-`--stars` is independent of `--pixel` in both directions: neither implies the other, and `--stars` alone prints no `Pixels:` line (star detection derives its threshold from its own detection plane, never from the frame's pixel statistics). Star metrics are not supported for already-debayered RGB images; for those a notice is printed instead.
+`--stars` is independent of `--pixel` in both directions: neither implies the other, and `--stars` alone prints no `Pixels:` line (star detection derives its threshold from its own detection plane, never from the frame's pixel statistics). For an already-debayered RGB cube detection runs on the green channel, and a note under the numbers says so.
 
-**On a colour (CFA) frame, `hfr` and `fwhm` are in half-resolution pixels** — roughly half the number NINA reports for the same frame — and the report says so under the numbers. A star sampled through a Bayer filter is not a point-spread function, so detection runs on the green super-pixel plane, where each pixel averages one 2x2 cell's two green sites. Every frame in a session comes off the same sensor, so the trend — which is what these numbers are for — is unaffected.
+**On a colour (CFA) frame, `hfr` and `fwhm` are in half-resolution pixels** — roughly half the number NINA reports for the same frame — and the report says so under the numbers. A star sampled through a Bayer filter is not a point-spread function, so detection runs on the green super-pixel plane, where each pixel averages one 2x2 cell's two green sites. Every frame in a session comes off the same sensor, so the trend — which is what these numbers are for — is unaffected. An already-debayered RGB cube instead has a separated green channel, so detection runs on it at *full* resolution — its `hfr`/`fwhm` read about twice a raw mosaic's, again noted under the numbers.
 
 Pass `--headers` to skip the formatted summary entirely and instead dump the raw FITS header cards, one per line, exactly as found in the file.
 
@@ -209,8 +209,8 @@ Arguments:
   [FILES]...  FITS files to inspect
 
 Options:
-      --pixel        Read the pixel data and report pixel statistics (not supported for debayered images)
-      --stars        Detect stars and report count, HFR, FWHM and eccentricity (not supported for debayered images)
+      --pixel        Read the pixel data and report pixel statistics (green channel for a debayered RGB cube)
+      --stars        Detect stars and report count, HFR, FWHM and eccentricity (green channel for a debayered RGB cube)
       --log          Use a logarithmic vertical axis for the histogram (only useful with --pixel)
       --headers      Print the raw FITS header cards instead of the formatted summary
   -v, --verbose      Print each file being processed
