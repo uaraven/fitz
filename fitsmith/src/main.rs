@@ -8,6 +8,7 @@
 
 mod cache;
 mod chart;
+mod chart_svg;
 mod controller;
 mod doc;
 mod files;
@@ -103,16 +104,17 @@ fn main() -> Result<()> {
     forward!(on_open_analytics_dialog, |app| {
         controller::open_analytics_dialog(&app)
     });
+    forward!(on_open_star_metrics_dialog, |app| {
+        controller::open_star_metrics_dialog(&app)
+    });
     forward!(on_cancel_analytics, |app| controller::cancel_analytics(
         &app
     ));
     forward!(on_analytics_metric_changed, |app, index| {
         controller::analytics_metric_changed(&app, index)
     });
-    // The chart's geometry within the window rides along, so the PNG export can
-    // crop the window snapshot down to just the chart.
-    forward!(on_analytics_export_png, |app, x, y, w, h| {
-        controller::analytics_export_png(&app, x, y, w, h)
+    forward!(on_analytics_export_svg, |app| {
+        controller::analytics_export_svg(&app)
     });
     forward!(on_analytics_export_csv, |app| {
         controller::analytics_export_csv(&app)

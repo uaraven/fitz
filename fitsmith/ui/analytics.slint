@@ -3,14 +3,19 @@ import { DialogCard } from "dialog.slint";
 import { AnalyticsChart } from "chart.slint";
 import { ChartPoint, ChartTick } from "types.slint";
 
-// The Tools ▸ Analytics… modal: plots one pixel metric across the checked
-// working-set files, ordered by acquisition time (DATE-OBS). Purely
-// presentational — the controller computes every metric per file once, then
-// feeds normalized chart data; switching the metric dropdown re-plots with no
-// file re-read.
+// The chart modal behind both Tools ▸ Analytics… and Tools ▸ Star metrics…:
+// plots one metric across the checked working-set files, ordered by acquisition
+// time (DATE-OBS). The two differ only in their title, which metrics they list,
+// whether their batch detects stars, and their export file-name prefix — all of
+// which are the controller's business. Purely presentational — the controller
+// computes every metric per file once, then feeds normalized chart data;
+// switching the metric dropdown re-plots with no file re-read.
 export component AnalyticsDialog inherits DialogCard {
+    // Names the dialog: which of the two this is.
+    in property <string> title-text;
     // The selectable metrics, supplied by the controller from
-    // `fitz_core::analytics::Metric::all()`; `metric-index` indexes into it.
+    // `fitz_core::analytics::Metric::of_family()`; `metric-index` indexes into
+    // that family's list.
     in property <[string]> metric-model;
     // Chart data (see AnalyticsChart / ChartPoint for the coordinate space).
     in property <[ChartPoint]> points;
@@ -23,21 +28,20 @@ export component AnalyticsDialog inherits DialogCard {
     in property <int> plotted-count;
     in property <int> skipped-no-date;
     in property <int> skipped-not-mono;
+    // Frames that analyzed fine but have no value for the plotted metric,
+    // already worded by the controller (e.g. "2 with no stars detected").
+    // A built string rather than an int like its `skipped-*` neighbours because
+    // the wording is family-specific — "no stars detected" means nothing in the
+    // Analytics dialog — and a presentational component should not branch on a
+    // family it cannot see. Empty when there are none.
+    in property <string> unavailable-note;
     in-out property <int> metric-index;
     // 1.0 = fit to width … 4.0 = 4x, scrolled horizontally. The slider
     // clamps to that range on its own.
     in-out property <float> zoom: 1.0;
 
-    // Where the chart sits in the window, for cropping a window snapshot down
-    // to the chart when exporting a PNG (covers the whole chart, axes and
-    // labels included).
-    out property <length> chart-x: chart.absolute-position.x;
-    out property <length> chart-y: chart.absolute-position.y;
-    out property <length> chart-w: chart.width;
-    out property <length> chart-h: chart.height;
-
     callback metric-changed(int);
-    callback export-png();
+    callback export-svg();
     callback export-csv();
 
     // Resizable: the chart is the point of this dialog, and a longer session
@@ -53,7 +57,7 @@ export component AnalyticsDialog inherits DialogCard {
         spacing: 12px;
 
         Text {
-            text: "Analytics";
+            text: root.title-text;
             font-size: 20px;
             font-weight: 700;
             color: white;
@@ -111,7 +115,8 @@ export component AnalyticsDialog inherits DialogCard {
                 + (root.skipped-no-date > 0
                     ? ", " + root.skipped-no-date + " skipped (no DATE-OBS)" : "")
                 + (root.skipped-not-mono > 0
-                    ? ", " + root.skipped-not-mono + " skipped (not mono)" : "");
+                    ? ", " + root.skipped-not-mono + " skipped (not mono)" : "")
+                + (root.unavailable-note != "" ? ", " + root.unavailable-note : "");
             color: #a0a0a0;
             font-size: 12px;
         }
@@ -119,10 +124,10 @@ export component AnalyticsDialog inherits DialogCard {
         HorizontalLayout {
             spacing: 8px;
             Button {
-                text: "Export PNG";
+                text: "Export SVG";
                 enabled: root.plotted-count > 0;
                 clicked => {
-                    root.export-png();
+                    root.export-svg();
                 }
             }
             Button {

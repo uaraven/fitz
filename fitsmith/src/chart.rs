@@ -4,6 +4,7 @@
 //! controller owns the files and threading, this owns the arithmetic, and all of
 //! it is unit-testable without a window.
 
+use chrono::{DateTime, Local, TimeZone};
 use fitz_core::analytics::Series;
 
 use crate::view::format_stat;
@@ -108,24 +109,78 @@ fn time_ticks(lo: f64, hi: f64) -> Vec<f64> {
     ticks
 }
 
-/// UTC time of day for an epoch timestamp: `HH:MM`, or `HH:MM:SS` with
-/// `seconds`. `DATE-OBS` is UTC by FITS convention, so no zone conversion is
-/// applied; the date is dropped because a session is read as a single night.
-fn format_time(epoch: f64, seconds: bool) -> String {
-    let total = epoch.rem_euclid(86400.0).floor() as i64;
-    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
-    if seconds {
-        format!("{h:02}:{m:02}:{s:02}")
-    } else {
-        format!("{h:02}:{m:02}")
+/// Civil (wall-clock) time in `tz` for an epoch timestamp, or `None` if it isn't
+/// representable there — an out-of-range timestamp, or a local time that a DST
+/// jump skipped or repeated.
+fn civil<Tz: TimeZone>(epoch: f64, tz: &Tz) -> Option<DateTime<Tz>> {
+    tz.timestamp_opt(epoch.floor() as i64, 0).single()
+}
+
+/// Render an epoch timestamp in `tz` with a strftime `fmt`. `DATE-OBS` is UTC by
+/// FITS convention, but an observer reads their own wall clock, so the chart
+/// converts: a session that ran 22:00–02:00 local should say so rather than
+/// naming the UTC hours it happened to span.
+///
+/// A timestamp `tz` can't represent falls back to rendering it as UTC. That is
+/// wrong by an offset, but it only arises for absurd dates or a sample landing
+/// exactly in a DST gap, and a chart that draws a slightly-off label beats one
+/// that refuses to draw.
+fn format_in<Tz: TimeZone>(epoch: f64, tz: &Tz, fmt: &str) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    match civil(epoch, tz) {
+        Some(t) => t.format(fmt).to_string(),
+        None => civil(epoch, &chrono::Utc)
+            .map(|t| t.format(fmt).to_string())
+            .unwrap_or_default(),
     }
+}
+
+/// The axis tick's lower line: the local time of day, `HH:MM`.
+fn format_time<Tz: TimeZone>(epoch: f64, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    format_in(epoch, tz, "%H:%M")
+}
+
+/// The axis tick's upper line: the local date, `YYYY-MM-DD`.
+fn format_date<Tz: TimeZone>(epoch: f64, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    format_in(epoch, tz, "%Y-%m-%d")
+}
+
+/// A point tooltip's timestamp: the full local date and time to the second. The
+/// tooltip is a single line with room to spare, so unlike the axis it always
+/// carries the date.
+fn format_stamp<Tz: TimeZone>(epoch: f64, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    format_in(epoch, tz, "%Y-%m-%d %H:%M:%S")
+}
+
+/// Map a time-ordered [`Series`] into the chart's 0..1 space, labeling times in
+/// the machine's local zone. See [`plot_in`].
+pub fn plot(series: &Series) -> Plot {
+    plot_in(series, &Local)
 }
 
 /// Map a time-ordered [`Series`] into the chart's 0..1 space: X spans the first
 /// to the last timestamp, Y spans the value axis inverted (0 is the top). An
 /// empty series plots nothing; a single point (or several sharing one timestamp)
 /// centers on X, having no span to normalize against.
-pub fn plot(series: &Series) -> Plot {
+///
+/// Times are rendered in `tz`. Taking the zone as a parameter rather than
+/// reaching for [`Local`] is what makes this testable: the tests pin exact
+/// labels against a `FixedOffset` and pass wherever they run.
+pub fn plot_in<Tz: TimeZone>(series: &Series, tz: &Tz) -> Plot
+where
+    Tz::Offset: std::fmt::Display,
+{
     let (Some(first), Some(last)) = (series.points.first(), series.points.last()) else {
         return Plot::default();
     };
@@ -159,7 +214,7 @@ pub fn plot(series: &Series) -> Plot {
         .map(|p| ChartPoint {
             x: x_of(p.time),
             y: y_of(p.value),
-            time_label: format_time(p.time, true).into(),
+            time_label: format_stamp(p.time, tz).into(),
             value_label: format_stat(p.value).into(),
         })
         .collect();
@@ -172,21 +227,39 @@ pub fn plot(series: &Series) -> Plot {
         line.push_str(&format!("{verb} {:.5} {:.5} ", p.x, p.y));
     }
 
+    // The date labels the first tick and then only the ticks that roll over to
+    // a new day. Repeating one date under all six ticks of a single night is
+    // noise; showing it on the change makes a midnight crossing visible instead.
+    let mut prev_date = None;
+    let x_ticks = time_ticks(t_lo, t_hi)
+        .into_iter()
+        .map(|t| {
+            let date = format_date(t, tz);
+            let changed = prev_date.as_ref() != Some(&date);
+            prev_date = Some(date.clone());
+            ChartTick {
+                pos: x_of(t),
+                label: format_time(t, tz).into(),
+                date_label: if changed {
+                    date.into()
+                } else {
+                    Default::default()
+                },
+            }
+        })
+        .collect();
+
     Plot {
         points,
-        x_ticks: time_ticks(t_lo, t_hi)
-            .into_iter()
-            .map(|t| ChartTick {
-                pos: x_of(t),
-                label: format_time(t, false).into(),
-            })
-            .collect(),
+        x_ticks,
         y_ticks: axis
             .ticks
             .into_iter()
             .map(|v| ChartTick {
                 pos: y_of(v),
                 label: format_stat(v).into(),
+                // A value axis has no date line.
+                date_label: Default::default(),
             })
             .collect(),
         line: line.trim_end().to_string(),
@@ -196,12 +269,20 @@ pub fn plot(series: &Series) -> Plot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::FixedOffset;
     use fitz_core::analytics::{Metric, SamplePoint};
     use std::path::PathBuf;
+
+    /// UTC+02:00 — a zone far enough east that a UTC-evening session lands on
+    /// the next local day, which is exactly what the axis has to get right.
+    fn tz() -> FixedOffset {
+        FixedOffset::east_opt(2 * 3600).unwrap()
+    }
 
     fn series(samples: &[(f64, f64)]) -> Series {
         Series {
             metric: Metric::Mean,
+            unavailable: 0,
             points: samples
                 .iter()
                 .map(|&(time, value)| SamplePoint {
@@ -244,11 +325,11 @@ mod tests {
         // A 3-hour session ticks every half hour, on the half hour.
         let lo = fitz_core::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let ticks = time_ticks(lo, lo + 3.0 * 3600.0);
-        let labels: Vec<String> = ticks.iter().map(|&t| format_time(t, false)).collect();
+        let labels: Vec<String> = ticks.iter().map(|&t| format_time(t, &tz())).collect();
         assert_eq!(
             labels,
             [
-                "22:00", "22:30", "23:00", "23:30", "00:00", "00:30", "01:00"
+                "00:00", "00:30", "01:00", "01:30", "02:00", "02:30", "03:00"
             ]
         );
 
@@ -259,37 +340,86 @@ mod tests {
         assert!(
             ragged
                 .iter()
-                .all(|&t| format_time(t, true).ends_with(":00"))
+                .all(|&t| format_stamp(t, &tz()).ends_with(":00"))
         );
 
         // A 12-hour span steps up to hours rather than crowding the axis.
         let long = time_ticks(lo, lo + 12.0 * 3600.0);
         assert!(long.len() <= 7);
-        assert!(long.iter().all(|&t| format_time(t, false).ends_with(":00")));
+        assert!(long.iter().all(|&t| format_time(t, &tz()).ends_with(":00")));
 
         // A single instant still yields one tick rather than an empty axis.
         assert_eq!(time_ticks(lo, lo), vec![lo]);
     }
 
     #[test]
-    fn format_time_renders_utc_time_of_day() {
+    fn formatters_render_the_given_zones_wall_clock() {
         let t = fitz_core::info::parse_date_obs("2026-05-31T04:57:09.004664").unwrap();
-        assert_eq!(format_time(t, false), "04:57");
-        assert_eq!(format_time(t, true), "04:57:09");
-        // Midnight, and an epoch before 1970 (rem_euclid keeps the day positive).
-        assert_eq!(format_time(0.0, true), "00:00:00");
-        assert_eq!(format_time(-1.0, true), "23:59:59");
+        // UTC renders the timestamp as `DATE-OBS` spelled it.
+        assert_eq!(format_time(t, &chrono::Utc), "04:57");
+        assert_eq!(format_date(t, &chrono::Utc), "2026-05-31");
+        assert_eq!(format_stamp(t, &chrono::Utc), "2026-05-31 04:57:09");
+
+        // An eastward offset shifts the clock, here within the same day.
+        assert_eq!(format_time(t, &tz()), "06:57");
+        assert_eq!(format_stamp(t, &tz()), "2026-05-31 06:57:09");
+
+        // The point of the exercise: an offset that carries the timestamp over
+        // a date boundary must move the date with it, in both directions.
+        let evening = fitz_core::info::parse_date_obs("2026-06-22T23:30:00").unwrap();
+        assert_eq!(format_date(evening, &tz()), "2026-06-23");
+        assert_eq!(format_time(evening, &tz()), "01:30");
+
+        let west = FixedOffset::west_opt(5 * 3600).unwrap();
+        let morning = fitz_core::info::parse_date_obs("2026-06-22T02:00:00").unwrap();
+        assert_eq!(format_date(morning, &west), "2026-06-21");
+        assert_eq!(format_time(morning, &west), "21:00");
+
+        // The epoch itself, and an instant before it.
+        assert_eq!(format_stamp(0.0, &chrono::Utc), "1970-01-01 00:00:00");
+        assert_eq!(format_stamp(-1.0, &chrono::Utc), "1969-12-31 23:59:59");
+    }
+
+    #[test]
+    fn x_ticks_carry_the_date_only_where_it_changes() {
+        // A session running up to and through local midnight: 22:00 UTC is
+        // 00:00 in `tz()`, so start an hour earlier to sit on the day before.
+        let lo = fitz_core::info::parse_date_obs("2026-06-22T21:00:00").unwrap();
+        let p = plot_in(
+            &series(&[(lo, 100.0), (lo + 3600.0, 150.0), (lo + 7200.0, 200.0)]),
+            &tz(),
+        );
+
+        let labels: Vec<(&str, &str)> = p
+            .x_ticks
+            .iter()
+            .map(|t| (t.date_label.as_str(), t.label.as_str()))
+            .collect();
+        // The first tick is dated; the rest stay bare until midnight rolls the
+        // date over, and the day after that goes bare again.
+        assert_eq!(
+            labels,
+            [
+                ("2026-06-22", "23:00"),
+                ("", "23:30"),
+                ("2026-06-23", "00:00"),
+                ("", "00:30"),
+                ("", "01:00"),
+            ]
+        );
+
+        // A value axis never carries a date line.
+        assert!(p.y_ticks.iter().all(|t| t.date_label.is_empty()));
     }
 
     #[test]
     fn plot_normalizes_points_into_the_unit_square() {
         // Three frames an hour apart with a rising metric.
         let lo = fitz_core::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
-        let p = plot(&series(&[
-            (lo, 100.0),
-            (lo + 3600.0, 150.0),
-            (lo + 7200.0, 200.0),
-        ]));
+        let p = plot_in(
+            &series(&[(lo, 100.0), (lo + 3600.0, 150.0), (lo + 7200.0, 200.0)]),
+            &tz(),
+        );
 
         // X spans first..last; the middle sample sits halfway.
         assert_eq!(p.points[0].x, 0.0);
@@ -299,7 +429,8 @@ mod tests {
         assert!(p.points[0].y > p.points[1].y && p.points[1].y > p.points[2].y);
         assert!(p.points.iter().all(|q| (0.0..=1.0).contains(&q.y)));
         assert_eq!(p.points[1].value_label, "150");
-        assert_eq!(p.points[1].time_label, "23:00:00");
+        // The tooltip stamp is the full local date and time.
+        assert_eq!(p.points[1].time_label, "2026-06-23 01:00:00");
 
         // The line is one move followed by a lineto per remaining point, in the
         // same coordinates as the marks.
@@ -315,10 +446,10 @@ mod tests {
     #[test]
     fn plot_handles_empty_and_degenerate_series() {
         // Nothing to plot: no points, no line, no ticks.
-        assert_eq!(plot(&series(&[])), Plot::default());
+        assert_eq!(plot_in(&series(&[]), &tz()), Plot::default());
 
         // A single frame has no time span to normalize against, so it centers.
-        let one = plot(&series(&[(1000.0, 42.0)]));
+        let one = plot_in(&series(&[(1000.0, 42.0)]), &tz());
         assert_eq!(one.points.len(), 1);
         assert_eq!(one.points[0].x, 0.5);
         assert!((0.0..=1.0).contains(&one.points[0].y));
@@ -326,7 +457,7 @@ mod tests {
 
         // Several frames sharing one timestamp likewise collapse onto X 0.5
         // without producing NaNs.
-        let same = plot(&series(&[(1000.0, 1.0), (1000.0, 2.0)]));
+        let same = plot_in(&series(&[(1000.0, 1.0), (1000.0, 2.0)]), &tz());
         assert!(same.points.iter().all(|p| p.x == 0.5 && p.y.is_finite()));
     }
 }
