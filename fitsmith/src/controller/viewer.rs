@@ -135,7 +135,7 @@ fn spawn_load(weak: Weak<AppWindow>, path: PathBuf, p: PreviewParams, req: u64) 
 /// Read a FITS file, render its preview, and derive its header cards and pixel
 /// stats — the whole display-ready document — calling `report` with the name of
 /// each stage as it starts. Runs on a worker.
-fn load_and_render(
+pub(super) fn load_and_render(
     path: &Path,
     p: &PreviewParams,
     report: &dyn Fn(&'static str),
