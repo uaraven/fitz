@@ -23,11 +23,10 @@ export component AnalyticsDialog inherits DialogCard {
     in property <[ChartTick]> y-ticks;
     in property <string> line-commands;
     in property <string> metric-label;
-    // How many frames made it onto the plot, and how many were skipped
-    // (no parseable DATE-OBS / already-debayered RGB).
+    // How many frames made it onto the plot, and how many were skipped for
+    // having no parseable acquisition time (DATE-LOC / DATE-OBS).
     in property <int> plotted-count;
     in property <int> skipped-no-date;
-    in property <int> skipped-not-mono;
     // Frames that analyzed fine but have no value for the plotted metric,
     // already worded by the controller (e.g. "2 with no stars detected").
     // A built string rather than an int like its `skipped-*` neighbours because
@@ -114,8 +113,6 @@ export component AnalyticsDialog inherits DialogCard {
             text: root.plotted-count + " plotted"
                 + (root.skipped-no-date > 0
                     ? ", " + root.skipped-no-date + " skipped (no DATE-OBS)" : "")
-                + (root.skipped-not-mono > 0
-                    ? ", " + root.skipped-not-mono + " skipped (not mono)" : "")
                 + (root.unavailable-note != "" ? ", " + root.unavailable-note : "");
             color: #a0a0a0;
             font-size: 12px;

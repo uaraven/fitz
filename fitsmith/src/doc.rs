@@ -43,6 +43,11 @@ pub struct StatSummary {
     ///
     /// [`detection_plane`]: libfitz::fits_image::detection_plane
     pub stars: Option<StarSummary>,
+    /// The channel these numbers were measured on when it would otherwise be
+    /// ambiguous: `Some("G")` for an already-debayered RGB cube (stats and stars
+    /// come from its green channel), `None` for a single-channel frame where
+    /// there is nothing to disambiguate.
+    pub channel: Option<&'static str>,
 }
 
 /// The frame's star metrics for the stats panel: how many stars were accepted
@@ -63,8 +68,9 @@ pub struct LoadedDoc {
     /// The curated metadata summary (label/value pairs), the same fields the
     /// `fitz info` command reports, for the docked info panel.
     pub info: Vec<SummaryField>,
-    /// `None` for an already-debayered RGB cube, where per-pixel stats over a
-    /// single channel aren't meaningful (mirrors `header_info_with`).
+    /// The pixel statistics and star metrics for the stats panel. Always
+    /// computed for a loaded frame; an already-debayered RGB cube's numbers come
+    /// from its green channel (flagged via [`StatSummary::channel`]).
     pub stats: Option<StatSummary>,
 }
 
@@ -86,19 +92,21 @@ impl LoadedDoc {
             },
         );
         let info = hi.summary();
-        let stats = (!is_debayered_rgb_cube(header, img)).then(|| {
-            let s = pixel_stats(header, img);
-            StatSummary {
-                min: s.min,
-                max: s.max,
-                mean: s.mean,
-                median: s.median,
-                sigma: s.sigma,
-                mad: s.mad,
-                zeros: s.zeros,
-                histogram: normalize_histogram(&s.histogram),
-                stars: hi.stars.as_ref().map(star_summary),
-            }
+        // An already-debayered RGB cube's stats and star metrics are measured on
+        // its green channel (see `header_info_from`); the panel labels them so.
+        let channel = is_debayered_rgb_cube(header, img).then_some("G");
+        let s = pixel_stats(header, img);
+        let stats = Some(StatSummary {
+            min: s.min,
+            max: s.max,
+            mean: s.mean,
+            median: s.median,
+            sigma: s.sigma,
+            mad: s.mad,
+            zeros: s.zeros,
+            histogram: normalize_histogram(&s.histogram),
+            stars: hi.stars.as_ref().map(star_summary),
+            channel,
         });
         LoadedDoc {
             preview,
@@ -215,5 +223,30 @@ mod tests {
     fn empty_histogram_is_all_zero() {
         let norm = normalize_histogram(&vec![0u64; HISTOGRAM_BUCKETS]);
         assert!(norm.iter().all(|&h| h == 0.0));
+    }
+
+    #[test]
+    fn rgb_cube_doc_has_green_channel_stats() {
+        use libfitz::fitskit::PixelData;
+        use libfitz::preview::{PreviewImage, PreviewSource};
+
+        // A 4x3 RGB cube with sequential planes: R = 0..=11, G = 12..=23,
+        // B = 24..=35. The stats panel is no longer blank for a cube — it shows
+        // the green channel (12..=23), flagged with channel "G".
+        let (w, h) = (4usize, 3usize);
+        let n = w * h;
+        let pixels: Vec<i16> = (0..3 * n).map(|i| i as i16).collect();
+        let img = ImageData::new(vec![w, h, 3], PixelData::I16(pixels));
+        let preview = PreviewImage {
+            width: w,
+            height: h,
+            rgba8: vec![0; w * h * 4],
+            source: PreviewSource::AlreadyDebayeredRgbCube,
+        };
+
+        let doc = LoadedDoc::build(&Header::default(), &img, preview);
+        let stats = doc.stats.expect("green-channel stats");
+        assert_eq!((stats.min, stats.max), (12.0, 23.0));
+        assert_eq!(stats.channel, Some("G"));
     }
 }

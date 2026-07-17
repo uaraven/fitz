@@ -139,7 +139,6 @@ fn abort_batch(st: &mut AppState) -> u64 {
 struct Batch {
     metrics: Vec<FileMetrics>,
     no_date: usize,
-    not_mono: usize,
     failed: usize,
 }
 
@@ -168,7 +167,6 @@ fn analyze_batch(
         match analytics::analyze_file(path, &opts) {
             Ok(FileAnalysis::Analyzed(m)) => batch.metrics.push(m),
             Ok(FileAnalysis::Skipped(SkipReason::NoDateObs)) => batch.no_date += 1,
-            Ok(FileAnalysis::Skipped(SkipReason::NotMono)) => batch.not_mono += 1,
             Err(e) => {
                 batch.failed += 1;
                 failed(path, e.to_string());
@@ -233,7 +231,6 @@ fn spawn_analysis(
             clear_progress(&app);
             app.set_analytics_progress(1.0);
             app.set_analytics_skipped_no_date(batch.no_date as i32);
-            app.set_analytics_skipped_not_mono(batch.not_mono as i32);
             STATE.with(|s| s.borrow_mut().analytics = batch.metrics);
             replot(&app);
             app.set_show_analytics(true);
@@ -412,7 +409,7 @@ mod tests {
         // (DATE-LOC, else DATE-OBS; the second tile-compressed, decompressed
         // transparently), so both measure.
         assert_eq!(batch.metrics.len(), 2);
-        assert_eq!((batch.no_date, batch.not_mono), (0, 0));
+        assert_eq!(batch.no_date, 0);
         // The pixel family must not have paid for star detection.
         assert!(batch.metrics.iter().all(|m| m.stars.is_none()));
         // The unreadable path is reported once and doesn't abort the batch.

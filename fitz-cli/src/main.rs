@@ -312,12 +312,12 @@ struct SplitChannelArgs {
 struct InfoArgs {
     /// Read the pixel data (decompressing first if needed) and report pixel
     /// statistics (min/max/mean/median and the count of zero-valued pixels).
-    /// Not supported for debayered RGB images.
+    /// For a debayered RGB cube these are the green channel's.
     #[arg(long)]
     pixel: bool,
     /// Detect the frame's stars and report their count and median HFR, FWHM and
-    /// eccentricity. Independent of --pixel in both directions. Not supported
-    /// for debayered RGB images.
+    /// eccentricity. Independent of --pixel in both directions. For a debayered
+    /// RGB cube detection runs on the green channel.
     #[arg(long)]
     stars: bool,
     /// Use a logarithmic vertical axis for the pixel histogram. Only useful
