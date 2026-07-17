@@ -56,6 +56,33 @@ and the CLI behave identically.
      - **Export** — **Export PNG** saves the chart exactly as drawn, and **Export CSV** saves
        the plotted series as `time_iso,epoch_seconds,value` rows. Both cover the metric
        currently on screen.
+ - **Star metrics** — the Tools menu's Star metrics… charts what the frames' *stars* did over
+   the session. It is the same chart as Analytics — same time axis, zoom, skip counts, PNG and
+   CSV exports — over a different set of measurements, and it is a separate menu item for a
+   reason: answering it means detecting every star in every frame, on top of reading every
+   pixel. Analytics never pays that and stays as fast as it has always been; opening Star
+   metrics is the opt-in.
+     - **Metrics** — **HFR** (half-flux radius) and **FWHM** measure focus and seeing: the
+       smaller, the sharper, and a rising line through the night is a focuser drifting with
+       temperature. **Eccentricity** runs from 0 (round stars) to nearly 1 (streaks) and
+       measures tracking: a spike marks a guiding failure, a wind gust, or field rotation.
+       **Star count** measures transparency — it drops when cloud, haze or moonlight arrives,
+       and it is the cheapest cloud detector you have.
+     - **Each is a median** across the frame's accepted stars, so one satellite trail can't
+       move the number. Hot pixels, nebulosity, stars clipped at the sensor's ceiling and
+       stars touching the frame border are all rejected before measuring — a saturated star's
+       flat top would read as *better* focus, which is exactly the wrong answer.
+     - **"N with no stars detected"** — frames where detection found nothing are counted under
+       the chart rather than plotted. That count is a reading in its own right: a run of
+       starless frames is a cloud bank. (Star count still plots them, at zero — that *is* the
+       measurement.)
+     - **Colour (CFA) frames measure HFR and FWHM in half-resolution pixels** — about half the
+       number NINA reports for the same frame. A star sampled through a Bayer filter is not a
+       point-spread function, so detection runs on the green super-pixel plane, where each
+       pixel averages one 2x2 cell's two green sites. This is not a bug to work around: every
+       frame in a session comes off the same sensor, so the trend — the only thing a time
+       series shows — is unaffected. Compare fitz's numbers against fitz's, not against NINA's.
+     - Already-debayered RGB frames are skipped, as they are in Analytics.
 
 
 For example here is the mean ADU chart clearly showing when the wildfire smoke arrived and affected seeing and total brightness
