@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use fitskit::FitsFile;
 
-use crate::fits_image::{detection_plane, find_image_hdu, is_debayered_rgb_cube};
+use crate::fits_image::{detection_plane, find_image_hdu};
 use crate::info::{PixelStats, parse_date_obs, pixel_stats};
 use crate::stars::{StarDetectOptions, StarStats, detect_stars, plane_background};
 
@@ -159,10 +159,6 @@ pub enum SkipReason {
     /// No usable acquisition time — neither `DATE-LOC` nor `DATE-OBS` is
     /// present and parseable, so the frame has no place on the time axis.
     NoDateObs,
-    /// An already-debayered RGB cube — ADU statistics are only meaningful on
-    /// raw, non-debayered frames (mirrors `header_info_with`, which
-    /// also declines to compute `PixelStats` for an RGB cube).
-    NotMono,
 }
 
 /// The outcome of analyzing one file: either its metrics or the reason it was
@@ -238,12 +234,12 @@ pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> 
     }) else {
         return Ok(FileAnalysis::Skipped(SkipReason::NoDateObs));
     };
-    if is_debayered_rgb_cube(header, img) {
-        return Ok(FileAnalysis::Skipped(SkipReason::NotMono));
-    }
 
-    // The RGB-cube skip above means the frame is a mosaic or mono, which is
-    // exactly what `detection_plane` accepts.
+    // Every image shape `detection_plane` and `pixel_stats` accept is analyzed:
+    // a mono frame and a CFA mosaic on their own values, an already-debayered
+    // RGB cube on its green channel (the plane with the most signal — see
+    // `detection_plane`). Only a shape neither can reduce (e.g. a >3-plane cube)
+    // surfaces as a read `Err`.
     let stars = if opts.detect_stars {
         let plane = detection_plane(header, img)?;
         let bg = plane_background(&plane);
@@ -397,12 +393,15 @@ mod tests {
     }
 
     #[test]
-    fn analyze_file_skips_rgb_cube_as_not_mono() {
-        // A debayered RGB cube with a valid DATE-OBS: skipped for its shape,
-        // not for its timestamp.
+    fn analyze_file_measures_an_rgb_cube_on_its_green_channel() {
+        // A debayered RGB cube is no longer skipped: its statistics are measured
+        // on the green channel. The fixture's planes are sequential, so for a
+        // 2x2 frame (n=4) the green plane holds 4..=7 — min=4, max=7, over just
+        // the one plane's four samples, not all twelve.
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("rgb.fits");
-        let img = ImageData::new(vec![2, 2, 3], PixelData::I16(vec![0; 12]));
+        let pixels: Vec<i16> = (0..12).collect();
+        let img = ImageData::new(vec![2, 2, 3], PixelData::I16(pixels));
         let mut fits = FitsFile::with_primary_image(img);
         fits.primary_mut().header.set(
             "DATE-OBS",
@@ -410,7 +409,21 @@ mod tests {
             None,
         );
         fits.to_file(&input).unwrap();
-        assert_eq!(skip_reason(&input), SkipReason::NotMono);
+
+        let m = metrics(&input);
+        assert_eq!((m.stats.min, m.stats.max), (4.0, 7.0));
+        assert_eq!(m.stats.count, 4);
+    }
+
+    #[test]
+    fn analyze_file_detects_stars_on_an_rgb_cube() {
+        // The star family also handles a cube now: detection runs on the green
+        // channel at full resolution rather than erroring.
+        let m = metrics_with(
+            &test_data("uncompressed_debayer.fits"),
+            &AnalyzeOptions { detect_stars: true },
+        );
+        assert!(m.stars.as_ref().expect("stars measured").count > 0);
     }
 
     #[test]

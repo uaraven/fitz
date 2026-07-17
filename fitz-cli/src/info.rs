@@ -1,8 +1,8 @@
 //! The `info` command: print a human-readable summary of a FITS image —
 //! resolution, bit depth, channel count and sky coordinates. With `--pixel`
 //! it additionally reads the (possibly tile-compressed) pixel data and reports
-//! basic pixel statistics, which are only meaningful for single-channel,
-//! non-debayered data.
+//! basic pixel statistics. For an already-debayered RGB cube those statistics
+//! (and `--stars` metrics) are measured on the frame's green channel.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -61,18 +61,22 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     }
 
     // Pixel statistics are only computed on request (`--pixel`), since they
-    // require reading and decompressing the full pixel array. They only make
-    // sense for a single, non-debayered channel: mixing the R/G/B planes of an
-    // RGB cube would give a meaningless figure.
+    // require reading and decompressing the full pixel array. For an
+    // already-debayered RGB cube they are measured on the green channel (noted
+    // below) rather than blending the R/G/B planes into a meaningless figure.
     if opts.pixel {
         match &info.pixel_stats {
+            // Unreachable while `--pixel` is set (stats are always computed on
+            // request), but a graceful fallback beats an empty section.
             None => {
-                let _ = writeln!(
-                    out,
-                    "  Pixels:      pixel statistics are not supported for debayered images"
-                );
+                let _ = writeln!(out, "  Pixels:      pixel statistics unavailable");
             }
             Some(stats) => {
+                // An RGB cube's statistics are the green channel's; say so up
+                // front so the numbers below aren't read as a whole-frame figure.
+                if info.channels == 3 {
+                    let _ = writeln!(out, "  Channel:     green (of RGB cube)");
+                }
                 // Split across lines by meaning rather than crowding everything
                 // onto `Pixels:`; each label pads into the same column as the
                 // metadata fields above.
@@ -139,11 +143,11 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 fn push_stars(out: &mut String, info: &libfitz::info::HeaderInfo) {
     let Some(report) = &info.stars else {
         // An unsupported shape, not a broken file: making this a per-file error
-        // would print `fitz: <path>: <err>` and fail the whole batch's exit code
-        // over a debayered cube. Mirrors the `--pixel` notice above.
+        // would print `fitz: <path>: <err>` and fail the whole batch's exit code.
+        // Mirrors the `--pixel` notice above.
         let _ = writeln!(
             out,
-            "  Stars:       star metrics are not supported for debayered images"
+            "  Stars:       star metrics are unavailable for this image shape"
         );
         return;
     };
@@ -179,14 +183,21 @@ fn push_stars(out: &mut String, info: &libfitz::info::HeaderInfo) {
 /// file "fitz reports half of NINA's HFR" as a bug. A readme note is easy to
 /// miss; the line under the number is not. The rule is a comparison against the
 /// reported plane size, never a re-derivation of `detection_plane`'s halving.
+///
+/// Two shapes measure on a plane that isn't the whole frame: a CFA mosaic on its
+/// half-resolution green super-pixel plane, and an already-debayered RGB cube on
+/// its full-resolution green channel. The mosaic gives itself away by a plane
+/// size below the frame's; the cube matches the frame's size, so it is
+/// identified by its 3-channel shape instead.
 fn star_plane_note(info: &libfitz::info::HeaderInfo) -> Option<String> {
     let report = info.stars.as_ref()?;
-    (report.plane_width != info.width || report.plane_height != info.height).then(|| {
-        format!(
+    if report.plane_width != info.width || report.plane_height != info.height {
+        return Some(format!(
             "measured on the green super-pixel plane, {} x {}",
             report.plane_width, report.plane_height
-        )
-    })
+        ));
+    }
+    (info.channels == 3).then(|| "measured on the green channel of the RGB cube".to_string())
 }
 
 /// Round to `places` decimal places. Star shapes are measurements good to a
@@ -507,5 +518,35 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn info_file_reads_pixels_and_stars_on_an_rgb_cube() {
+        // The bundled debayered frame is a 3-plane RGB cube: `--pixel`/`--stars`
+        // now succeed on it (measuring the green channel) rather than printing
+        // an "unsupported" notice.
+        let input = test_data("uncompressed_debayer.fits");
+        info_file(
+            &input,
+            &InfoOptions {
+                pixel: true,
+                stars: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn star_plane_note_flags_the_green_channel_of_an_rgb_cube() {
+        // A debayered cube detects on its full-resolution green channel: the
+        // plane matches the frame size, so it's identified by the 3-channel
+        // shape and captioned accordingly rather than left uncaptioned.
+        let info = star_info("uncompressed_debayer.fits");
+        assert_eq!(info.channels, 3);
+        assert_eq!(
+            star_plane_note(&info).as_deref(),
+            Some("measured on the green channel of the RGB cube")
+        );
     }
 }

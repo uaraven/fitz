@@ -168,9 +168,11 @@ pub fn sample_saturation(header: &Header, img: &ImageData) -> f64 {
 /// Build the mono plane star detection runs on:
 ///   - a CFA mosaic (`BAYERPAT` present) → the green super-pixel plane, each
 ///     pixel the mean of one 2x2 cell's two green sites, so `(w/2 x h/2)`;
-///   - a mono frame (2D, no `BAYERPAT`) → the frame's own scaled values.
+///   - a mono frame (2D, no `BAYERPAT`) → the frame's own scaled values;
+///   - an already-debayered RGB cube (`NAXIS3=3`, no `BAYERPAT`) → its green
+///     channel at full resolution ([`green_plane`]).
 ///
-/// Anything else — notably an already-debayered RGB cube — is an error.
+/// Anything else (e.g. a >3-plane cube) is an error.
 ///
 /// **A CFA frame's measurements come out in half-resolution pixels.** An HFR or
 /// FWHM measured here reads about half the number NINA reports for the same
@@ -178,11 +180,15 @@ pub fn sample_saturation(header: &Header, img: &ImageData) -> f64 {
 /// frame in a session comes off the same sensor, so the trend — the only thing
 /// a time series shows — is unaffected. A caller that reports absolute numbers
 /// should say which plane they were measured on (compare the returned width
-/// against the frame's).
+/// against the frame's). An RGB cube's green plane is *full* resolution, so its
+/// numbers read about twice a raw mosaic's — the same caveat, opposite sign.
 ///
 /// Why a super-pixel plane at all: a star profile sampled through a Bayer
 /// filter is not a PSF, and the HFR measured from it is noise.
 pub fn detection_plane(header: &Header, img: &ImageData) -> Result<MonoPlane> {
+    if is_debayered_rgb_cube(header, img) {
+        return Ok(green_plane(header, img));
+    }
     if img.axes.len() != 2 {
         bail!(
             "star detection needs a single-plane image, not a {}-axis one",
@@ -228,6 +234,72 @@ pub fn detection_plane(header: &Header, img: &ImageData) -> Result<MonoPlane> {
         // saturation carries over unchanged.
         saturation,
     })
+}
+
+/// Reduce an already-debayered 3-plane RGB cube to a single [`MonoPlane`] — its
+/// green channel, at the frame's full resolution.
+///
+/// Green is the channel to measure on: a Bayer sensor has twice as many green
+/// sites as red or blue, so green carries the most signal and the least noise,
+/// and detecting on green keeps a debayered cube's numbers comparable to the
+/// green super-pixel plane a raw mosaic uses ([`detection_plane`]). Unlike that
+/// half-resolution mosaic plane, this is full resolution — see the caveat on
+/// [`detection_plane`].
+///
+/// A **float** cube's green channel is quantized to the unsigned-16 range by a
+/// fixed full-scale mapping — physical `1.0` → 65535 — so it analyzes like the
+/// 16-bit CFA frames it sits alongside: normalized float data (drizzle output is
+/// commonly `[0, 1]`) would otherwise plot near zero on an ADU chart and have no
+/// meaningful saturation ceiling. The scale is deliberately *fixed*, not the
+/// frame's own max → 65535 that the stretch path uses: a per-frame
+/// max-normalization would rescale every frame differently, so one star would
+/// report a different ADU from sub to sub and a session's chart would be
+/// meaningless. Values above `1.0` clamp at the ceiling, as an over-range
+/// integer would. Integer cubes already fit `[0, 65535]` and keep their physical
+/// values (and the source sample type's ceiling).
+///
+/// The caller must have established the cube shape (this indexes `axes[0..2]`
+/// and reads the middle third of the samples); [`detection_plane`] and
+/// [`crate::info::pixel_stats`] gate on [`is_debayered_rgb_cube`] first.
+pub fn green_plane(header: &Header, img: &ImageData) -> MonoPlane {
+    let physical = green_plane_values(header, img);
+    let (values, saturation) = match &img.pixels {
+        PixelData::F32(_) | PixelData::F64(_) => {
+            // Fixed full-scale map (1.0 → 65535), rounded and clamped into the
+            // unsigned-16 range — not the stretch path's per-frame max scaling.
+            let quantized = physical
+                .par_iter()
+                .map(|&v| f64::from(round_to_u16(v * f64::from(u16::MAX))))
+                .collect();
+            (quantized, f64::from(u16::MAX))
+        }
+        _ => (physical, sample_saturation(header, img)),
+    };
+    MonoPlane {
+        width: img.axes[0],
+        height: img.axes[1],
+        values,
+        saturation,
+    }
+}
+
+/// The physical (BSCALE/BZERO-applied) values of a 3-plane RGB cube's green
+/// channel. FITS stores the cube planar — the full red plane, then green, then
+/// blue — so the green channel is the middle `width*height` samples; only those
+/// are scaled, never materializing the red and blue planes as `f64`.
+fn green_plane_values(header: &Header, img: &ImageData) -> Vec<f64> {
+    let (bscale, bzero) = bscale_bzero(header);
+    let plane_len = img.axes[0] * img.axes[1];
+    let green = plane_len..2 * plane_len;
+    let scale = |x: f64| bzero + bscale * x;
+    match &img.pixels {
+        PixelData::U8(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::I16(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::I32(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::I64(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::F32(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::F64(v) => v[green].par_iter().map(|&x| scale(x)).collect(),
+    }
 }
 
 /// The two green sites within a 2x2 CFA cell, as `(x, y)` offsets.
@@ -831,10 +903,73 @@ mod tests {
     }
 
     #[test]
-    fn detection_plane_rejects_an_rgb_cube() {
-        // Star detection on a debayered cube is out of scope: it would need a
-        // green plane at full resolution, and the dialogs skip cubes anyway.
-        let img = ImageData::new(vec![2, 2, 3], PixelData::I16(vec![0; 12]));
+    fn detection_plane_of_an_rgb_cube_is_its_green_plane() {
+        // An already-debayered cube (no BAYERPAT) reduces to its green channel
+        // at full resolution: the middle third of the planar samples, unchanged.
+        // Planes are R = 1..=4, G = 10..=40, B = 100..=400.
+        let img = ImageData::new(
+            vec![2, 2, 3],
+            PixelData::I16(vec![1, 2, 3, 4, 10, 20, 30, 40, 100, 200, 300, 400]),
+        );
+        let plane = detection_plane(&Header::default(), &img).unwrap();
+        assert_eq!((plane.width, plane.height), (2, 2));
+        assert_eq!(plane.values, vec![10.0, 20.0, 30.0, 40.0]);
+    }
+
+    #[test]
+    fn green_plane_of_a_float_cube_maps_full_scale_to_the_unsigned16_range() {
+        // A float cube's green channel is quantized by a fixed full-scale map
+        // (physical 1.0 -> 65535), matching a 16-bit CFA frame's 0..=65535 axis —
+        // *not* the frame's own max, which would rescale every frame differently.
+        // Planes: R = 0, G = 0/0.25/0.5/1.0, B = 0. So 0.25 -> 16384,
+        // 0.5 -> 32768, 1.0 -> 65535.
+        let mut pixels = vec![0.0f32; 4]; // red plane
+        pixels.extend_from_slice(&[0.0, 0.25, 0.5, 1.0]); // green plane
+        pixels.extend_from_slice(&[0.0f32; 4]); // blue plane
+        let img = ImageData::new(vec![2, 2, 3], PixelData::F32(pixels));
+
+        let plane = green_plane(&Header::default(), &img);
+        assert_eq!(plane.saturation, 65535.0);
+        assert_eq!(plane.values, vec![0.0, 16384.0, 32768.0, 65535.0]);
+    }
+
+    #[test]
+    fn green_plane_of_a_float_cube_clamps_values_above_full_scale() {
+        // The fixed map is absolute, so a physical value above 1.0 clamps at the
+        // 65535 ceiling rather than pulling the whole frame's scale down (which a
+        // max-normalization would do) — an over-range sample reads as saturated,
+        // exactly as an over-range integer would.
+        let mut pixels = vec![0.0f32; 4];
+        pixels.extend_from_slice(&[0.5, 1.0, 1.5, 2.0]); // green: two over full scale
+        pixels.extend_from_slice(&[0.0f32; 4]);
+        let img = ImageData::new(vec![2, 2, 3], PixelData::F32(pixels));
+
+        let plane = green_plane(&Header::default(), &img);
+        assert_eq!(plane.values, vec![32768.0, 65535.0, 65535.0, 65535.0]);
+    }
+
+    #[test]
+    fn green_plane_of_an_integer_cube_keeps_its_physical_values() {
+        // An integer cube already fits 0..=65535, so its green channel is left
+        // as its physical values and carries the source sample type's ceiling
+        // (65535 under the unsigned-16 convention) — no rescaling.
+        let img = ImageData::new(
+            vec![2, 2, 3],
+            PixelData::I16(vec![1, 2, 3, 4, 10, 20, 30, 40, 100, 200, 300, 400]),
+        );
+        let mut header = Header::default();
+        header.set(BZERO, HeaderValue::Float(32768.0), None);
+        let plane = green_plane(&header, &img);
+        assert_eq!(plane.saturation, 65535.0);
+        // Physical = raw + 32768 (BZERO), no max-normalization.
+        assert_eq!(plane.values, vec![32778.0, 32788.0, 32798.0, 32808.0]);
+    }
+
+    #[test]
+    fn detection_plane_rejects_a_non_rgb_cube() {
+        // A cube that isn't a 3-plane RGB frame has no green channel to select
+        // and no super-pixel plane to build: still an error.
+        let img = ImageData::new(vec![2, 2, 4], PixelData::I16(vec![0; 16]));
         assert!(detection_plane(&Header::default(), &img).is_err());
     }
 
