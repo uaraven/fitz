@@ -34,7 +34,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use fitz_core::analytics::FileMetrics;
+use fitz_core::analytics::{FileMetrics, MetricFamily};
 use fitz_core::fitskit::CompressionType;
 use fitz_core::preview::PreviewParams;
 use slint::{Model, ModelRc, Timer, VecModel};
@@ -76,6 +76,10 @@ struct AppState {
     /// Raised to ask the running analytics worker to stop between files. Each
     /// batch gets a fresh flag, so cancelling one can't silence the next.
     analytics_cancel: Arc<AtomicBool>,
+    /// Which family the open chart dialog is showing — i.e. which of the two
+    /// menu entries opened it. Decides the dropdown's metrics, whether the
+    /// batch detects stars, and the export file-name prefix.
+    analytics_family: MetricFamily,
 }
 
 impl AppState {
@@ -95,6 +99,7 @@ impl AppState {
             analytics: Vec::new(),
             analytics_generation: 0,
             analytics_cancel: Arc::new(AtomicBool::new(false)),
+            analytics_family: MetricFamily::Pixel,
         }
     }
 }

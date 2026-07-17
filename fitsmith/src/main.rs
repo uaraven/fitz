@@ -103,6 +103,9 @@ fn main() -> Result<()> {
     forward!(on_open_analytics_dialog, |app| {
         controller::open_analytics_dialog(&app)
     });
+    forward!(on_open_star_metrics_dialog, |app| {
+        controller::open_star_metrics_dialog(&app)
+    });
     forward!(on_cancel_analytics, |app| controller::cancel_analytics(
         &app
     ));
