@@ -2,8 +2,8 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use fitz_core::fits_image::find_image_hdu;
-use fitz_core::fitskit::FitsFile;
+use libfitz::fits_image::find_image_hdu;
+use libfitz::fitskit::FitsFile;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy)]

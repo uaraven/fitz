@@ -5,11 +5,11 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use fitz_core::fits_image::{find_image_hdu, high_byte, rgb16_to_rgb8};
-use fitz_core::fitskit::FitsFile;
-use fitz_core::preview::{PreviewSource, preview_rgb};
-use fitz_core::resize::resize_to_fit;
-use fitz_core::stretch::auto_stretch;
+use libfitz::fits_image::{find_image_hdu, high_byte, rgb16_to_rgb8};
+use libfitz::fitskit::FitsFile;
+use libfitz::preview::{PreviewSource, preview_rgb};
+use libfitz::resize::resize_to_fit;
+use libfitz::stretch::auto_stretch;
 
 use crate::io_prompt::print_step;
 use crate::kitty;
@@ -258,7 +258,7 @@ fn push_color_ansi(out: &mut String, is_bg: bool, r: u16, g: u16, b: u16, mode: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fitz_core::stretch::{StretchOptions, load_and_stretch};
+    use libfitz::stretch::{StretchOptions, load_and_stretch};
 
     use crate::test_support::test_data;
 

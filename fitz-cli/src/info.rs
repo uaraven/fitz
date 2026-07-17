@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::Result;
-use fitz_core::info::{InfoRequest, header_info_with, trim_float};
+use libfitz::info::{InfoRequest, header_info_with, trim_float};
 
 use crate::io_prompt::print_step;
 use crate::options::InfoOptions;
@@ -48,7 +48,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     // `Result`s are discarded.
     let mut out = String::new();
     let _ = writeln!(out, "{}", input.display());
-    // The curated metadata fields come from `fitz-core` so the CLI report and
+    // The curated metadata fields come from `libfitz` so the CLI report and
     // the GUI info panel stay in sync; the CLI just pads the labels into a column.
     for field in info.summary() {
         let _ = writeln!(
@@ -136,7 +136,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 
 /// Append the `--stars` report: the four metrics, and — when detection ran on a
 /// plane that isn't the frame — the note saying so.
-fn push_stars(out: &mut String, info: &fitz_core::info::HeaderInfo) {
+fn push_stars(out: &mut String, info: &libfitz::info::HeaderInfo) {
     let Some(report) = &info.stars else {
         // An unsupported shape, not a broken file: making this a per-file error
         // would print `fitz: <path>: <err>` and fail the whole batch's exit code
@@ -179,7 +179,7 @@ fn push_stars(out: &mut String, info: &fitz_core::info::HeaderInfo) {
 /// file "fitz reports half of NINA's HFR" as a bug. A readme note is easy to
 /// miss; the line under the number is not. The rule is a comparison against the
 /// reported plane size, never a re-derivation of `detection_plane`'s halving.
-fn star_plane_note(info: &fitz_core::info::HeaderInfo) -> Option<String> {
+fn star_plane_note(info: &libfitz::info::HeaderInfo) -> Option<String> {
     let report = info.stars.as_ref()?;
     (report.plane_width != info.width || report.plane_height != info.height).then(|| {
         format!(
@@ -200,7 +200,7 @@ fn round_to(v: f64, places: i32) -> f64 {
 /// padding trimmed. Each keyword is serialized back to its 80-column card image
 /// (so commentary cards and CONTINUE-split long strings are shown as they appear
 /// in the file), giving an unformatted dump rather than the curated summary.
-fn push_raw_headers(out: &mut String, header: &fitz_core::fitskit::Header) {
+fn push_raw_headers(out: &mut String, header: &libfitz::fitskit::Header) {
     for keyword in header.iter() {
         for card in keyword.to_cards() {
             // Cards are fixed-width ASCII; `from_utf8_lossy` is only a guard
@@ -319,10 +319,10 @@ fn render_histogram(hist: &[u64], width: usize, rows: usize, log: bool) -> Strin
 mod tests {
     use super::*;
     use crate::test_support::test_data;
-    use fitz_core::info::header_info_with;
+    use libfitz::info::header_info_with;
 
     /// `info --stars` on a bundled frame.
-    fn star_info(filename: &str) -> fitz_core::info::HeaderInfo {
+    fn star_info(filename: &str) -> libfitz::info::HeaderInfo {
         header_info_with(
             &test_data(filename),
             InfoRequest {

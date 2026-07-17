@@ -1,11 +1,11 @@
 //! The Tools menu's Compress / Decompress batch operations: their dialogs, the
 //! shared destination-folder handling, and the worker that rewrites each file
-//! through `fitz-core`.
+//! through `libfitz`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use fitz_core::fitskit::CompressionType;
+use libfitz::fitskit::CompressionType;
 use slint::{ComponentHandle, Model, Weak};
 
 use crate::AppWindow;
@@ -190,7 +190,7 @@ fn spawn_operation(
 }
 
 /// Compress or decompress one file: derive its output path, do the work via
-/// `fitz-core`, write the result, and (in replace mode) delete the source.
+/// `libfitz`, write the result, and (in replace mode) delete the source.
 /// Returns the path of the file that was written. Runs on a worker thread.
 fn process_one(
     op: Operation,
@@ -200,15 +200,15 @@ fn process_one(
 ) -> Result<PathBuf> {
     let (output, out_fits) = match op {
         Operation::Compress(algorithm) => {
-            let opts = fitz_core::compress::CompressOptions { algorithm };
+            let opts = libfitz::compress::CompressOptions { algorithm };
             (
                 compressed_output_path(input, output_dir),
-                fitz_core::compress::compress(input, &opts)?,
+                libfitz::compress::compress(input, &opts)?,
             )
         }
         Operation::Decompress => (
             decompressed_output_path(input, output_dir),
-            fitz_core::decompress::decompress(input)?,
+            libfitz::decompress::decompress(input)?,
         ),
     };
     out_fits

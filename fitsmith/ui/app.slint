@@ -105,7 +105,7 @@ export component AppWindow inherits Window {
     in-out property <length> analytics-card-width: 760px;
     in-out property <length> analytics-card-height: 540px;
     // Index into `analytics-metric-model`, which the controller fills from
-    // `fitz_core::analytics::Metric::of_family()` — so the dropdown order and
+    // `libfitz::analytics::Metric::of_family()` — so the dropdown order and
     // the plotted metric can't drift apart.
     in property <[string]> analytics-metric-model;
     in-out property <int> analytics-metric;

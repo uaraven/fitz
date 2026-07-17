@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use fitz_core::fits_image::LoadRgbNotice;
+use libfitz::fits_image::LoadRgbNotice;
 
 use crate::terminal::print_warning;
 

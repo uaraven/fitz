@@ -19,12 +19,12 @@ short_description = "A GUI frontend for the fitz FITS toolset."
 long_description = """
 FitSmith opens FITS astronomy images, debayers and auto-stretches them for a live
 preview, blinks through a working set, and inspects headers and pixel statistics.
-All FITS and image operations are performed by fitz-core.
+All FITS and image operations are performed by libfitz.
 """
 category = "public.app-category.graphics-design"
 
 [dependencies]
-fitz-core = { path = "../fitz-core" }
+libfitz = { path = "../libfitz" }
 slint = "1"
 rfd = "0.15"
 anyhow = "1"
@@ -33,7 +33,7 @@ sysinfo = "0.39.6"
 # The analytics chart labels its time axis in the machine's local zone, which
 # needs the OS zone database for DST and historical offsets — the `clock`
 # feature. Default features are off to keep the wasm/serde extras out of the
-# size-optimized release build. Note fitz-core and fitz-cli stay date-crate-free;
+# size-optimized release build. Note libfitz and fitz-cli stay date-crate-free;
 # only the GUI has any business knowing the user's wall clock.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 

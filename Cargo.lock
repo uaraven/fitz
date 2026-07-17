@@ -1540,7 +1540,7 @@ version = "0.1.6"
 dependencies = [
  "anyhow",
  "chrono",
- "fitz-core",
+ "libfitz",
  "objc2 0.6.4",
  "rfd",
  "slint",
@@ -1556,27 +1556,13 @@ dependencies = [
  "anyhow",
  "base64",
  "clap",
- "fitz-core",
  "libc",
+ "libfitz",
  "rayon 1.12.0",
  "sha2",
  "supports-color",
  "tempfile",
  "terminal_size",
- "tiff",
-]
-
-[[package]]
-name = "fitz-core"
-version = "0.1.6"
-dependencies = [
- "anyhow",
- "bayer",
- "fitskit",
- "image",
- "rayon 1.12.0",
- "sha2",
- "tempfile",
  "tiff",
 ]
 
@@ -2854,6 +2840,20 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "libfitz"
+version = "0.1.6"
+dependencies = [
+ "anyhow",
+ "bayer",
+ "fitskit",
+ "image",
+ "rayon 1.12.0",
+ "sha2",
+ "tempfile",
+ "tiff",
+]
 
 [[package]]
 name = "libfuzzer-sys"

@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use fitz_core::analytics::{
+use libfitz::analytics::{
     self, AnalyzeOptions, FileAnalysis, FileMetrics, Metric, MetricFamily, Series, SkipReason,
 };
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
