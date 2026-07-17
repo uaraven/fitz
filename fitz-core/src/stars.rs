@@ -240,7 +240,7 @@ fn aggregate(stars: &[Star]) -> StarStats {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::fits_image::{detection_plane, find_image_hdu};
     use crate::test_support::{test_data, write_star_field_fits};

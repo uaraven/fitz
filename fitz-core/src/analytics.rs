@@ -159,7 +159,7 @@ pub enum SkipReason {
     /// place on the time axis.
     NoDateObs,
     /// An already-debayered RGB cube — ADU statistics are only meaningful on
-    /// raw, non-debayered frames (mirrors `header_info_with_pixels`, which
+    /// raw, non-debayered frames (mirrors `header_info_with`, which
     /// also declines to compute `PixelStats` for an RGB cube).
     NotMono,
 }

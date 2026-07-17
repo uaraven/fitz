@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::Result;
-use fitz_core::info::{header_info, header_info_with_pixels, trim_float};
+use fitz_core::info::{InfoRequest, header_info_with, trim_float};
 
 use crate::io_prompt::print_step;
 use crate::options::InfoOptions;
@@ -20,11 +20,15 @@ const HISTOGRAM_ROWS: usize = 10;
 pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     print_step(opts.verbose, "reading");
 
-    let info = if opts.pixel {
-        header_info_with_pixels(input)?
-    } else {
-        header_info(input)?
-    };
+    // One read answers every flag: a caller asking for both must not open and
+    // decompress the frame twice.
+    let info = header_info_with(
+        input,
+        InfoRequest {
+            pixel_stats: opts.pixel,
+            stars: false,
+        },
+    )?;
 
     // `--headers` is a distinct mode: dump the image HDU's raw header cards
     // instead of the formatted summary. For a tile-compressed input this is the
