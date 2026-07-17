@@ -11,8 +11,10 @@ use fitskit::{FitsFile, Header, ImageData, PixelData};
 use rayon::prelude::*;
 
 use crate::fits_image::{
-    bscale_bzero, find_image_hdu, get_bayerpat, is_debayered_rgb_cube, scaled_pixels,
+    bscale_bzero, detection_plane, find_image_hdu, get_bayerpat, is_debayered_rgb_cube,
+    scaled_pixels,
 };
+use crate::stars::{StarDetectOptions, StarStats, detect_stars, plane_background};
 
 /// Number of buckets in the pixel-value histogram.
 pub const HISTOGRAM_BUCKETS: usize = 256;
@@ -90,38 +92,68 @@ pub struct HeaderInfo {
     pub focal_ratio: Option<f64>,
     pub date_obs: Option<String>,
     pub header: Header,
-    /// Only computed when the caller opts into it via [`header_info_with_pixels`].
+    /// Only computed when the caller asks via [`InfoRequest::pixel_stats`], and
+    /// never for an already-debayered RGB cube.
     pub pixel_stats: Option<PixelStats>,
+    /// Only computed when the caller asks via [`InfoRequest::stars`], and never
+    /// for an already-debayered RGB cube.
+    pub stars: Option<StarReport>,
+}
+
+/// What to compute beyond the header-derived metadata. Each field costs a pass
+/// over the pixels, so the caller asks for what it will actually print.
+///
+/// A request struct rather than one entry point per combination: the two flags
+/// are independent in both directions, and a `header_info_with_stars` plus a
+/// fourth for the pair is exactly the API sprawl this prevents.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct InfoRequest {
+    pub pixel_stats: bool,
+    pub stars: bool,
+}
+
+/// A frame's star metrics, plus the plane they were measured on.
+///
+/// The dimensions travel with the numbers because a CFA frame detects on a green
+/// super-pixel plane at half the frame's size, and its HFR/FWHM are in *that
+/// plane's* pixels — a report that omits this is actively misleading. A caller
+/// compares `plane_width` against the frame's width rather than re-deriving the
+/// "is it a super-pixel plane, and did an odd width drop a column" rule, which
+/// lives in [`detection_plane`] and must not drift.
+pub struct StarReport {
+    pub stats: StarStats,
+    pub plane_width: usize,
+    pub plane_height: usize,
 }
 
 /// Read `input`'s header and build a [`HeaderInfo`] summary, without reading
-/// (or decompressing) pixel data. Use [`header_info_with_pixels`] to also get
-/// [`PixelStats`].
+/// (or decompressing) pixel data. Use [`header_info_with`] to also get the
+/// statistics that need the pixels.
 pub fn header_info(input: &Path) -> Result<HeaderInfo> {
-    header_info_impl(input, false)
+    header_info_with(input, InfoRequest::default())
 }
 
-/// Like [`header_info`], but also reads (transparently decompressing if
-/// needed) the pixel data and computes [`PixelStats`] — meaningless for an
-/// already-debayered RGB cube, in which case `pixel_stats` stays `None`.
-pub fn header_info_with_pixels(input: &Path) -> Result<HeaderInfo> {
-    header_info_impl(input, true)
-}
-
-fn header_info_impl(input: &Path, with_pixels: bool) -> Result<HeaderInfo> {
+/// Like [`header_info`], but also reads (transparently decompressing if needed)
+/// the pixel data and computes whatever `req` asks for. One read serves both
+/// requests: a caller wanting pixel statistics *and* star metrics must not open
+/// and decompress the frame twice.
+pub fn header_info_with(input: &Path, req: InfoRequest) -> Result<HeaderInfo> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
     let (header, img) = find_image_hdu(&fits, input)?;
-    Ok(header_info_from(header, img.as_ref(), with_pixels))
+    Ok(header_info_from(header, img.as_ref(), req))
 }
 
 /// Build a [`HeaderInfo`] from an already-loaded image and header, without
 /// touching the filesystem. This is the shared core of [`header_info`] and lets
 /// callers that already hold a decoded `(header, img)` (e.g. the GUI's loader)
-/// reuse the same summary without a second read. `with_pixels` computes
-/// [`PixelStats`] (meaningless, and skipped, for an already-debayered RGB cube).
-pub fn header_info_from(header: &Header, img: &ImageData, with_pixels: bool) -> HeaderInfo {
+/// reuse the same summary without a second read.
+///
+/// Everything `req` asks for is skipped for an already-debayered RGB cube, where
+/// it would be meaningless: mixing the R/G/B planes gives a nonsense statistic,
+/// and star detection has no green plane to run on until Part 2 gives it one.
+pub fn header_info_from(header: &Header, img: &ImageData, req: InfoRequest) -> HeaderInfo {
     let is_rgb_cube = is_debayered_rgb_cube(header, img);
     let channels = if is_rgb_cube { 3 } else { 1 };
 
@@ -130,11 +162,10 @@ pub fn header_info_from(header: &Header, img: &ImageData, with_pixels: bool) -> 
     let bitpix = img.bitpix().to_i64();
     let is_unsigned16 = bitpix == 16 && header.get_float("BZERO").unwrap_or(0.0) == 32768.0;
 
-    let pixel_stats = if with_pixels && !is_rgb_cube {
-        Some(pixel_stats(header, img))
-    } else {
-        None
-    };
+    let pixel_stats = (req.pixel_stats && !is_rgb_cube).then(|| pixel_stats(header, img));
+    let stars = (req.stars && !is_rgb_cube)
+        .then(|| star_report(header, img))
+        .flatten();
 
     HeaderInfo {
         width,
@@ -161,7 +192,22 @@ pub fn header_info_from(header: &Header, img: &ImageData, with_pixels: bool) -> 
         date_obs: header.get_string("DATE-OBS").map(str::to_string),
         header: header.clone(),
         pixel_stats,
+        stars,
     }
+}
+
+/// Detect and measure the frame's stars. `None` for an image
+/// [`detection_plane`] can't build a plane from — a shape this summary reports
+/// but has nothing to say about, which is not an error the way an unreadable
+/// file is.
+fn star_report(header: &Header, img: &ImageData) -> Option<StarReport> {
+    let plane = detection_plane(header, img).ok()?;
+    let bg = plane_background(&plane);
+    Some(StarReport {
+        stats: detect_stars(&plane, &bg, &StarDetectOptions::default()),
+        plane_width: plane.width,
+        plane_height: plane.height,
+    })
 }
 
 /// One labeled field in a [`HeaderInfo::summary`] — a display label and its
@@ -850,7 +896,10 @@ pub(crate) fn median_in_place(values: &mut [f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
+    use crate::stars::tests::REAL_MOSAIC_STAR_COUNT;
+    use crate::test_support::{
+        test_data, write_mosaic_fits, write_rgb_cube_fits, write_star_field_fits,
+    };
     use fitskit::HeaderValue;
     use tempfile::TempDir;
 
@@ -962,8 +1011,17 @@ mod tests {
     #[test]
     fn header_info_with_pixels_reads_pixel_stats_on_real_data() {
         let input = test_data("uncompressed.fit");
-        let info = header_info_with_pixels(&input).unwrap();
+        let info = header_info_with(
+            &input,
+            InfoRequest {
+                pixel_stats: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(info.pixel_stats.is_some());
+        // --pixel doesn't imply --stars: it stays exactly as fast as it was.
+        assert!(info.stars.is_none());
     }
 
     #[test]
@@ -972,8 +1030,88 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let input = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&input, 4, 3);
-        let info = header_info_with_pixels(&input).unwrap();
+        let info = header_info_with(
+            &input,
+            InfoRequest {
+                pixel_stats: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(info.pixel_stats.is_none());
+    }
+
+    #[test]
+    fn header_info_with_stars_reads_star_metrics_on_real_data() {
+        // The same frame stars.rs pins, reached through a different entry
+        // point: uncompressed.fit is a 3008x3008 GRBG mosaic, so detection runs
+        // on its 1504x1504 green super-pixel plane.
+        let input = test_data("uncompressed.fit");
+        let info = header_info_with(
+            &input,
+            InfoRequest {
+                stars: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let report = info.stars.expect("stars measured");
+        assert_eq!(report.stats.count, REAL_MOSAIC_STAR_COUNT);
+        assert_eq!((report.plane_width, report.plane_height), (1504, 1504));
+        // The plane is not the frame, which is exactly what tells a report that
+        // its HFR needs the half-resolution caveat.
+        assert_ne!(report.plane_width, info.width);
+        // --stars doesn't imply --pixel: the value-count pass is skipped whole.
+        assert!(info.pixel_stats.is_none());
+    }
+
+    #[test]
+    fn header_info_with_stars_on_a_mono_frame_detects_on_the_frame_itself() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mono.fits");
+        write_star_field_fits(&input, 60, 60, 1000.0, &[(30.0, 30.0, 2.0, 2.0, 5000.0)]);
+        let info = header_info_with(
+            &input,
+            InfoRequest {
+                stars: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let report = info.stars.expect("stars measured");
+        assert_eq!(report.stats.count, 1);
+        // No super-pixel plane, so no caveat to report.
+        assert_eq!((report.plane_width, report.plane_height), (60, 60));
+    }
+
+    #[test]
+    fn header_info_with_stars_on_an_rgb_cube_has_no_stars() {
+        // Star detection has no green plane to run on until Part 2 gives it
+        // one — an unsupported shape, reported as such rather than an error.
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("rgb.fits");
+        write_rgb_cube_fits(&input, 4, 3);
+        let info = header_info_with(
+            &input,
+            InfoRequest {
+                pixel_stats: true,
+                stars: true,
+            },
+        )
+        .unwrap();
+        assert!(info.stars.is_none());
+        assert!(info.pixel_stats.is_none());
+    }
+
+    #[test]
+    fn default_info_request_computes_neither() {
+        // The cheap path stays cheap: header_info reads no pixels at all.
+        let input = test_data("uncompressed.fit");
+        let info = header_info(&input).unwrap();
+        assert!(info.pixel_stats.is_none());
+        assert!(info.stars.is_none());
     }
 
     #[test]
