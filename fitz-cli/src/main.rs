@@ -315,6 +315,11 @@ struct InfoArgs {
     /// Not supported for debayered RGB images.
     #[arg(long)]
     pixel: bool,
+    /// Detect the frame's stars and report their count and median HFR, FWHM and
+    /// eccentricity. Independent of --pixel in both directions. Not supported
+    /// for debayered RGB images.
+    #[arg(long)]
+    stars: bool,
     /// Use a logarithmic vertical axis for the pixel histogram. Only useful
     /// together with --pixel, which is what produces the histogram.
     #[arg(long)]
@@ -719,6 +724,7 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
 fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
     let InfoArgs {
         pixel,
+        stars,
         log,
         headers,
         files,
@@ -726,6 +732,7 @@ fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
     let opts = InfoOptions {
         verbose,
         pixel,
+        stars,
         log,
         headers,
     };

@@ -128,6 +128,116 @@ pub fn scaled_pixels(header: &Header, img: &ImageData) -> Vec<f64> {
     img.scaled_values(bscale, bzero)
 }
 
+/// A single-channel `f64` image to detect stars on, produced by
+/// [`detection_plane`].
+pub struct MonoPlane {
+    pub width: usize,
+    pub height: usize,
+    /// Physical (BSCALE/BZERO-applied) values, row-major.
+    pub values: Vec<f64>,
+    /// The physical saturation level of the *source* samples — see
+    /// [`sample_saturation`]. Not derivable from `values`, which are `f64` and
+    /// have no ceiling of their own: taking the observed maximum instead would
+    /// make the brightest star in every frame look clipped.
+    /// [`f64::INFINITY`] when the source has no representable ceiling.
+    pub saturation: f64,
+}
+
+/// The physical value of the largest representable raw sample: 65535 for the
+/// unsigned-16 convention, 255 for `U8`. [`f64::INFINITY`] for sample types
+/// with no ceiling worth clipping against — float samples, and the wide integer
+/// types, which no realistic sensor fills.
+///
+/// This is the same quantity `info::stats_from_counts` derives from its
+/// value-count array length, by the same BSCALE/BZERO map and under the same
+/// `bscale > 0` guard `pixel_stats` applies before taking that fast path — the
+/// two must agree, and a test pins that they do.
+pub fn sample_saturation(header: &Header, img: &ImageData) -> f64 {
+    let max_raw = match &img.pixels {
+        PixelData::U8(_) => 255.0,
+        PixelData::I16(_) => 32767.0,
+        _ => return f64::INFINITY,
+    };
+    let (bscale, bzero) = bscale_bzero(header);
+    if bscale <= 0.0 {
+        return f64::INFINITY;
+    }
+    bzero + bscale * max_raw
+}
+
+/// Build the mono plane star detection runs on:
+///   - a CFA mosaic (`BAYERPAT` present) → the green super-pixel plane, each
+///     pixel the mean of one 2x2 cell's two green sites, so `(w/2 x h/2)`;
+///   - a mono frame (2D, no `BAYERPAT`) → the frame's own scaled values.
+///
+/// Anything else — notably an already-debayered RGB cube — is an error.
+///
+/// **A CFA frame's measurements come out in half-resolution pixels.** An HFR or
+/// FWHM measured here reads about half the number NINA reports for the same
+/// frame. That is inherent to the super-pixel plane and is not a bug: every
+/// frame in a session comes off the same sensor, so the trend — the only thing
+/// a time series shows — is unaffected. A caller that reports absolute numbers
+/// should say which plane they were measured on (compare the returned width
+/// against the frame's).
+///
+/// Why a super-pixel plane at all: a star profile sampled through a Bayer
+/// filter is not a PSF, and the HFR measured from it is noise.
+pub fn detection_plane(header: &Header, img: &ImageData) -> Result<MonoPlane> {
+    if img.axes.len() != 2 {
+        bail!(
+            "star detection needs a single-plane image, not a {}-axis one",
+            img.axes.len()
+        );
+    }
+    let width = img.width().context("missing NAXIS1")?;
+    let height = img.height().context("missing NAXIS2")?;
+    let saturation = sample_saturation(header, img);
+    let values = scaled_pixels(header, img);
+
+    let Some(pattern) = get_bayerpat(header) else {
+        return Ok(MonoPlane {
+            width,
+            height,
+            values,
+            saturation,
+        });
+    };
+    let cfa =
+        parse_cfa(pattern).ok_or_else(|| anyhow!("unrecognized BAYERPAT value {pattern:?}"))?;
+
+    // A 2x2 cell is the quantum here, so an odd width or height drops its last
+    // column/row.
+    let (pw, ph) = (width / 2, height / 2);
+    let [(ax, ay), (bx, by)] = green_sites(cfa);
+    let plane = (0..ph)
+        .into_par_iter()
+        .flat_map_iter(|cy| {
+            let values = &values;
+            let site =
+                move |gx: usize, gy: usize, cx: usize| values[(2 * cy + gy) * width + 2 * cx + gx];
+            (0..pw).map(move |cx| (site(ax, ay, cx) + site(bx, by, cx)) / 2.0)
+        })
+        .collect();
+
+    Ok(MonoPlane {
+        width: pw,
+        height: ph,
+        values: plane,
+        // Averaging two sites preserves the level: the mean of two samples
+        // clipped at the ceiling is still the ceiling, so the source's
+        // saturation carries over unchanged.
+        saturation,
+    })
+}
+
+/// The two green sites within a 2x2 CFA cell, as `(x, y)` offsets.
+fn green_sites(cfa: CFA) -> [(usize, usize); 2] {
+    match cfa {
+        CFA::RGGB | CFA::BGGR => [(1, 0), (0, 1)],
+        CFA::GBRG | CFA::GRBG => [(0, 0), (1, 1)],
+    }
+}
+
 /// Raw single-channel pixel bytes ready to feed into the demosaic algorithm,
 /// along with the depths needed to interpret them.
 fn raw_bytes_for_demosaic(header: &Header, img: &ImageData) -> (BayerDepth, RasterDepth, Vec<u8>) {
@@ -661,6 +771,150 @@ pub fn carry_over_metadata(dest: &mut Header, src: &Header) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_data;
+
+    /// A 4x4 frame whose values are powers of two, optionally tagged with a
+    /// Bayer pattern. Deliberately not the sequential ramp the other fixtures
+    /// use: on a ramp both diagonals of a 2x2 cell have the same mean, so a
+    /// green-site mix-up between `RGGB` and `GRBG` would go unnoticed.
+    fn powers_of_two_frame(pattern: Option<&str>) -> (Header, ImageData) {
+        let pixels: Vec<i16> = vec![
+            1, 2, 4, 8, //
+            16, 32, 64, 128, //
+            256, 512, 1024, 2048, //
+            4096, 8192, 16384, 32767,
+        ];
+        let mut header = Header::default();
+        if let Some(p) = pattern {
+            header.set(BAYERPAT, HeaderValue::String(p.to_string()), None);
+        }
+        (header, ImageData::new(vec![4, 4], PixelData::I16(pixels)))
+    }
+
+    #[test]
+    fn detection_plane_averages_the_green_sites_of_a_mosaic() {
+        let (header, img) = powers_of_two_frame(Some("RGGB"));
+        let plane = detection_plane(&header, &img).unwrap();
+
+        // Half resolution: one pixel per 2x2 cell.
+        assert_eq!((plane.width, plane.height), (2, 2));
+        // RGGB puts green at (1,0) and (0,1) of each cell: (2+16)/2, (8+64)/2,
+        // (512+4096)/2, (2048+16384)/2.
+        assert_eq!(plane.values, vec![9.0, 36.0, 2304.0, 9216.0]);
+    }
+
+    #[test]
+    fn detection_plane_locates_green_for_every_bayer_pattern() {
+        // RGGB/BGGR share their green sites, as do GRBG/GBRG — but the two
+        // pairs differ, and each pattern's plane is asserted in full.
+        for pattern in ["RGGB", "BGGR"] {
+            let (header, img) = powers_of_two_frame(Some(pattern));
+            let plane = detection_plane(&header, &img).unwrap();
+            assert_eq!(plane.values, vec![9.0, 36.0, 2304.0, 9216.0], "{pattern}");
+        }
+        for pattern in ["GRBG", "GBRG"] {
+            let (header, img) = powers_of_two_frame(Some(pattern));
+            let plane = detection_plane(&header, &img).unwrap();
+            // Green at (0,0) and (1,1): (1+32)/2, (4+128)/2, (256+8192)/2,
+            // (1024+32767)/2.
+            assert_eq!(plane.values, vec![16.5, 66.0, 4224.0, 16895.5], "{pattern}");
+        }
+    }
+
+    #[test]
+    fn detection_plane_of_a_mono_frame_is_the_frame() {
+        let (header, img) = powers_of_two_frame(None);
+        let plane = detection_plane(&header, &img).unwrap();
+
+        assert_eq!((plane.width, plane.height), (4, 4));
+        assert_eq!(plane.values, scaled_pixels(&header, &img));
+    }
+
+    #[test]
+    fn detection_plane_rejects_an_rgb_cube() {
+        // Star detection on a debayered cube is out of scope: it would need a
+        // green plane at full resolution, and the dialogs skip cubes anyway.
+        let img = ImageData::new(vec![2, 2, 3], PixelData::I16(vec![0; 12]));
+        assert!(detection_plane(&Header::default(), &img).is_err());
+    }
+
+    #[test]
+    fn detection_plane_drops_an_odd_last_column_and_row() {
+        // A 2x2 cell is the quantum, so a 3x3 mosaic detects on 1x1.
+        let mut header = Header::default();
+        header.set(BAYERPAT, HeaderValue::String("RGGB".to_string()), None);
+        let img = ImageData::new(vec![3, 3], PixelData::I16((0..9).collect()));
+        let plane = detection_plane(&header, &img).unwrap();
+
+        assert_eq!((plane.width, plane.height), (1, 1));
+        assert_eq!(plane.values, vec![2.0]); // (1 + 3) / 2
+    }
+
+    #[test]
+    fn sample_saturation_follows_the_sample_type() {
+        // The unsigned-16 convention: signed samples offset by BZERO 32768.
+        let mut u16_header = Header::default();
+        u16_header.set(BZERO, HeaderValue::Float(32768.0), None);
+        let i16_img = ImageData::new(vec![2, 1], PixelData::I16(vec![0; 2]));
+        assert_eq!(sample_saturation(&u16_header, &i16_img), 65535.0);
+
+        // Plain signed 16, no scaling.
+        assert_eq!(sample_saturation(&Header::default(), &i16_img), 32767.0);
+
+        let u8_img = ImageData::new(vec![2, 1], PixelData::U8(vec![0; 2]));
+        assert_eq!(sample_saturation(&Header::default(), &u8_img), 255.0);
+
+        // Float samples have no representable ceiling to clip against, so no
+        // star can be flat-topped and the rejection must never fire.
+        let f32_img = ImageData::new(vec![2, 1], PixelData::F32(vec![0.0; 2]));
+        assert_eq!(
+            sample_saturation(&Header::default(), &f32_img),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn sample_saturation_agrees_with_pixel_stats() {
+        // Two mechanisms, one truth: `sample_saturation` reads the PixelData
+        // variant, `stats_from_counts` reads its value-count array's length.
+        // This is the guard against them drifting apart.
+        let mut u16_header = Header::default();
+        u16_header.set(BZERO, HeaderValue::Float(32768.0), None);
+        let cases: [(Header, ImageData); 3] = [
+            (
+                Header::default(),
+                ImageData::new(vec![2, 2], PixelData::I16(vec![1, 2, 3, 4])),
+            ),
+            (
+                u16_header,
+                ImageData::new(vec![2, 2], PixelData::I16(vec![1, 2, 3, 4])),
+            ),
+            (
+                Header::default(),
+                ImageData::new(vec![2, 2], PixelData::U8(vec![1, 2, 3, 4])),
+            ),
+        ];
+        for (header, img) in &cases {
+            assert_eq!(
+                sample_saturation(header, img),
+                crate::info::pixel_stats(header, img).saturation
+            );
+        }
+    }
+
+    #[test]
+    fn detection_plane_of_the_real_mosaic_is_half_resolution() {
+        // uncompressed.fit is a 3008x3008 GRBG unsigned-16 mosaic.
+        let path = test_data("uncompressed.fit");
+        let fits = FitsFile::from_file(&path).unwrap();
+        let (header, img) = find_image_hdu(&fits, &path).unwrap();
+        let plane = detection_plane(header, img.as_ref()).unwrap();
+
+        assert_eq!((plane.width, plane.height), (1504, 1504));
+        assert_eq!(plane.values.len(), 1504 * 1504);
+        assert_eq!(plane.saturation, 65535.0);
+        assert!(plane.values.iter().all(|v| (0.0..=65535.0).contains(v)));
+    }
 
     #[test]
     fn resolve_cfa_prefers_cli_pattern_over_header() {

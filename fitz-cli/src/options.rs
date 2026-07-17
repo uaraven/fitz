@@ -61,6 +61,10 @@ pub struct InfoOptions {
     /// Read (decompressing if needed) the pixel data and report pixel
     /// statistics. Without it, `info` reports header-derived metadata only.
     pub pixel: bool,
+    /// Detect the frame's stars and report their count and median shape.
+    /// Independent of `pixel`: star detection builds its threshold from the
+    /// detection plane's own background, never from the frame's `PixelStats`.
+    pub stars: bool,
     /// Use a logarithmic vertical axis for the pixel histogram. Only meaningful
     /// together with `pixel`, which is what triggers the histogram.
     pub log: bool,

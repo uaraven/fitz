@@ -18,6 +18,7 @@ pub mod info;
 pub mod preview;
 pub mod resize;
 pub mod split_channel;
+pub mod stars;
 pub mod stretch;
 
 #[cfg(test)]

@@ -1,61 +1,102 @@
-//! The Tools ▸ Analytics batch and chart: analyze every target file off the UI
-//! thread, cache each frame's metrics, and turn the chosen metric's series into
-//! the normalized geometry `chart.slint` draws.
+//! The Tools ▸ Analytics and Tools ▸ Star metrics batches and chart: analyze
+//! every target file off the UI thread, cache each frame's metrics, and turn the
+//! chosen metric's series into the normalized geometry `chart.slint` draws.
 //!
-//! Every phase-1 metric is computed in one pixel read per file, so switching the
-//! dropdown re-plots from the cache with no re-read ([`set_metric`] is pure
-//! arithmetic). Zoom needs no controller code — the dialog's slider clamps
-//! itself to [1, 4] and the chart reads the bound property directly.
+//! Two menu entries, one dialog. They differ in four things — the title, which
+//! metrics the dropdown lists, whether the batch detects stars, and the export
+//! file-name prefix — and share everything else: the chart, the zoom slider, the
+//! progress overlay, the cancel path, both exports, the resizable card. So the
+//! family travels as state ([`AppState::analytics_family`]) rather than as a
+//! copy of the widget tree, and each entry point is a thin call into
+//! [`open_chart_dialog`].
 //!
-//! Both exports write what is currently plotted: the PNG is the live chart
-//! cropped out of a window snapshot (one rendering path — no second plotter to
-//! keep in sync), the CSV the same series as rows.
+//! Every metric of the open family is computed in one file read each, so
+//! switching the dropdown re-plots from the cache with no re-read. Zoom needs no
+//! controller code — the dialog's slider clamps itself to [1, 4] and the chart
+//! reads the bound property directly.
+//!
+//! Both exports write the whole plotted series, not the part that happens to be
+//! on screen: the SVG re-renders the same [`Plot`](crate::chart::Plot) geometry
+//! the chart draws, the CSV writes the same series as rows. Neither reads the
+//! zoom — it stretches the live chart's X axis only.
 
 use std::fs::File;
-use std::io::{self, BufWriter};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use fitz_core::analytics::{self, FileAnalysis, FileMetrics, Metric, Series, SkipReason};
-use slint::{ComponentHandle, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel, Weak};
+use fitz_core::analytics::{
+    self, AnalyzeOptions, FileAnalysis, FileMetrics, Metric, MetricFamily, Series, SkipReason,
+};
+use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::AppWindow;
 use crate::chart::plot;
+use crate::chart_svg::svg;
 use crate::files::{display_name, is_fits_path};
 
 use super::{AppState, STATE, operation_targets, set_row_status};
 
-/// Map a metric dropdown index to its [`Metric`]. The dialog's ComboBox model is
-/// built from [`Metric::all`], so the index is just a position in that list;
-/// anything out of range falls back to the default metric.
-fn metric_for_index(index: i32) -> Metric {
+/// Map a metric dropdown index to its [`Metric`] within `family`. The dialog's
+/// ComboBox model is built from [`Metric::of_family`], so the index is just a
+/// position in that family's list; anything out of range falls back to the
+/// family's default metric.
+fn metric_for_index(family: MetricFamily, index: i32) -> Metric {
     usize::try_from(index)
         .ok()
-        .and_then(|i| Metric::all().get(i).copied())
-        .unwrap_or(DEFAULT_METRIC)
+        .and_then(|i| Metric::of_family(family).get(i).copied())
+        .unwrap_or(default_metric(family))
 }
 
-/// The metric plotted when the dialog first opens.
-const DEFAULT_METRIC: Metric = Metric::Mean;
+/// The metric plotted when a family's dialog first opens.
+fn default_metric(family: MetricFamily) -> Metric {
+    match family {
+        MetricFamily::Pixel => Metric::Mean,
+        // The metric people actually cull subs on.
+        MetricFamily::Star => Metric::Hfr,
+    }
+}
 
-/// Open the Analytics dialog: gather the target FITS files (the checked rows, or
-/// all of them when none are checked) and start the batch. The dialog itself
-/// only appears once the metrics are in, so it never shows an empty chart that
-/// then fills in.
+/// The dialog's title for a family.
+fn family_title(family: MetricFamily) -> &'static str {
+    match family {
+        MetricFamily::Pixel => "Analytics",
+        MetricFamily::Star => "Star metrics",
+    }
+}
+
+/// Tools ▸ Analytics…: the pixel metrics. Never detects stars, so it stays
+/// exactly as fast as it has always been.
 pub fn open_analytics_dialog(app: &AppWindow) {
+    open_chart_dialog(app, MetricFamily::Pixel);
+}
+
+/// Tools ▸ Star metrics…: star count, HFR, FWHM and eccentricity. Detects stars
+/// because that is the entire point of opening it — the menu entry *is* the
+/// opt-in, so there is no checkbox to forget.
+pub fn open_star_metrics_dialog(app: &AppWindow) {
+    open_chart_dialog(app, MetricFamily::Star);
+}
+
+/// Open the chart dialog for one metric family: gather the target FITS files
+/// (the checked rows, or all of them when none are checked) and start the batch.
+/// The dialog itself only appears once the metrics are in, so it never shows an
+/// empty chart that then fills in.
+fn open_chart_dialog(app: &AppWindow, family: MetricFamily) {
     let targets = operation_targets(is_fits_path);
+    app.set_analytics_title(family_title(family).into());
     app.set_analytics_metric_model(ModelRc::new(VecModel::from(
-        Metric::all()
+        Metric::of_family(family)
             .iter()
             .map(|m| m.label().into())
             .collect::<Vec<slint::SharedString>>(),
     )));
     app.set_analytics_metric(
-        Metric::all()
+        Metric::of_family(family)
             .iter()
-            .position(|&m| m == DEFAULT_METRIC)
+            .position(|&m| m == default_metric(family))
             .unwrap_or(0) as i32,
     );
     app.set_analytics_zoom(1.0);
@@ -65,6 +106,7 @@ pub fn open_analytics_dialog(app: &AppWindow) {
     let (generation, cancel) = STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.analytics.clear();
+        st.analytics_family = family;
         let generation = abort_batch(&mut st);
         st.analytics_cancel = Arc::new(AtomicBool::new(false));
         (generation, st.analytics_cancel.clone())
@@ -74,7 +116,12 @@ pub fn open_analytics_dialog(app: &AppWindow) {
         app.set_status_text("No FITS files to analyze".into());
         return;
     }
-    spawn_analysis(app.as_weak(), targets, generation, cancel);
+    spawn_analysis(app.as_weak(), targets, family, generation, cancel);
+}
+
+/// The family the open dialog is showing.
+fn current_family() -> MetricFamily {
+    STATE.with(|s| s.borrow().analytics_family)
 }
 
 /// Signal the running worker to stop between files and bump the generation so a
@@ -102,17 +149,23 @@ struct Batch {
 /// without finishing the queue. Holds no UI types, so it is testable directly.
 fn analyze_batch(
     targets: &[PathBuf],
+    family: MetricFamily,
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, &Path),
     mut failed: impl FnMut(&Path, String),
 ) -> Option<Batch> {
+    // Only the star family pays for detection: this is what keeps Analytics
+    // from silently getting slower now that the machinery exists.
+    let opts = AnalyzeOptions {
+        detect_stars: family == MetricFamily::Star,
+    };
     let mut batch = Batch::default();
     for (i, path) in targets.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
         progress(i, path);
-        match analytics::analyze_file(path) {
+        match analytics::analyze_file(path, &opts) {
             Ok(FileAnalysis::Analyzed(m)) => batch.metrics.push(m),
             Ok(FileAnalysis::Skipped(SkipReason::NoDateObs)) => batch.no_date += 1,
             Ok(FileAnalysis::Skipped(SkipReason::NotMono)) => batch.not_mono += 1,
@@ -133,6 +186,7 @@ fn analyze_batch(
 fn spawn_analysis(
     weak: Weak<AppWindow>,
     targets: Vec<PathBuf>,
+    family: MetricFamily,
     generation: u64,
     cancel: Arc<AtomicBool>,
 ) {
@@ -147,6 +201,7 @@ fn spawn_analysis(
         let total = targets.len();
         let batch = analyze_batch(
             &targets,
+            family,
             &cancel,
             |i, path| {
                 let progress = i as f32 / total as f32;
@@ -229,26 +284,44 @@ fn replot(app: &AppWindow) {
 
     app.set_analytics_metric_label(series.metric.label().into());
     app.set_analytics_plotted_count(series.points.len() as i32);
+    app.set_analytics_unavailable_note(unavailable_note(&series).into());
     app.set_analytics_points(ModelRc::new(VecModel::from(plot.points)));
     app.set_analytics_x_ticks(ModelRc::new(VecModel::from(plot.x_ticks)));
     app.set_analytics_y_ticks(ModelRc::new(VecModel::from(plot.y_ticks)));
     app.set_analytics_line_commands(plot.line.into());
 }
 
+/// How to word the frames that analyzed fine but have no value for the plotted
+/// metric. Family-specific, hence a controller-built string: in the star dialog
+/// the reason is always that detection found nothing — itself worth reading, a
+/// run of starless frames is a cloud indicator. Empty when there are none.
+fn unavailable_note(series: &Series) -> String {
+    match (series.unavailable, series.metric.family()) {
+        (0, _) => String::new(),
+        (n, MetricFamily::Star) => format!("{n} with no stars detected"),
+        (n, MetricFamily::Pixel) => format!("{n} without a value"),
+    }
+}
+
 /// The series currently on the chart, rebuilt from the cached metrics.
 fn current_series(app: &AppWindow) -> Series {
-    let metric = metric_for_index(app.get_analytics_metric());
+    let metric = metric_for_index(current_family(), app.get_analytics_metric());
     STATE.with(|s| analytics::build_series(&s.borrow().analytics, metric))
 }
 
-/// A default export file name for the plotted metric, e.g. `mean-adu.png`.
+/// A default export file name for the plotted metric, e.g. `analytics-mean-adu.svg`
+/// or `star-hfr.svg` — the prefix says which dialog it came out of.
 fn export_file_name(metric: Metric, extension: &str) -> String {
     let slug: String = metric
         .label()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    format!("analytics-{}.{extension}", slug.to_ascii_lowercase())
+    let prefix = match metric.family() {
+        MetricFamily::Pixel => "analytics",
+        MetricFamily::Star => "star",
+    };
+    format!("{prefix}-{}.{extension}", slug.to_ascii_lowercase())
 }
 
 /// Prompt for an export path, offering a name derived from the plotted metric.
@@ -270,76 +343,23 @@ fn report_export(app: &AppWindow, kind: &str, result: Result<Option<PathBuf>>) {
     }
 }
 
-/// A snapshot crop, in physical pixels.
-#[derive(PartialEq, Debug)]
-struct Crop {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
+/// Export the chart as an SVG. Re-rendered from the plotted series rather than
+/// captured off the screen, so the file always holds the entire chart — a
+/// zoomed-in dialog is showing a slice of it, and used to export just that.
+pub fn analytics_export_svg(app: &AppWindow) {
+    report_export(app, "SVG", export_svg(app));
 }
 
-/// Convert the chart's logical-pixel rectangle within the window into physical
-/// pixels of a `img_w` x `img_h` snapshot, clamped to the image. HiDPI displays
-/// render more pixels than the layout's logical units, hence `scale`. Returns
-/// `None` if the rectangle lands outside the snapshot or has no area, so a
-/// degenerate export fails cleanly instead of writing an empty PNG.
-fn crop_rect(rect: (f32, f32, f32, f32), scale: f32, img_w: u32, img_h: u32) -> Option<Crop> {
-    let (x, y, w, h) = rect;
-    let phys = |v: f32, max: u32| (v * scale).round().clamp(0.0, max as f32) as u32;
-    let (x0, y0) = (phys(x, img_w), phys(y, img_h));
-    let (x1, y1) = (phys(x + w, img_w), phys(y + h, img_h));
-    (x1 > x0 && y1 > y0).then(|| Crop {
-        x: x0,
-        y: y0,
-        w: x1 - x0,
-        h: y1 - y0,
-    })
-}
-
-/// Copy `crop` out of an RGBA snapshot as a tightly packed RGB8 buffer (the
-/// form [`fitz_core::export::write_png`] takes). The chart is fully opaque, so
-/// dropping alpha loses nothing.
-fn crop_to_rgb8(snapshot: &SharedPixelBuffer<Rgba8Pixel>, crop: &Crop) -> Vec<u8> {
-    let (stride, pixels) = (snapshot.width() as usize, snapshot.as_slice());
-    let mut rgb = Vec::with_capacity(crop.w as usize * crop.h as usize * 3);
-    for row in 0..crop.h as usize {
-        let start = (crop.y as usize + row) * stride + crop.x as usize;
-        for px in &pixels[start..start + crop.w as usize] {
-            rgb.extend_from_slice(&[px.r, px.g, px.b]);
-        }
-    }
-    rgb
-}
-
-/// Export the chart as a PNG. The dialog passes the chart's position and size
-/// within the window; the snapshot is taken *before* the save dialog opens, so
-/// the native file picker can't end up rendered into the image.
-pub fn analytics_export_png(app: &AppWindow, x: f32, y: f32, w: f32, h: f32) {
-    report_export(app, "PNG", export_png(app, (x, y, w, h)));
-}
-
-/// Snapshot, crop and write the chart; `Ok(None)` if the user cancelled.
-fn export_png(app: &AppWindow, rect: (f32, f32, f32, f32)) -> Result<Option<PathBuf>> {
-    let window = app.window();
-    let snapshot = window
-        .take_snapshot()
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("cannot capture the window")?;
-    let crop = crop_rect(
-        rect,
-        window.scale_factor(),
-        snapshot.width(),
-        snapshot.height(),
-    )
-    .context("the chart is not visible")?;
-    let rgb = crop_to_rgb8(&snapshot, &crop);
-
-    let metric = metric_for_index(app.get_analytics_metric());
-    let Some(path) = prompt_export_path(metric, "PNG image", "png") else {
+/// Render and write the chart as SVG; `Ok(None)` if the user cancelled.
+fn export_svg(app: &AppWindow) -> Result<Option<PathBuf>> {
+    let series = current_series(app);
+    let doc = svg(&plot(&series), series.metric.label());
+    let Some(path) = prompt_export_path(series.metric, "SVG image", "svg") else {
         return Ok(None);
     };
-    fitz_core::export::write_png(&path, crop.w as usize, crop.h as usize, &rgb)?;
+    let write =
+        || -> io::Result<()> { BufWriter::new(File::create(&path)?).write_all(doc.as_bytes()) };
+    write().with_context(|| format!("cannot write {}", path.display()))?;
     Ok(Some(path))
 }
 
@@ -378,6 +398,7 @@ mod tests {
         let (mut order, mut failures) = (Vec::new(), Vec::new());
         let batch = analyze_batch(
             &targets,
+            MetricFamily::Pixel,
             &cancel,
             |i, path| order.push((i, path.to_path_buf())),
             |path, msg| failures.push((path.to_path_buf(), msg)),
@@ -388,6 +409,8 @@ mod tests {
         // tile-compressed, decompressed transparently), so both measure.
         assert_eq!(batch.metrics.len(), 2);
         assert_eq!((batch.no_date, batch.not_mono), (0, 0));
+        // The pixel family must not have paid for star detection.
+        assert!(batch.metrics.iter().all(|m| m.stars.is_none()));
         // The unreadable path is reported once and doesn't abort the batch.
         assert_eq!(batch.failed, 1);
         assert_eq!(failures.len(), 1);
@@ -410,6 +433,7 @@ mod tests {
         let mut seen = Vec::new();
         let stopped = analyze_batch(
             &targets,
+            MetricFamily::Pixel,
             &cancel,
             |_, path| {
                 seen.push(path.to_path_buf());
@@ -423,117 +447,104 @@ mod tests {
         // Already cancelled before the first file: nothing is read at all.
         let cancel = AtomicBool::new(true);
         let mut count = 0;
-        let stopped = analyze_batch(&targets, &cancel, |_, _| count += 1, |_, _| {});
+        let stopped = analyze_batch(
+            &targets,
+            MetricFamily::Pixel,
+            &cancel,
+            |_, _| count += 1,
+            |_, _| {},
+        );
         assert!(stopped.is_none());
         assert_eq!(count, 0);
     }
 
     #[test]
+    fn analyze_batch_detects_stars_only_for_the_star_family() {
+        // The star family's whole reason for existing: its batch measures
+        // stars on a real mosaic.
+        let targets = vec![test_data("uncompressed.fit")];
+        let cancel = AtomicBool::new(false);
+        let batch =
+            analyze_batch(&targets, MetricFamily::Star, &cancel, |_, _| {}, |_, _| {}).unwrap();
+
+        let stars = batch.metrics[0].stars.as_ref().expect("stars measured");
+        assert!(stars.count > 0);
+        assert!(Metric::Hfr.value(&batch.metrics[0]).is_some());
+
+        // Same file, pixel family: no detection, and so no star metric has an
+        // answer. This is the test that Analytics did not silently start paying
+        // for star detection.
+        let batch =
+            analyze_batch(&targets, MetricFamily::Pixel, &cancel, |_, _| {}, |_, _| {}).unwrap();
+        assert!(batch.metrics[0].stars.is_none());
+        assert_eq!(Metric::Hfr.value(&batch.metrics[0]), None);
+    }
+
+    #[test]
     fn metric_index_maps_to_the_dropdown_order() {
-        // The ComboBox model is built from Metric::all(), so index == position.
-        for (i, &m) in Metric::all().iter().enumerate() {
-            assert_eq!(metric_for_index(i as i32), m);
+        // Each dialog's ComboBox model is built from its own family's list, so
+        // an index is a position within that family — this is what keeps a
+        // stored index meaning what it meant.
+        for family in [MetricFamily::Pixel, MetricFamily::Star] {
+            for (i, &m) in Metric::of_family(family).iter().enumerate() {
+                assert_eq!(metric_for_index(family, i as i32), m);
+            }
+            // Out-of-range (and Slint's -1 "no selection") fall back to the
+            // family's default, never to the other family's metric.
+            assert_eq!(metric_for_index(family, -1), default_metric(family));
+            assert_eq!(metric_for_index(family, 99), default_metric(family));
+            assert_eq!(default_metric(family).family(), family);
         }
-        // Out-of-range (and Slint's -1 "no selection") fall back to the default.
-        assert_eq!(metric_for_index(-1), DEFAULT_METRIC);
-        assert_eq!(metric_for_index(99), DEFAULT_METRIC);
-    }
-
-    /// A `w` x `h` snapshot whose every pixel encodes its own coordinates, so a
-    /// crop's contents identify exactly which region was taken.
-    fn snapshot(w: u32, h: u32) -> SharedPixelBuffer<Rgba8Pixel> {
-        let mut buf = SharedPixelBuffer::new(w, h);
-        for (i, px) in buf.make_mut_slice().iter_mut().enumerate() {
-            let (x, y) = (i as u32 % w, i as u32 / w);
-            *px = Rgba8Pixel {
-                r: x as u8,
-                g: y as u8,
-                b: 7,
-                a: 255,
-            };
-        }
-        buf
+        // The star list is short: an index valid in the pixel dialog must not
+        // silently address something in the star one.
+        assert_eq!(metric_for_index(MetricFamily::Star, 9), Metric::Hfr);
     }
 
     #[test]
-    fn crop_rect_scales_to_physical_pixels_and_clamps() {
-        // Non-HiDPI: the logical rectangle is the physical one.
-        assert_eq!(
-            crop_rect((10.0, 20.0, 30.0, 40.0), 1.0, 200, 200),
-            Some(Crop {
-                x: 10,
-                y: 20,
-                w: 30,
-                h: 40
+    fn unavailable_note_words_itself_per_family() {
+        let note = |metric, unavailable| {
+            unavailable_note(&Series {
+                metric,
+                points: Vec::new(),
+                unavailable,
             })
-        );
-        // HiDPI: every edge scales, so the crop keeps covering the same chart.
-        assert_eq!(
-            crop_rect((10.0, 20.0, 30.0, 40.0), 2.0, 400, 400),
-            Some(Crop {
-                x: 20,
-                y: 40,
-                w: 60,
-                h: 80
-            })
-        );
-        // A rectangle running past the snapshot is clamped to what exists.
-        assert_eq!(
-            crop_rect((90.0, 90.0, 50.0, 50.0), 1.0, 100, 100),
-            Some(Crop {
-                x: 90,
-                y: 90,
-                w: 10,
-                h: 10
-            })
-        );
-        // Nothing to crop: zero-sized, or entirely off the snapshot.
-        assert_eq!(crop_rect((10.0, 10.0, 0.0, 40.0), 1.0, 100, 100), None);
-        assert_eq!(crop_rect((150.0, 10.0, 40.0, 40.0), 1.0, 100, 100), None);
-    }
-
-    #[test]
-    fn crop_to_rgb8_copies_just_the_cropped_region() {
-        let snap = snapshot(8, 6);
-        let crop = Crop {
-            x: 2,
-            y: 1,
-            w: 3,
-            h: 2,
         };
-        let rgb = crop_to_rgb8(&snap, &crop);
-
-        // Tightly packed RGB8: three bytes per pixel, alpha dropped.
-        assert_eq!(rgb.len(), 3 * 3 * 2);
-        // Each pixel carries its source coordinates, so the first and last
-        // pixels pin the region down to the corner.
-        assert_eq!(&rgb[..3], &[2, 1, 7]);
-        assert_eq!(&rgb[rgb.len() - 3..], &[4, 2, 7]);
-
-        // A full-frame crop reproduces the whole snapshot, row by row.
-        let all = crop_to_rgb8(
-            &snap,
-            &Crop {
-                x: 0,
-                y: 0,
-                w: 8,
-                h: 6,
-            },
-        );
-        assert_eq!(all.len(), 8 * 6 * 3);
-        assert_eq!(&all[..3], &[0, 0, 7]);
-        assert_eq!(&all[8 * 3..8 * 3 + 3], &[0, 1, 7], "row 1 starts at x=0");
+        // Nothing missing: no note at all, not "0 with no stars".
+        assert_eq!(note(Metric::Hfr, 0), "");
+        assert_eq!(note(Metric::Hfr, 2), "2 with no stars detected");
+        assert_eq!(note(Metric::Mean, 2), "2 without a value");
     }
 
     #[test]
     fn export_file_name_slugifies_the_metric() {
         assert_eq!(
-            export_file_name(Metric::Mean, "png"),
-            "analytics-mean-adu.png"
+            export_file_name(Metric::Mean, "svg"),
+            "analytics-mean-adu.svg"
         );
         assert_eq!(
             export_file_name(Metric::MaxPixelCount, "csv"),
             "analytics-max-adu-count.csv"
+        );
+        // The slugifier replaces every non-ASCII-alphanumeric char with '-', so
+        // a "Noise σ" label would slug to a bare "analytics-noise-.svg". The
+        // label spells sigma out instead — the fix belongs in the label, not in
+        // a special case here.
+        assert_eq!(
+            export_file_name(Metric::Sigma, "svg"),
+            "analytics-noise-sigma.svg"
+        );
+
+        // A star metric exports under its own prefix, so the two dialogs' files
+        // don't collide in a download folder. All four star labels are ASCII,
+        // so the slugifier needs no help this time.
+        assert_eq!(export_file_name(Metric::Hfr, "svg"), "star-hfr.svg");
+        assert_eq!(
+            export_file_name(Metric::Eccentricity, "csv"),
+            "star-eccentricity.csv"
+        );
+        assert_eq!(
+            export_file_name(Metric::StarCount, "svg"),
+            "star-star-count.svg"
         );
     }
 }

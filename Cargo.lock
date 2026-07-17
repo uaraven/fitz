@@ -1539,6 +1539,7 @@ name = "fitsmith"
 version = "0.1.6"
 dependencies = [
  "anyhow",
+ "chrono",
  "fitz-core",
  "objc2 0.6.4",
  "rfd",

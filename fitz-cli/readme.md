@@ -33,7 +33,7 @@ When a command is given several input files, they are processed in parallel acro
  - `debayer` to debayer a FITS mosaic image and save it as a FITS or TIFF file;
  - `stretch` to auto-stretch a FITS image (debayering it first if needed) and save it as a FITS or TIFF file;
  - `split` to debayer a FITS mosaic image (or split an already-debayered RGB image) and save each color channel as a separate FITS file;
- - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics);
+ - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics, star metrics);
  - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using the best quality mode available. See [Preview section](#preview) for more details.
  - `copy-header` to copy FITS header keywords from a source file onto a target file, filling in only what the target doesn't already have.
 
@@ -182,7 +182,23 @@ Each of the above is only shown when the corresponding header keyword is present
 Pass `--pixel` to additionally read the pixel data (transparently decompressing a tile-compressed input first) and print:
 
  - **Pixel statistics** — min, max, mean and median of the physical pixel values, plus the count of pixels whose value is exactly zero. Pixel statistics are not supported for already-debayered RGB images; for those a notice is printed instead.
+ - **Noise** — two estimates of the frame's noise, reported together because the gap between them is itself the interesting number. `sigma` is the standard deviation of every pixel, so stars, hot pixels and satellite trails all inflate it. `mad` is the median absolute deviation from the median (scaled by 1.4826, so it estimates the same quantity for Gaussian noise) — a selection rather than a sum, so a handful of bright outliers cannot move it. On a clean frame the two are close; a `sigma` well above `mad` means signal (or trouble) rather than redundancy.
+ - **Background** — `mode`, the most common pixel value, which for a typical sky frame is the background level. Ties resolve to the lowest such value, so a bimodal frame (e.g. amp glow) reports the sky peak rather than the glow.
+ - **Saturated** — the number of pixels at the sample type's saturation level, and what fraction of the frame that is. The level is derived from the pixel format (65535 for the usual 16-bit unsigned data, 255 for 8-bit), not from a `DATAMAX` header keyword: anything above it is unrepresentable, so "at" and "over" are the same set of pixels. For floating-point data — which has no such ceiling — the observed maximum is used instead.
  - **Histogram** — a histogram of the pixel values is drawn last, after the textual fields. Pass `--log` for a logarithmic vertical axis, which keeps a tall low-value spike (common in astronomical frames) from flattening the rest of the distribution. `--log` only affects the histogram, so it is only useful together with `--pixel`.
+
+Pass `--stars` to detect the frame's stars and report:
+
+ - **`count`** — how many stars were detected. Fewer stars than the frames around it usually means cloud or haze.
+ - **`hfr`** — the half-flux radius, the flux-weighted mean radius of a star. The focus metric: the smaller, the sharper.
+ - **`fwhm`** — the full width at half maximum, from the stars' second moments. Tracks focus and seeing alongside `hfr`.
+ - **`eccentricity`** — how elongated the stars are, from 0 (round) to nearly 1 (a streak). Rising eccentricity means tracking or guiding trouble, or field rotation.
+
+Each is the median across the accepted stars, so one satellite trail cannot move the number. Blobs that are too small (hot pixels), too large (nebulosity), clipped at the sensor's ceiling, or touching the frame border are rejected before measuring — a saturated or truncated star has no usable shape.
+
+`--stars` is independent of `--pixel` in both directions: neither implies the other, and `--stars` alone prints no `Pixels:` line (star detection derives its threshold from its own detection plane, never from the frame's pixel statistics). Star metrics are not supported for already-debayered RGB images; for those a notice is printed instead.
+
+**On a colour (CFA) frame, `hfr` and `fwhm` are in half-resolution pixels** — roughly half the number NINA reports for the same frame — and the report says so under the numbers. A star sampled through a Bayer filter is not a point-spread function, so detection runs on the green super-pixel plane, where each pixel averages one 2x2 cell's two green sites. Every frame in a session comes off the same sensor, so the trend — which is what these numbers are for — is unaffected.
 
 Pass `--headers` to skip the formatted summary entirely and instead dump the raw FITS header cards, one per line, exactly as found in the file.
 
@@ -194,6 +210,7 @@ Arguments:
 
 Options:
       --pixel        Read the pixel data and report pixel statistics (not supported for debayered images)
+      --stars        Detect stars and report count, HFR, FWHM and eccentricity (not supported for debayered images)
       --log          Use a logarithmic vertical axis for the histogram (only useful with --pixel)
       --headers      Print the raw FITS header cards instead of the formatted summary
   -v, --verbose      Print each file being processed
