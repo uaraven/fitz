@@ -9,10 +9,6 @@ use std::path::{Path, PathBuf};
 /// tile-compressed FITS, transparently decompressed on read).
 const FITS_EXTENSIONS: &[&str] = &["fit", "fits", "fts", "fz"];
 
-/// Longest display name shown untouched; anything longer is shortened to
-/// `MAX_DISPLAY_NAME_LEN - 1` chars with a middle ellipsis.
-const MAX_DISPLAY_NAME_LEN: usize = 40;
-
 fn has_extension(path: &Path, candidates: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -30,31 +26,13 @@ pub fn is_compressed(path: &Path) -> bool {
     has_extension(path, &["fz"])
 }
 
-/// The file's base name, falling back to the full path when it has none.
-/// Names longer than `MAX_DISPLAY_NAME_LEN` chars are shortened with a middle
-/// ellipsis so both the start and the end stay visible.
+/// The file's base name, falling back to the full path when it has none. The
+/// full name is returned untouched — callers that need to fit a narrow widget
+/// elide it in the UI layer.
 pub fn display_name(path: &Path) -> String {
     path.file_name()
-        .map(|n| shorten_middle(&n.to_string_lossy()))
+        .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-/// Shorten `s` to `MAX_DISPLAY_NAME_LEN - 1` chars by replacing the middle with
-/// a single ellipsis character, keeping the head and tail. Operates on `char`
-/// boundaries so multibyte names never split a code point. Strings within the
-/// limit are returned unchanged.
-fn shorten_middle(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= MAX_DISPLAY_NAME_LEN {
-        return s.to_string();
-    }
-    // Target length includes the ellipsis; split the remaining budget in half.
-    let keep = MAX_DISPLAY_NAME_LEN - 2; // 48: chars kept besides the ellipsis
-    let head = keep - keep / 2; // favor the head on an odd budget
-    let tail = keep / 2;
-    let head: String = chars[..head].iter().collect();
-    let tail: String = chars[chars.len() - tail..].iter().collect();
-    format!("{head}…{tail}")
 }
 
 /// The FITS files directly inside `dir`, sorted by path for a stable list
@@ -179,17 +157,9 @@ mod tests {
     }
 
     #[test]
-    fn display_name_shortens_long_names_with_middle_ellipsis() {
-        let name = format!("{}.fit", "a".repeat(60)); // 64 chars, over the limit
-        let short = display_name(&PathBuf::from(format!("/x/{name}")));
-        assert_eq!(short.chars().count(), MAX_DISPLAY_NAME_LEN - 1);
-        assert!(short.contains('…'));
-        assert!(short.starts_with('a'));
-        assert!(short.ends_with(".fit"));
-
-        // A name at the limit is left untouched.
-        let exact = "b".repeat(MAX_DISPLAY_NAME_LEN);
-        assert_eq!(display_name(&PathBuf::from(format!("/x/{exact}"))), exact);
+    fn display_name_keeps_long_names_untouched() {
+        let name = format!("{}.fit", "a".repeat(60)); // long, but not shortened
+        assert_eq!(display_name(&PathBuf::from(format!("/x/{name}"))), name);
     }
 
     #[test]

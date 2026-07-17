@@ -97,7 +97,11 @@ export component DialogCard inherits Rectangle {
 export component ProgressOverlay inherits Rectangle {
     in property <string> title;
     in property <float> progress;
+    // `message` is the current file name, elided to the card width; `detail`
+    // (e.g. "3/10") sits on its own line below so a long name can't push the
+    // count out of view.
     in property <string> message;
+    in property <string> detail;
     in property <bool> cancellable: false;
     callback cancel();
 
@@ -123,10 +127,19 @@ export component ProgressOverlay inherits Rectangle {
                 font-weight: 700;
                 color: white;
             }
-            Text {
-                text: root.message;
-                color: #c8c8c8;
-                overflow: elide;
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: root.message;
+                    color: #c8c8c8;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.detail;
+                    visible: root.detail != "";
+                    color: #909090;
+                    font-size: 12px;
+                }
             }
             ProgressIndicator {
                 progress: root.progress;

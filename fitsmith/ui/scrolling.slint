@@ -62,6 +62,18 @@ export component VScrollArea inherits Rectangle {
 
     clip: true;
 
+    // Scroll the minimum amount needed to bring the item spanning
+    // [item-top, item-top + item-height] fully into view. A no-op when it is
+    // already visible, so blink / keyboard navigation only nudges the list when
+    // the current row would otherwise be off-screen.
+    public function ensure-visible(item-top: length, item-height: length) {
+        if (item-top < -flick.viewport-y) {
+            flick.viewport-y = -item-top;
+        } else if (item-top + item-height > -flick.viewport-y + flick.height) {
+            flick.viewport-y = -(item-top + item-height - flick.height);
+        }
+    }
+
     flick := Flickable {
         width: parent.width;
         height: parent.height;
