@@ -24,11 +24,15 @@ const HEIGHT: f32 = 360.0;
 // it came from. They are duplicated rather than shared because Slint owns the
 // live values and Rust can't read them off a component that isn't rendering.
 const Y_AXIS_W: f32 = 64.0;
-const X_AXIS_H: f32 = 22.0;
+/// Tall enough for both label rows: an X tick draws its local date above its
+/// time.
+const X_AXIS_H: f32 = 34.0;
 const TITLE_H: f32 = 18.0;
 const AREA_H: f32 = HEIGHT - X_AXIS_H - TITLE_H;
 const PLOT_W: f32 = WIDTH - Y_AXIS_W;
 const FONT_SIZE: f32 = 11.0;
+/// Baseline-to-baseline distance between a tick's date row and its time row.
+const LINE_H: f32 = 12.0;
 /// Inset of the data from the frame, enough for a mark's radius plus the line's
 /// stroke. Without it an extreme sample — the first frame, the night's lowest
 /// value — is centered exactly on the frame and drawn half outside the canvas.
@@ -60,6 +64,14 @@ fn escape(text: &str) -> String {
         }
     }
     out
+}
+
+/// Half the rendered width of a label, estimated from its character count. SVG
+/// has no text metrics at generation time, and these labels are digits and
+/// separators in a proportional sans, so 0.5em a character is close enough to
+/// keep one inside the frame.
+fn label_half_width(text: &str) -> f32 {
+    text.chars().count() as f32 * FONT_SIZE * 0.5
 }
 
 /// Plot-area X for a normalized 0..1 position. Both the data and the ticks map
@@ -133,16 +145,27 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
         ));
     }
 
-    // X tick labels, centered under their gridlines but pulled inside the
-    // canvas at the ends, the same way the chart clamps them.
+    // X tick labels: the date row above the time row, both centered under their
+    // gridline but pulled inside the canvas at the ends, the same way the chart
+    // clamps them. Both rows share one x — clamped by whichever is wider — so
+    // they stay centered on each other rather than drifting apart at the edges.
+    // The time always sits on the lower row, so times stay aligned across the
+    // axis whether or not their tick carries a date.
+    let date_y = TITLE_H + AREA_H + 5.0 + FONT_SIZE;
     for tick in &plot.x_ticks {
-        let x = plot_x(tick.pos).clamp(Y_AXIS_W + 18.0, WIDTH - 18.0);
-        s.push_str(&format!(
-            "<text x=\"{x:.2}\" y=\"{:.2}\" font-size=\"{FONT_SIZE}\" text-anchor=\"middle\" \
-             fill=\"{LABEL_COLOR}\">{}</text>\n",
-            TITLE_H + AREA_H + 5.0 + FONT_SIZE,
-            escape(&tick.label)
-        ));
+        let inset = label_half_width(&tick.label).max(label_half_width(&tick.date_label));
+        let x = plot_x(tick.pos).clamp(Y_AXIS_W + inset, WIDTH - inset);
+        let mut row = |y: f32, text: &str| {
+            s.push_str(&format!(
+                "<text x=\"{x:.2}\" y=\"{y:.2}\" font-size=\"{FONT_SIZE}\" text-anchor=\"middle\" \
+                 fill=\"{LABEL_COLOR}\">{}</text>\n",
+                escape(text)
+            ));
+        };
+        if !tick.date_label.is_empty() {
+            row(date_y, &tick.date_label);
+        }
+        row(date_y + LINE_H, &tick.label);
     }
 
     if plot.points.is_empty() {
@@ -191,11 +214,14 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart::plot;
+    use crate::chart::plot_in;
+    use chrono::FixedOffset;
     use fitz_core::analytics::{Metric, SamplePoint, Series};
     use std::path::PathBuf;
 
-    /// A three-frame session an hour apart, with a rising metric.
+    /// A three-frame session an hour apart, with a rising metric. Rendered
+    /// against a fixed +02:00 zone rather than the machine's, so the labels
+    /// these tests pin are the same wherever they run.
     fn sample_plot() -> Plot {
         let lo = fitz_core::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let series = Series {
@@ -211,7 +237,7 @@ mod tests {
                 })
                 .collect(),
         };
-        plot(&series)
+        plot_in(&series, &FixedOffset::east_opt(2 * 3600).unwrap())
     }
 
     #[test]
@@ -235,9 +261,14 @@ mod tests {
         assert!(doc.contains(&format!("cx=\"{:.2}\"", Y_AXIS_W + PAD)));
         assert!(doc.contains(&format!("cx=\"{:.2}\"", WIDTH - PAD)));
 
-        // Each mark carries its reading, and the metric titles the Y axis.
-        assert!(doc.contains("<title>23:00:00 — 150</title>"));
+        // Each mark carries its reading — the full local stamp — and the metric
+        // titles the Y axis.
+        assert!(doc.contains("<title>2026-06-23 01:00:00 — 150</title>"));
         assert!(doc.contains(">Mean (ADU)</text>"));
+
+        // X ticks label two rows: the local date, once, above every time.
+        assert_eq!(doc.matches(">2026-06-23</text>").count(), 1);
+        assert!(doc.contains(">01:00</text>"));
     }
 
     #[test]
@@ -268,15 +299,36 @@ mod tests {
             );
         }
 
-        // Edge tick labels are pulled in rather than hanging off the canvas.
-        let xs: Vec<f32> = doc
-            .match_indices("<text x=\"")
-            .map(|(i, _)| {
-                let rest = &doc[i + 9..];
-                rest[..rest.find('"').unwrap()].parse().unwrap()
-            })
-            .collect();
-        assert!(xs.iter().all(|&x| (0.0..=WIDTH).contains(&x)));
+        // Every label sits inside the canvas: the edge ticks are pulled in
+        // horizontally rather than hanging off the sides, and both of an X
+        // tick's rows fit the gutter rather than the lower one dropping off the
+        // bottom.
+        for (attr, hi) in [("<text x=\"", WIDTH), (" y=\"", HEIGHT)] {
+            let coords: Vec<f32> = doc
+                .match_indices(attr)
+                .map(|(i, _)| {
+                    let rest = &doc[i + attr.len()..];
+                    rest[..rest.find('"').unwrap()].parse().unwrap()
+                })
+                .collect();
+            assert!(!coords.is_empty());
+            assert!(
+                coords.iter().all(|&v| (0.0..=hi).contains(&v)),
+                "{attr} out of 0..{hi}: {coords:?}"
+            );
+        }
+
+        // The label rows also fit their *text* inside the frame, not just their
+        // anchor point: a centered date is half its width either side of its x.
+        for tick in &p.x_ticks {
+            let inset = label_half_width(&tick.label).max(label_half_width(&tick.date_label));
+            let x = plot_x(tick.pos).clamp(Y_AXIS_W + inset, WIDTH - inset);
+            assert!(
+                x - inset >= 0.0 && x + inset <= WIDTH,
+                "{} at {x}",
+                tick.label
+            );
+        }
     }
 
     #[test]

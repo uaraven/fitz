@@ -50,15 +50,18 @@ and the CLI behave identically.
        break in the session (clouds, a meridian flip) shows up as a gap in the line rather
        than being closed up. Frames with no readable `DATE-OBS`, and already-debayered RGB
        frames (whose ADU statistics aren't meaningful), are skipped and counted under the
-       chart.
-     - **Reading the chart** — hover a point for its time and value; the zoom slider runs from
-       fit-to-width up to 4x, scrolling horizontally.
-     - **Export** — **Export PNG** saves the chart exactly as drawn, and **Export CSV** saves
-       the plotted series as `time_iso,epoch_seconds,value` rows. Both cover the metric
-       currently on screen.
+       chart. `DATE-OBS` is UTC by FITS convention, but the axis is labeled in **your** local
+       timezone — the clock you observed by. Each tick reads as a date over a time, with the
+       date shown on the first tick and again wherever the session crosses local midnight.
+     - **Reading the chart** — hover a point for its local date, time and value; the zoom
+       slider runs from fit-to-width up to 4x, scrolling horizontally.
+     - **Export** — **Export SVG** saves the chart as a vector document covering the whole
+       series (not just the part on screen), and **Export CSV** saves the plotted series as
+       `time_iso,epoch_seconds,value` rows — those stay UTC, as `DATE-OBS` recorded them.
+       Both cover the metric currently on screen.
  - **Star metrics** — the Tools menu's Star metrics… charts what the frames' *stars* did over
-   the session. It is the same chart as Analytics — same time axis, zoom, skip counts, PNG and
-   CSV exports — over a different set of measurements, and it is a separate menu item for a
+   the session. It is the same chart as Analytics — same local-time axis, zoom, skip counts,
+   SVG and CSV exports — over a different set of measurements, and it is a separate menu item for a
    reason: answering it means detecting every star in every frame, on top of reading every
    pixel. Analytics never pays that and stays as fast as it has always been; opening Star
    metrics is the opt-in.

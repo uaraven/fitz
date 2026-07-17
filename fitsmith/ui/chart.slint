@@ -38,7 +38,8 @@ export component AnalyticsChart inherits Rectangle {
 
     // Fixed gutters for the axis labels; the plot fills the rest.
     property <length> y-axis-w: 64px;
-    property <length> x-axis-h: 22px;
+    // Tall enough for both X label rows: the local date above the time.
+    property <length> x-axis-h: 34px;
     property <length> title-h: 18px;
     property <length> area-h: root.height - root.x-axis-h - root.title-h;
     property <length> viewport-w: root.width - root.y-axis-w;
@@ -108,13 +109,29 @@ export component AnalyticsChart inherits Rectangle {
 
         // X tick labels, below the plot; they scroll with their gridlines.
         // Clamped inside the content so the first/last labels aren't half cut
-        // off at the plot edges.
-        for tick in root.x-ticks: Text {
+        // off at the plot edges. Each tick is two rows — the local date above
+        // the time — laid out as a unit so the rows stay centered on each
+        // other. A tick without a date still lays out its empty row, keeping
+        // every time on the lower one.
+        for tick in root.x-ticks: VerticalLayout {
             x: clamp(tick.pos * root.content-w - self.width / 2, 0px, root.content-w - self.width);
-            y: root.area-h + 5px;
-            text: tick.label;
-            color: root.label-color;
-            font-size: 11px;
+            y: root.area-h + 3px;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            spacing: 1px;
+            Text {
+                min-height: 13px;
+                text: tick.date-label;
+                color: root.label-color;
+                font-size: 11px;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: tick.label;
+                color: root.label-color;
+                font-size: 11px;
+                horizontal-alignment: center;
+            }
         }
 
         // The series line. The 0..1 viewbox with `fill` stretches the
