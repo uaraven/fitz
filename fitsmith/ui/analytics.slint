@@ -40,16 +40,8 @@ export component AnalyticsDialog inherits DialogCard {
     // clamps to that range on its own.
     in-out property <float> zoom: 1.0;
 
-    // Where the chart sits in the window, for cropping a window snapshot down
-    // to the chart when exporting a PNG (covers the whole chart, axes and
-    // labels included).
-    out property <length> chart-x: chart.absolute-position.x;
-    out property <length> chart-y: chart.absolute-position.y;
-    out property <length> chart-w: chart.width;
-    out property <length> chart-h: chart.height;
-
     callback metric-changed(int);
-    callback export-png();
+    callback export-svg();
     callback export-csv();
 
     // Resizable: the chart is the point of this dialog, and a longer session
@@ -132,10 +124,10 @@ export component AnalyticsDialog inherits DialogCard {
         HorizontalLayout {
             spacing: 8px;
             Button {
-                text: "Export PNG";
+                text: "Export SVG";
                 enabled: root.plotted-count > 0;
                 clicked => {
-                    root.export-png();
+                    root.export-svg();
                 }
             }
             Button {

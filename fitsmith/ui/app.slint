@@ -172,9 +172,10 @@ export component AppWindow inherits Window {
     callback cancel-analytics();
     // Metric dropdown changed — re-plot from the cached per-file metrics.
     callback analytics-metric-changed(int);
-    // Export the chart. PNG passes the chart's window placement so Rust can
-    // crop a window snapshot down to it; CSV writes the plotted series.
-    callback analytics-export-png(length, length, length, length);
+    // Export the chart: SVG re-renders the plotted series as a vector document,
+    // CSV writes it as rows. Neither depends on what the dialog is showing, so
+    // a zoomed-in chart still exports whole.
+    callback analytics-export-svg();
     callback analytics-export-csv();
     // Dialog dismissed — Rust drops the cached per-file metrics.
     callback close-analytics();
@@ -625,8 +626,8 @@ export component AppWindow inherits Window {
         metric-changed(index) => {
             root.analytics-metric-changed(index);
         }
-        export-png => {
-            root.analytics-export-png(self.chart-x, self.chart-y, self.chart-w, self.chart-h);
+        export-svg => {
+            root.analytics-export-svg();
         }
         export-csv => {
             root.analytics-export-csv();
