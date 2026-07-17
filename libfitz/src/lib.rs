@@ -15,6 +15,7 @@ pub mod decompress;
 pub mod export;
 pub mod fits_image;
 pub mod info;
+pub mod inspect;
 pub mod preview;
 pub mod resize;
 pub mod split_channel;
