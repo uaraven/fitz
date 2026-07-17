@@ -21,8 +21,8 @@ use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
-use fitz_core::bayer::CFA;
-use fitz_core::fitskit::CompressionType;
+use libfitz::bayer::CFA;
+use libfitz::fitskit::CompressionType;
 use rayon::prelude::*;
 
 use compress::compress_file;
@@ -248,7 +248,7 @@ struct StretchArgs {
 
     /// Target background brightness the auto-stretch pulls the image towards
     /// (strictly between 0 and 1); higher values produce a brighter image
-    #[arg(long, default_value_t = fitz_core::stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
+    #[arg(long, default_value_t = libfitz::stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
     brightness: f32,
 
     /// Output file format
@@ -349,7 +349,7 @@ struct PreviewArgs {
 
     /// Target background brightness the auto-stretch pulls the image towards
     /// (strictly between 0 and 1); higher values produce a brighter image
-    #[arg(long, default_value_t = fitz_core::stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
+    #[arg(long, default_value_t = libfitz::stretch::DEFAULT_BRIGHTNESS, value_parser = parse_brightness)]
     brightness: f32,
 
     /// Force terminal graphics protocol rendering, skipping auto-detection
@@ -637,7 +637,7 @@ fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = DebayerOptions {
-        core: fitz_core::debayer::DebayerOptions {
+        core: libfitz::debayer::DebayerOptions {
             bpp,
             pattern: pattern.map(Into::into),
             force_demosaic,
@@ -668,7 +668,7 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = StretchOptions {
-        core: fitz_core::stretch::StretchOptions {
+        core: libfitz::stretch::StretchOptions {
             pattern: pattern.map(Into::into),
             force_demosaic,
             linked: linked_channel,
@@ -703,7 +703,7 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
     } = args;
 
     let opts = SplitChannelOptions {
-        core: fitz_core::split_channel::SplitChannelOptions {
+        core: libfitz::split_channel::SplitChannelOptions {
             pattern: pattern.map(Into::into),
             force_demosaic,
         },
@@ -756,7 +756,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
 
     let opts = PreviewOptions {
         verbose,
-        core: fitz_core::stretch::StretchOptions {
+        core: libfitz::stretch::StretchOptions {
             pattern: pattern.map(Into::into),
             force_demosaic,
             linked: linked_channel,
@@ -927,9 +927,9 @@ mod tests {
         multi_file: bool,
     ) -> DebayerOptions {
         DebayerOptions {
-            core: fitz_core::debayer::DebayerOptions {
+            core: libfitz::debayer::DebayerOptions {
                 format,
-                ..fitz_core::debayer::DebayerOptions::default()
+                ..libfitz::debayer::DebayerOptions::default()
             },
             output: output.map(PathBuf::from),
             multi_file,

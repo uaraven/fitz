@@ -16,7 +16,7 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
 
     print_step(opts.verbose, "reading");
     print_step(opts.verbose, "decompressing");
-    let out_fits = fitz_core::decompress::decompress(input)?;
+    let out_fits = libfitz::decompress::decompress(input)?;
 
     print_step(opts.verbose, "writing");
     out_fits

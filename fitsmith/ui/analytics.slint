@@ -14,7 +14,7 @@ export component AnalyticsDialog inherits DialogCard {
     // Names the dialog: which of the two this is.
     in property <string> title-text;
     // The selectable metrics, supplied by the controller from
-    // `fitz_core::analytics::Metric::of_family()`; `metric-index` indexes into
+    // `libfitz::analytics::Metric::of_family()`; `metric-index` indexes into
     // that family's list.
     in property <[string]> metric-model;
     // Chart data (see AnalyticsChart / ChartPoint for the coordinate space).

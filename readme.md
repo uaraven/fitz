@@ -12,7 +12,7 @@ what it is now.
 
 The project is a Cargo workspace with three crates:
 
- - **[fitz-core](fitz-core)** — the reusable library: FITS I/O (with transparent
+ - **[libfitz](libfitz)** — the reusable library: FITS I/O (with transparent
    tile-decompression), debayering, auto-stretch, per-channel splitting, header/pixel-stat
    inspection, header copying, and image resizing. Both frontends depend on it.
  - **[fitz](fitz-cli/readme.md)** — the command-line tool. See its
@@ -33,7 +33,7 @@ The `edition = "2024"` crates need a recent stable Rust toolchain (install via
 
 ### System dependencies
 
-The `fitz` and `fitz-core` crates are pure Rust and build with no extra system libraries.
+The `fitz` and `libfitz` crates are pure Rust and build with no extra system libraries.
 The **FitSmith** GUI, however, pulls in [Slint](https://slint.dev/), which links `fontconfig`
 at build time and uses the platform's windowing/graphics stack at runtime. If you only need
 the CLI, you can skip all of this and build just those crates:

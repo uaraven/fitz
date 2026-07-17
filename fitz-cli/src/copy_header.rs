@@ -16,7 +16,7 @@ use crate::options::CopyHeaderOptions;
 pub fn copy_header_file(source: &Path, target: &Path, opts: &CopyHeaderOptions) -> Result<()> {
     print_step(opts.verbose, "reading");
     print_step(opts.verbose, "copying header");
-    let (out_fits, copied) = fitz_core::copy_header::copy_header(source, target)?;
+    let (out_fits, copied) = libfitz::copy_header::copy_header(source, target)?;
 
     let output = opts.output.clone().unwrap_or_else(|| target.to_path_buf());
     // Overwriting the target in place is the whole point of this command and

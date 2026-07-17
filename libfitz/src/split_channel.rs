@@ -196,7 +196,7 @@ mod tests {
         channel: &str,
     ) {
         let (pixels, bzero) = encode_channel(values, format);
-        let history = format!("split channel {channel} by fitz-core tests");
+        let history = format!("split channel {channel} by fitz tests");
         crate::fits_image::write_pixel_fits(
             output,
             vec![width, height],

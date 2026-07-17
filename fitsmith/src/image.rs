@@ -1,8 +1,8 @@
-//! Bridge `fitz-core`'s RGBA8 preview buffer to a Slint [`Image`]. This is the
+//! Bridge `libfitz`'s RGBA8 preview buffer to a Slint [`Image`]. This is the
 //! one conversion point every on-screen image goes through, so the rest of the
 //! GUI never touches raw pixel buffers.
 
-use fitz_core::preview::PreviewImage;
+use libfitz::preview::PreviewImage;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 /// Wrap a [`PreviewImage`]'s interleaved RGBA8 bytes in a Slint [`Image`].

@@ -4,10 +4,10 @@
 
 use std::path::PathBuf;
 
-use fitz_core::export::{
+use libfitz::export::{
     ExportFormat, FitsBitpix, FitsExportOptions, JpegExportOptions, TiffExportOptions,
 };
-use fitz_core::preview::PreviewParams;
+use libfitz::preview::PreviewParams;
 use slint::{ComponentHandle, Weak};
 
 use crate::AppWindow;
@@ -144,7 +144,7 @@ fn spawn_export(
             });
 
             let output = export_output_path(input, &dir, ext);
-            match fitz_core::export::export_file(input, &output, &params, &format) {
+            match libfitz::export::export_file(input, &output, &params, &format) {
                 Ok(()) => ok += 1,
                 Err(e) => {
                     failed += 1;

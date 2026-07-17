@@ -239,7 +239,7 @@ mod tests {
 
     fn write_fits(output: &Path, d: DebayeredImage) {
         let pixels = encode_rgb_as_source(d.rgb, &d.source);
-        let history = "debayered by fitz-core tests".to_string();
+        let history = "debayered by fitz tests".to_string();
         write_pixel_fits(
             output,
             vec![d.width, d.height, 3],

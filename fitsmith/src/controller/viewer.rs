@@ -11,9 +11,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
-use fitz_core::fits_image::find_image_hdu;
-use fitz_core::fitskit::FitsFile;
-use fitz_core::preview::{PreviewParams, PreviewStage, render_preview_with_progress};
+use libfitz::fits_image::find_image_hdu;
+use libfitz::fitskit::FitsFile;
+use libfitz::preview::{PreviewParams, PreviewStage, render_preview_with_progress};
 use slint::{ComponentHandle, TimerMode, Weak};
 
 use crate::doc::LoadedDoc;
