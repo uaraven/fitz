@@ -40,7 +40,14 @@ export struct ChartPoint {
 // One axis tick: a screen-normalized 0..1 position along its axis (measured
 // from the left for X, from the top for Y — same convention as ChartPoint)
 // and the label to draw there.
+//
+// An X tick draws on two lines: `date-label` above `label`. The date is set
+// only on the first tick and wherever the local date rolls over, so a single
+// night doesn't repeat it under every tick; it is empty everywhere else, and on
+// every Y tick. The empty line is still laid out, keeping all the times on one
+// row.
 export struct ChartTick {
     pos: float,
     label: string,
+    date-label: string,
 }
