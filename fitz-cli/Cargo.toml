@@ -9,7 +9,7 @@ name = "fitz"
 path = "src/main.rs"
 
 [dependencies]
-fitz-core = { path = "../fitz-core" }
+libfitz = { path = "../libfitz" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 rayon = "1"

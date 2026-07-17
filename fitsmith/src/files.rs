@@ -1,6 +1,6 @@
 //! Pure, UI-free helpers for the working set of files: recognizing FITS paths,
 //! scanning a directory, deriving display names, and stepping the blink
-//! selection. Kept free of Slint and `fitz-core` so the logic is unit-testable
+//! selection. Kept free of Slint and `libfitz` so the logic is unit-testable
 //! without an event loop.
 
 use std::path::{Path, PathBuf};

@@ -237,7 +237,7 @@ mod tests {
 
     fn stretch_to_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
         let stretched = load_and_stretch(input, opts)?;
-        let history = "stretched by fitz-core tests".to_string();
+        let history = "stretched by fitz tests".to_string();
         write_rgb16_fits(
             output,
             stretched.width,

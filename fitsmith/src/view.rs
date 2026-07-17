@@ -2,7 +2,7 @@
 //! with no state or threading. Data in, Slint properties out; the controller
 //! owns *when* to call these, this owns *how* the data maps to the UI.
 
-use fitz_core::info::SummaryField;
+use libfitz::info::SummaryField;
 use slint::{Image, ModelRc, VecModel};
 
 use crate::doc::{LoadedDoc, StatSummary};

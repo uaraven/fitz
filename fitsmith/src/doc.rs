@@ -8,12 +8,12 @@
 //! worker back to the UI thread) and the formatting logic stays unit-testable
 //! without an event loop.
 
-use fitz_core::fits_image::is_debayered_rgb_cube;
-use fitz_core::fitskit::{Header, HeaderValue, ImageData, Keyword};
-use fitz_core::info::{
+use libfitz::fits_image::is_debayered_rgb_cube;
+use libfitz::fitskit::{Header, HeaderValue, ImageData, Keyword};
+use libfitz::info::{
     HISTOGRAM_BUCKETS, InfoRequest, SummaryField, header_info_from, pixel_stats,
 };
-use fitz_core::preview::PreviewImage;
+use libfitz::preview::PreviewImage;
 
 /// One FITS header card, pre-formatted into the three display columns.
 pub struct HeaderCard {

@@ -5,7 +5,7 @@ gives you a quick, interactive way to look through FITS (astronomy image) files 
 dropping to the command line.
 
 All FITS and image operations — reading, debayering, auto-stretching, header parsing and
-pixel statistics — are performed by the shared [`fitz-core`](../fitz-core) library, so the GUI
+pixel statistics — are performed by the shared [`libfitz`](../libfitz) library, so the GUI
 and the CLI behave identically.
 
 ## What it does
@@ -111,5 +111,5 @@ cargo run -p fitsmith -- path/to/images/
 FitSmith's user interface is built with [Slint](https://slint.dev/). Slint is available under
 several licenses; FitSmith uses it under the **GNU General Public License, version 3 (GPLv3)**.
 Because of this, distributing FitSmith binaries is subject to the terms of the GPLv3. The rest
-of the `fitz` project (the `fitz-core` library and the `fitz` CLI) remains under the MIT
+of the `fitz` project (the `libfitz` library and the `fitz` CLI) remains under the MIT
 license — see [LICENSE](../LICENSE).

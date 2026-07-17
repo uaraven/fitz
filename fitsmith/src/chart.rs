@@ -5,7 +5,7 @@
 //! it is unit-testable without a window.
 
 use chrono::{DateTime, Local, TimeZone};
-use fitz_core::analytics::Series;
+use libfitz::analytics::Series;
 
 use crate::view::format_stat;
 use crate::{ChartPoint, ChartTick};
@@ -270,7 +270,7 @@ where
 mod tests {
     use super::*;
     use chrono::FixedOffset;
-    use fitz_core::analytics::{Metric, SamplePoint};
+    use libfitz::analytics::{Metric, SamplePoint};
     use std::path::PathBuf;
 
     /// UTC+02:00 — a zone far enough east that a UTC-evening session lands on
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn time_ticks_land_on_wall_clock_boundaries() {
         // A 3-hour session ticks every half hour, on the half hour.
-        let lo = fitz_core::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let lo = libfitz::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let ticks = time_ticks(lo, lo + 3.0 * 3600.0);
         let labels: Vec<String> = ticks.iter().map(|&t| format_time(t, &tz())).collect();
         assert_eq!(
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn formatters_render_the_given_zones_wall_clock() {
-        let t = fitz_core::info::parse_date_obs("2026-05-31T04:57:09.004664").unwrap();
+        let t = libfitz::info::parse_date_obs("2026-05-31T04:57:09.004664").unwrap();
         // UTC renders the timestamp as `DATE-OBS` spelled it.
         assert_eq!(format_time(t, &chrono::Utc), "04:57");
         assert_eq!(format_date(t, &chrono::Utc), "2026-05-31");
@@ -366,12 +366,12 @@ mod tests {
 
         // The point of the exercise: an offset that carries the timestamp over
         // a date boundary must move the date with it, in both directions.
-        let evening = fitz_core::info::parse_date_obs("2026-06-22T23:30:00").unwrap();
+        let evening = libfitz::info::parse_date_obs("2026-06-22T23:30:00").unwrap();
         assert_eq!(format_date(evening, &tz()), "2026-06-23");
         assert_eq!(format_time(evening, &tz()), "01:30");
 
         let west = FixedOffset::west_opt(5 * 3600).unwrap();
-        let morning = fitz_core::info::parse_date_obs("2026-06-22T02:00:00").unwrap();
+        let morning = libfitz::info::parse_date_obs("2026-06-22T02:00:00").unwrap();
         assert_eq!(format_date(morning, &west), "2026-06-21");
         assert_eq!(format_time(morning, &west), "21:00");
 
@@ -384,7 +384,7 @@ mod tests {
     fn x_ticks_carry_the_date_only_where_it_changes() {
         // A session running up to and through local midnight: 22:00 UTC is
         // 00:00 in `tz()`, so start an hour earlier to sit on the day before.
-        let lo = fitz_core::info::parse_date_obs("2026-06-22T21:00:00").unwrap();
+        let lo = libfitz::info::parse_date_obs("2026-06-22T21:00:00").unwrap();
         let p = plot_in(
             &series(&[(lo, 100.0), (lo + 3600.0, 150.0), (lo + 7200.0, 200.0)]),
             &tz(),
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn plot_normalizes_points_into_the_unit_square() {
         // Three frames an hour apart with a rising metric.
-        let lo = fitz_core::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let lo = libfitz::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let p = plot_in(
             &series(&[(lo, 100.0), (lo + 3600.0, 150.0), (lo + 7200.0, 200.0)]),
             &tz(),

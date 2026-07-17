@@ -1,4 +1,4 @@
-//! Application logic bridging the Slint UI to `fitz-core`. Files are decoded and
+//! Application logic bridging the Slint UI to `libfitz`. Files are decoded and
 //! rendered off the UI thread into display-ready [`LoadedDoc`]s (preview +
 //! headers + stats), kept in a byte-budgeted LRU cache so re-selecting or
 //! blinking back to a file re-displays instantly, with no re-decode. A
@@ -34,9 +34,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use fitz_core::analytics::{FileMetrics, MetricFamily};
-use fitz_core::fitskit::CompressionType;
-use fitz_core::preview::PreviewParams;
+use libfitz::analytics::{FileMetrics, MetricFamily};
+use libfitz::fitskit::CompressionType;
+use libfitz::preview::PreviewParams;
 use slint::{Model, ModelRc, Timer, VecModel};
 
 use crate::doc::LoadedDoc;

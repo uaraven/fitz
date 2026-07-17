@@ -2,9 +2,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use fitz_core::fits_image::{CFA_KEYWORDS, write_pixel_fits};
-pub use fitz_core::split_channel::ChannelFormat;
-use fitz_core::split_channel::encode_channel;
+use libfitz::fits_image::{CFA_KEYWORDS, write_pixel_fits};
+pub use libfitz::split_channel::ChannelFormat;
+use libfitz::split_channel::encode_channel;
 
 use crate::io_prompt::{ensure_can_write, print_progress, print_step};
 use crate::options::SplitChannelOptions;
@@ -15,7 +15,7 @@ pub fn parse_channel_format(s: &str) -> Result<ChannelFormat, String> {
 
 pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()> {
     print_step(opts.verbose, "reading");
-    let s = fitz_core::split_channel::split_channels(input, &opts.core)
+    let s = libfitz::split_channel::split_channels(input, &opts.core)
         .with_context(|| format!("{}: splitting failed", input.display()))?;
 
     print_step(opts.verbose, "splitting channels");
@@ -97,7 +97,7 @@ fn write_channel_fits(
     height: usize,
     values: &[f64],
     format: ChannelFormat,
-    src_header: &fitz_core::fitskit::Header,
+    src_header: &libfitz::fitskit::Header,
     channel: &str,
 ) -> Result<()> {
     let (pixels, bzero) = encode_channel(values, format);

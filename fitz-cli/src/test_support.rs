@@ -1,5 +1,5 @@
 //! Minimal test helpers for the CLI's own tests: locating bundled test data.
-//! Fixture *generators* (synthesizing small FITS files) live in `fitz-core`'s
+//! Fixture *generators* (synthesizing small FITS files) live in `libfitz`'s
 //! test support, since the domain logic that consumes them moved there.
 
 use std::path::PathBuf;

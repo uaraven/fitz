@@ -48,9 +48,9 @@ pub fn encode_image(rgb8: &[u8], width: usize, height: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fitz_core::fits_image::rgb16_to_rgb8;
-    use fitz_core::resize::resize_to_fit;
-    use fitz_core::stretch::{StretchOptions, load_and_stretch};
+    use libfitz::fits_image::rgb16_to_rgb8;
+    use libfitz::resize::resize_to_fit;
+    use libfitz::stretch::{StretchOptions, load_and_stretch};
 
     use crate::test_support::test_data;
 
