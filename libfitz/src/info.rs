@@ -12,7 +12,7 @@ use rayon::prelude::*;
 
 use crate::fits_image::{
     MonoPlane, bscale_bzero, detection_plane, find_image_hdu, get_bayerpat, green_plane,
-    is_debayered_rgb_cube, scaled_pixels,
+    is_debayered_mono, is_debayered_rgb_cube, scaled_pixels,
 };
 use crate::stars::{StarDetectOptions, StarStats, detect_stars, plane_background};
 
@@ -163,8 +163,8 @@ pub fn header_info_from(header: &Header, img: &ImageData, req: InfoRequest) -> H
     let bitpix = img.bitpix().to_i64();
     let is_unsigned16 = bitpix == 16 && header.get_float("BZERO").unwrap_or(0.0) == 32768.0;
 
-    let pixel_stats = req.pixel_stats.then(|| pixel_stats(header, img));
-    let stars = req.stars.then(|| star_report(header, img)).flatten();
+    let (pixel_stats, stars) = measure_frame(header, img, req);
+    let stars = stars.and_then(|r| r.ok());
 
     HeaderInfo {
         width,
@@ -195,18 +195,69 @@ pub fn header_info_from(header: &Header, img: &ImageData, req: InfoRequest) -> H
     }
 }
 
-/// Detect and measure the frame's stars. `None` for an image
-/// [`detection_plane`] can't build a plane from — a shape this summary reports
-/// but has nothing to say about, which is not an error the way an unreadable
-/// file is.
-fn star_report(header: &Header, img: &ImageData) -> Option<StarReport> {
-    let plane = detection_plane(header, img).ok()?;
-    let bg = plane_background(&plane);
-    Some(StarReport {
-        stats: detect_stars(&plane, &bg, &StarDetectOptions::default()),
+/// Compute whatever `req` asks for over one already-decoded frame, sharing the
+/// expensive intermediates between the two requests instead of rebuilding them:
+///
+/// - a **mono** frame's detection background *is* the frame's own statistics
+///   (the detection plane is the frame — see [`plane_background`]'s note), so
+///   [`pixel_stats`]'s value-count fast path serves as `bg` and a redundant
+///   full-frame clone + sort pass never happens;
+/// - an **RGB cube**'s green plane is materialized once and feeds both its
+///   statistics ([`green_plane_stats`]) and star detection, instead of twice;
+/// - a **CFA mosaic**'s super-pixel plane genuinely differs from the frame, so
+///   its background stays [`plane_background`] on the (quarter-size) plane.
+///
+/// The star half is `None` when not requested, and `Some(Err(_))` for a shape
+/// [`detection_plane`] can't build a plane from — callers decide whether that
+/// is an error ([`crate::analytics::analyze_file`]) or merely nothing to report
+/// ([`header_info_from`]).
+pub(crate) fn measure_frame(
+    header: &Header,
+    img: &ImageData,
+    req: InfoRequest,
+) -> (Option<PixelStats>, Option<Result<StarReport>>) {
+    if !req.stars {
+        return (req.pixel_stats.then(|| pixel_stats(header, img)), None);
+    }
+
+    if is_debayered_rgb_cube(header, img) {
+        // One green plane serves both: its stats are the cube's pixel stats,
+        // and detection only reads the background's median and MAD — which the
+        // value-count path is pinned to compute exactly as the sort path does.
+        let plane = green_plane(header, img);
+        let stats = green_plane_stats(&plane);
+        let report = star_report_on(&plane, &stats);
+        return (req.pixel_stats.then_some(stats), Some(Ok(report)));
+    }
+
+    let plane = match detection_plane(header, img) {
+        Ok(plane) => plane,
+        Err(e) => return (req.pixel_stats.then(|| pixel_stats(header, img)), Some(Err(e))),
+    };
+    if is_debayered_mono(header, img) {
+        // The plane is the frame, so the frame's statistics are the background.
+        let stats = pixel_stats(header, img);
+        let report = star_report_on(&plane, &stats);
+        (req.pixel_stats.then_some(stats), Some(Ok(report)))
+    } else {
+        // CFA mosaic: the half-resolution green super-pixel plane's noise is
+        // nothing like the frame's, so it gets its own background.
+        let bg = plane_background(&plane);
+        let report = star_report_on(&plane, &bg);
+        (
+            req.pixel_stats.then(|| pixel_stats(header, img)),
+            Some(Ok(report)),
+        )
+    }
+}
+
+/// Measure the stars on an already-built detection plane against `bg`.
+fn star_report_on(plane: &MonoPlane, bg: &PixelStats) -> StarReport {
+    StarReport {
+        stats: detect_stars(plane, bg, &StarDetectOptions::default()),
         plane_width: plane.width,
         plane_height: plane.height,
-    })
+    }
 }
 
 /// One labeled field in a [`HeaderInfo::summary`] — a display label and its
@@ -493,7 +544,7 @@ pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
     // Reduce to the green channel (the plane star detection also measures on)
     // and measure that, on the same unsigned-16 ADU scale a raw frame uses.
     if is_debayered_rgb_cube(header, img) {
-        return green_plane_stats(&mut green_plane(header, img));
+        return green_plane_stats(&green_plane(header, img));
     }
     let (bscale, bzero) = bscale_bzero(header);
     if bscale > 0.0
@@ -570,7 +621,10 @@ fn count_into_slots<T: Sync>(
 /// clamped into `[0, saturation]` exactly as `green_plane`'s own quantization
 /// does. A plane with no representable ceiling (a wide-integer cube) keeps the
 /// general float path.
-fn green_plane_stats(plane: &mut MonoPlane) -> PixelStats {
+///
+/// Leaves `plane` untouched (the rare no-ceiling fallback works on a clone), so
+/// [`measure_frame`] can run star detection on the very same plane afterwards.
+fn green_plane_stats(plane: &MonoPlane) -> PixelStats {
     // The range check alone rejects a plane with no ceiling: an infinite (or
     // NaN, or negative) `saturation` is never `contains`-ed.
     let sat = plane.saturation;
@@ -583,7 +637,7 @@ fn green_plane_stats(plane: &mut MonoPlane) -> PixelStats {
         // slot index *is* the physical value.
         return stats_from_counts(&counts, |i| i as f64);
     }
-    stats_from_values(&mut plane.values)
+    stats_from_values(&mut plane.values.clone())
 }
 
 /// Sum two equal-length count arrays element-wise, reusing `a`'s allocation.
@@ -1210,6 +1264,48 @@ mod tests {
         let img = img.as_ref();
         let stats = pixel_stats(header, img);
         assert_eq!(stats.zeros, 1);
+    }
+
+    #[test]
+    fn shared_background_matches_independent_plane_background() {
+        // `measure_frame` feeds star detection the frame's own `pixel_stats`
+        // (value-count fast path) as its background on a mono frame, and the
+        // green plane's count-based stats on an RGB cube — replacing the
+        // independent sort-based `plane_background` pass. The detection outcome
+        // must be identical either way.
+        use crate::fits_image::detection_plane;
+        use crate::stars::{StarDetectOptions, detect_stars, plane_background};
+
+        let tmp = TempDir::new().unwrap();
+        let mono = tmp.path().join("mono.fits");
+        write_star_field_fits(&mono, 60, 60, 1000.0, &[(30.0, 30.0, 2.0, 2.0, 5000.0)]);
+        let cube = tmp.path().join("rgb.fits");
+        write_rgb_cube_fits(&cube, 8, 6);
+
+        for input in [mono, cube] {
+            let fits = FitsFile::from_file(&input).unwrap();
+            let (header, img) = find_image_hdu(&fits, &input).unwrap();
+            let img = img.as_ref();
+
+            // The old two-pass computation, done by hand.
+            let plane = detection_plane(header, img).unwrap();
+            let bg = plane_background(&plane);
+            let expected = detect_stars(&plane, &bg, &StarDetectOptions::default());
+
+            let info = header_info_from(
+                header,
+                img,
+                InfoRequest {
+                    pixel_stats: true,
+                    stars: true,
+                },
+            );
+            let report = info.stars.expect("stars measured");
+            assert_eq!(report.stats.count, expected.count, "{}", input.display());
+            assert_eq!(report.stats.hfr, expected.hfr);
+            assert_eq!(report.stats.fwhm, expected.fwhm);
+            assert_eq!(report.stats.eccentricity, expected.eccentricity);
+        }
     }
 
     #[test]
