@@ -11,7 +11,7 @@ use fitskit::{FitsFile, Header, ImageData, PixelData};
 use rayon::prelude::*;
 
 use crate::fits_image::{
-    bscale_bzero, detection_plane, find_image_hdu, get_bayerpat, green_plane,
+    MonoPlane, bscale_bzero, detection_plane, find_image_hdu, get_bayerpat, green_plane,
     is_debayered_rgb_cube, scaled_pixels,
 };
 use crate::stars::{StarDetectOptions, StarStats, detect_stars, plane_background};
@@ -490,9 +490,9 @@ pub fn pixel_stats(header: &Header, img: &ImageData) -> PixelStats {
     // An already-debayered RGB cube has three interleaved planes; the fast
     // value-count path below would blend them into one meaningless statistic.
     // Reduce to the green channel (the plane star detection also measures on)
-    // and take the general `f64` path over just those samples.
+    // and measure that, on the same unsigned-16 ADU scale a raw frame uses.
     if is_debayered_rgb_cube(header, img) {
-        return stats_from_values(&mut green_plane(header, img).values);
+        return green_plane_stats(&mut green_plane(header, img));
     }
     let (bscale, bzero) = bscale_bzero(header);
     if bscale > 0.0
@@ -516,36 +516,71 @@ const U8_COUNT_SLOTS: usize = 1 << 8;
 /// the counts plus the `offset` mapping an index back to its raw sample value
 /// (`raw = index - offset`), or `None` for wider/float samples.
 fn value_counts(img: &ImageData) -> Option<(Vec<u64>, f64)> {
-    fn count<T: Sync>(v: &[T], slots: usize, idx: impl Fn(&T) -> usize + Sync + Send) -> Vec<u64> {
-        // Every chunk costs a `slots`-slot allocation to zero and a `slots`-element
-        // add to merge, so a chunk must count enough samples to earn that back:
-        // spread the work one chunk per thread, but never split so fine that the
-        // bookkeeping dominates. A small frame stays on a single chunk.
-        let chunk = v
-            .len()
-            .div_ceil(rayon::current_num_threads())
-            .max(4 * slots);
-        v.par_chunks(chunk)
-            .fold(
-                || vec![0u64; slots],
-                |mut c, chunk| {
-                    for x in chunk {
-                        c[idx(x)] += 1;
-                    }
-                    c
-                },
-            )
-            .reduce(|| vec![0u64; slots], add_counts)
-    }
-
     match &img.pixels {
-        PixelData::U8(v) => Some((count(v, U8_COUNT_SLOTS, |&x| x as usize), 0.0)),
+        PixelData::U8(v) => Some((count_into_slots(v, U8_COUNT_SLOTS, |&x| x as usize), 0.0)),
         PixelData::I16(v) => Some((
-            count(v, VALUE_COUNT_SLOTS, |&x| (x as i32 + 32768) as usize),
+            count_into_slots(v, VALUE_COUNT_SLOTS, |&x| (x as i32 + 32768) as usize),
             32768.0,
         )),
         _ => None,
     }
+}
+
+/// Count `v`'s samples into a `slots`-slot array, `idx` mapping each sample to
+/// its slot. One parallel counting pass, the shared engine behind both the
+/// integer fast path ([`value_counts`]) and the RGB green-plane path
+/// ([`green_plane_stats`]).
+fn count_into_slots<T: Sync>(
+    v: &[T],
+    slots: usize,
+    idx: impl Fn(&T) -> usize + Sync + Send,
+) -> Vec<u64> {
+    // Every chunk costs a `slots`-slot allocation to zero and a `slots`-element
+    // add to merge, so a chunk must count enough samples to earn that back:
+    // spread the work one chunk per thread, but never split so fine that the
+    // bookkeeping dominates. A small frame stays on a single chunk.
+    let chunk = v
+        .len()
+        .div_ceil(rayon::current_num_threads())
+        .max(4 * slots);
+    v.par_chunks(chunk)
+        .fold(
+            || vec![0u64; slots],
+            |mut c, chunk| {
+                for x in chunk {
+                    c[idx(x)] += 1;
+                }
+                c
+            },
+        )
+        .reduce(|| vec![0u64; slots], add_counts)
+}
+
+/// Every [`PixelStats`] field for an already-debayered RGB cube, measured on
+/// its green channel.
+///
+/// [`green_plane`] hands back the green channel as physical ADU on a bounded
+/// integer scale whenever the source has a representable ceiling — the U8/I16
+/// conventions, or a float cube quantized `1.0 -> 65535`. In that case the
+/// values are folded through the very same value-count path a non-debayered
+/// 16-bit frame takes ([`stats_from_counts`]), so the reported saturation level,
+/// saturated count and mode come out in the *same form* as a mono frame's,
+/// rather than the float path's observed-max stand-ins. Values are rounded and
+/// clamped into `[0, saturation]` exactly as `green_plane`'s own quantization
+/// does. A plane with no representable ceiling (a wide-integer cube) keeps the
+/// general float path.
+fn green_plane_stats(plane: &mut MonoPlane) -> PixelStats {
+    let sat = plane.saturation;
+    if sat.is_finite() && (0.0..VALUE_COUNT_SLOTS as f64).contains(&sat) {
+        let slots = sat as usize + 1;
+        let counts = count_into_slots(&plane.values, slots, |&v| {
+            (v.round() as i64).clamp(0, slots as i64 - 1) as usize
+        });
+        // The green channel already sits on the unsigned-16 ADU scale, so the
+        // slot index *is* the physical value.
+        return stats_from_counts(&counts, |i| i as f64);
+    }
+    stats_from_values(&mut plane.values)
 }
 
 /// Sum two equal-length count arrays element-wise, reusing `a`'s allocation.
@@ -1072,17 +1107,17 @@ mod tests {
         )
         .unwrap();
         let stats = info.pixel_stats.expect("green-channel stats");
-        assert!(
-            stats.min > 21000.0 && stats.min < 22000.0,
-            "min {}",
-            stats.min
-        );
-        assert!(
-            stats.max > 41000.0 && stats.max < 42000.0,
-            "max {}",
-            stats.max
-        );
+        // Exact quantized ADU: 12/36 -> 21845, 23/36 -> 41870.
+        assert_eq!((stats.min, stats.max), (21845.0, 41870.0));
         assert_eq!(stats.count, 12);
+        // The stats come out in the same *form* a non-debayered 16-bit frame's
+        // do: the ceiling is the fixed unsigned-16 saturation level (65535), not
+        // the float path's observed maximum, and nothing here reaches it.
+        assert_eq!(stats.saturation, 65535.0);
+        assert_eq!(stats.saturated, 0);
+        // The mode is an exact ADU value in range, not a histogram-bucket center.
+        assert!(stats.min <= stats.mode && stats.mode <= stats.max);
+        assert_eq!(stats.mode.fract(), 0.0);
     }
 
     #[test]

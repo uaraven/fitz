@@ -200,14 +200,15 @@ fn set_row_status(path: &Path, status: &str, error: &str) {
 
 // --- opening files -------------------------------------------------------
 
-/// Prompt for a single FITS file, add it to the working set, and select it.
+/// Prompt for one or more FITS files, add them to the working set, and select
+/// the first newly added one.
 pub fn open_file(app: &AppWindow) {
-    if let Some(path) = rfd::FileDialog::new()
+    if let Some(paths) = rfd::FileDialog::new()
         .add_filter("FITS images", &["fit", "fits", "fts", "fz"])
         .add_filter("All files", &["*"])
-        .pick_file()
+        .pick_files()
     {
-        add_and_select(app, vec![path]);
+        add_and_select(app, paths);
     }
 }
 
