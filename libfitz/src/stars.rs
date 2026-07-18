@@ -59,6 +59,7 @@ pub struct Star {
 
 /// A frame's star metrics: how many stars were accepted, and the median of each
 /// shape measurement across them.
+#[derive(Clone)]
 pub struct StarStats {
     pub count: usize,
     /// Median across accepted stars; `None` when none were accepted.

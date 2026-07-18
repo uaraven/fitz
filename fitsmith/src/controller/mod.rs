@@ -72,6 +72,17 @@ struct AppState {
     /// once so switching the plotted metric needs no file re-read. Cleared when
     /// the dialog closes.
     analytics: Vec<FileMetrics>,
+    /// Per-file analysis results, kept for the lifetime of the working set so
+    /// reopening the Analysis dialog re-reads nothing. Each entry is stamped
+    /// with the file's size/mtime and revalidated on lookup, so a file rewritten
+    /// under us reads as a miss.
+    ///
+    /// Deliberately unbounded and deliberately absent from the `update_memory`
+    /// readout: one entry is a couple hundred bytes against a cached preview's
+    /// megabytes, so even ten thousand frames sit below that readout's noise
+    /// floor, and evicting would reintroduce the re-reads this cache exists to
+    /// remove.
+    analytics_cache: analytics::AnalyticsCache,
     /// Guards analytics batches specifically — kept apart from `generation` so
     /// that merely selecting a file mid-batch doesn't discard its results.
     analytics_generation: u64,
@@ -99,6 +110,7 @@ impl AppState {
             generation: 0,
             blink_timer: Timer::default(),
             analytics: Vec::new(),
+            analytics_cache: analytics::AnalyticsCache::new(),
             analytics_generation: 0,
             analytics_cancel: Arc::new(AtomicBool::new(false)),
             analytics_family: MetricFamily::Pixel,
@@ -290,6 +302,9 @@ pub fn clear_files(app: &AppWindow) {
         st.paths.clear();
         st.files_model.set_vec(Vec::new());
         st.cache.clear();
+        // The analyses are kept for the lifetime of the working set, and this
+        // is the end of one.
+        st.analytics_cache.clear();
         st.selected = None;
         st.generation += 1;
     });
@@ -351,6 +366,10 @@ pub fn remove_selected(app: &AppWindow) {
             let path = st.paths.remove(i);
             st.files_model.remove(i);
             st.cache.remove(&path);
+            // Not needed for correctness — the stamp would catch a rewrite
+            // anyway — but it stops a long session accumulating analyses for
+            // files nobody has open.
+            st.analytics_cache.remove(&path);
         }
         st.generation += 1;
         st.selected = None;
