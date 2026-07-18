@@ -281,17 +281,20 @@ export component AppWindow inherits Window {
                 title: "Show image stats";
                 checkable: true;
                 checked <=> root.show-stats;
+                shortcut: @keys(S);
             }
             MenuItem {
                 title: "Show image info";
                 checkable: true;
                 checked <=> root.show-info;
+                shortcut: @keys(I);
             }
             MenuSeparator { }
             MenuItem {
                 title: "Blink";
                 checkable: true;
                 checked <=> root.blinking;
+                shortcut: @keys(Control + B);
             }
         }
 
@@ -356,6 +359,7 @@ export component AppWindow inherits Window {
                 title: "Aberration Inspector…";
                 // A per-frame inspection: needs a selected frame, not a batch.
                 enabled: root.selected-index >= 0;
+                shortcut: @keys(Control + I);
                 activated => {
                     root.open-aberration-dialog();
                 }
@@ -405,11 +409,11 @@ export component AppWindow inherits Window {
             actual-size => {
                 image-view.actual-size();
             }
-            zoom-in => {
-                image-view.zoom-by(1.25);
-            }
-            zoom-out => {
-                image-view.zoom-by(0.8);
+            zoom: image-view.zoom;
+            min-zoom: image-view.min-zoom;
+            max-zoom: image-view.max-zoom;
+            zoom-to(z) => {
+                image-view.zoom-to(z);
             }
         }
 
