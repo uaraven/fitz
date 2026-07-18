@@ -27,6 +27,7 @@ const MAD_TO_SIGMA: f64 = 1.4826;
 /// plus robust noise/background statistics, the count of pixels whose physical
 /// value is exactly zero and a [`HISTOGRAM_BUCKETS`]-bin histogram of the values
 /// over the `[min, max]` range.
+#[derive(Clone)]
 pub struct PixelStats {
     pub min: f64,
     pub max: f64,
