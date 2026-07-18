@@ -9,8 +9,8 @@ use fitskit::{FitsFile, Header};
 use rayon::prelude::*;
 
 use crate::fits_image::{
-    RgbBuffer, demosaic_to_rgb, find_image_hdu, get_bayerpat, is_rgb_cube_shape, resolve_cfa,
-    scaled_pixels,
+    RgbBuffer, demosaic_to_rgb, find_image_hdu, get_bayerpat, is_rgb_cube_shape, plane_values,
+    resolve_cfa,
 };
 
 /// Pixel sample type used when writing each split-out channel to FITS.
@@ -91,12 +91,12 @@ pub fn split_channels(input: &Path, opts: &SplitChannelOptions) -> Result<SplitC
 
         let width = img.axes[0];
         let height = img.axes[1];
-        let scaled = scaled_pixels(header, img);
-
-        let plane_len = width * height;
-        let r = scaled[0..plane_len].to_vec();
-        let g = scaled[plane_len..2 * plane_len].to_vec();
-        let b = scaled[2 * plane_len..3 * plane_len].to_vec();
+        // Scale each plane straight from the raw samples rather than
+        // materializing the whole frame as `f64` first and copying slices out
+        // of it, which would double the peak allocation.
+        let r = plane_values(header, img, 0);
+        let g = plane_values(header, img, 1);
+        let b = plane_values(header, img, 2);
         (width, height, r, g, b)
     };
 

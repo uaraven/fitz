@@ -3,6 +3,7 @@
 //! through `libfitz`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use libfitz::fitskit::CompressionType;
@@ -12,8 +13,8 @@ use crate::AppWindow;
 use crate::files::{compressed_output_path, decompressed_output_path, display_name, is_compressed};
 
 use super::{
-    STATE, algorithm_for_index, make_row, operation_targets, require_existing_dir, set_row_status,
-    update_memory,
+    STATE, algorithm_for_index, batch_is_current, begin_file_batch, make_row, operation_targets,
+    raise_batch_cancel, require_existing_dir, set_row_status, update_memory,
 };
 
 /// The two file operations the Tools menu drives. `Compress` carries the
@@ -130,9 +131,20 @@ fn start_operation(
     spawn_operation(app.as_weak(), op, targets, output_dir, keep);
 }
 
-/// Run a compress/decompress batch on a worker thread, reporting per-file
-/// progress and marshaling each result back to the UI thread — a replaced file
-/// updates its working-set row in place, a failed one is badged with the error.
+/// Cancel the running compress/decompress batch from its progress overlay:
+/// take the overlay down at once and raise the cancel flag; the worker stops
+/// after the file in flight and reports how far it got in the status bar.
+pub fn cancel_convert(app: &AppWindow) {
+    raise_batch_cancel();
+    app.set_convert_in_progress(false);
+    app.set_busy(false);
+    app.set_status_text("Canceling…".into());
+}
+
+/// Run a compress/decompress batch on a worker thread behind the cancellable
+/// progress overlay, marshaling each result back to the UI thread — a replaced
+/// file updates its working-set row in place, a failed one is badged with the
+/// error, and a cancel stops the batch between files.
 fn spawn_operation(
     weak: Weak<AppWindow>,
     op: Operation,
@@ -140,7 +152,13 @@ fn spawn_operation(
     output_dir: Option<PathBuf>,
     keep: bool,
 ) {
-    let _ = weak.upgrade_in_event_loop(|app| {
+    let (generation, cancel) = begin_file_batch();
+    let _ = weak.upgrade_in_event_loop(move |app| {
+        app.set_convert_title(format!("{}…", op.progressive()).into());
+        app.set_convert_in_progress(true);
+        app.set_convert_progress(0.0);
+        app.set_convert_progress_text("".into());
+        app.set_convert_progress_detail("".into());
         app.set_busy(true);
         app.set_stage_text("".into());
     });
@@ -148,17 +166,21 @@ fn spawn_operation(
         let total = targets.len();
         let mut ok = 0usize;
         let mut failed = 0usize;
+        let mut canceled = false;
         for (i, input) in targets.into_iter().enumerate() {
-            let status = format!(
-                "{}: {} ({}/{})",
-                op.progressive(),
-                display_name(&input),
-                i + 1,
-                total
-            );
-            let weak_status = weak.clone();
-            let _ =
-                weak_status.upgrade_in_event_loop(move |app| app.set_status_text(status.into()));
+            if cancel.load(Ordering::Relaxed) {
+                canceled = true;
+                break;
+            }
+            let progress = i as f32 / total as f32;
+            let text = display_name(&input);
+            let detail = format!("{}/{}", i + 1, total);
+            let weak_progress = weak.clone();
+            let _ = weak_progress.upgrade_in_event_loop(move |app| {
+                app.set_convert_progress(progress);
+                app.set_convert_progress_text(text.into());
+                app.set_convert_progress_detail(detail.into());
+            });
 
             match process_one(op, &input, output_dir.as_deref(), keep) {
                 Ok(new_path) => {
@@ -181,9 +203,20 @@ fn spawn_operation(
             }
         }
         let _ = weak.upgrade_in_event_loop(move |app| {
+            // A later batch owns the UI now; leave its overlay and status alone.
+            if !batch_is_current(generation) {
+                return;
+            }
+            app.set_convert_in_progress(false);
+            app.set_convert_progress(1.0);
             app.set_busy(false);
             app.set_stage_text("".into());
-            app.set_status_text(format!("{} {ok} file(s), {failed} failed", op.past()).into());
+            let summary = if canceled {
+                format!("{} canceled — {ok} done, {failed} failed", op.past())
+            } else {
+                format!("{} {ok} file(s), {failed} failed", op.past())
+            };
+            app.set_status_text(summary.into());
             update_memory(&app);
         });
     });

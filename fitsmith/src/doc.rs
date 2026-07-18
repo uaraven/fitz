@@ -11,7 +11,7 @@
 use libfitz::fits_image::is_debayered_rgb_cube;
 use libfitz::fitskit::{Header, HeaderValue, ImageData, Keyword};
 use libfitz::info::{
-    HISTOGRAM_BUCKETS, InfoRequest, StarReport, SummaryField, header_info_from, pixel_stats,
+    HISTOGRAM_BUCKETS, InfoRequest, StarReport, SummaryField, header_info_from,
 };
 use libfitz::preview::PreviewImage;
 
@@ -79,23 +79,26 @@ impl LoadedDoc {
     /// preview. Runs on the worker thread.
     pub fn build(header: &Header, img: &ImageData, preview: PreviewImage) -> Self {
         let headers = header.iter().map(header_card).collect();
-        // Request star detection so the stats panel can show star metrics: the
-        // one pass here (on a cached, worker-thread build) feeds both the info
-        // summary and the panel's star column. Pixel statistics stay a separate
-        // call below. The info panel itself still shows metadata only.
+        // Request pixel statistics and star detection together: one call shares
+        // the heavy intermediates between them (see `measure_frame` in libfitz),
+        // and the result feeds both the info summary and the stats panel. The
+        // info panel itself still shows metadata only.
         let hi = header_info_from(
             header,
             img,
             InfoRequest {
+                pixel_stats: true,
                 stars: true,
-                ..Default::default()
             },
         );
         let info = hi.summary();
         // An already-debayered RGB cube's stats and star metrics are measured on
         // its green channel (see `header_info_from`); the panel labels them so.
         let channel = is_debayered_rgb_cube(header, img).then_some("G");
-        let s = pixel_stats(header, img);
+        let s = hi
+            .pixel_stats
+            .as_ref()
+            .expect("pixel stats were requested");
         let stats = Some(StatSummary {
             min: s.min,
             max: s.max,

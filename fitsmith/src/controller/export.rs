@@ -3,6 +3,7 @@
 //! and encodes it to the chosen format.
 
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 
 use libfitz::export::{
     ExportFormat, FitsBitpix, FitsExportOptions, JpegExportOptions, TiffExportOptions,
@@ -13,7 +14,10 @@ use slint::{ComponentHandle, Weak};
 use crate::AppWindow;
 use crate::files::{display_name, export_output_path};
 
-use super::{algorithm_for_index, operation_targets, params, require_existing_dir, set_row_status};
+use super::{
+    algorithm_for_index, batch_is_current, begin_file_batch, operation_targets, params,
+    raise_batch_cancel, require_existing_dir, set_row_status,
+};
 
 /// Map a FITS bit-depth dialog index (the ComboBox order) to a [`FitsBitpix`].
 /// Falls back to 16-bit integer for any out-of-range index.
@@ -111,10 +115,20 @@ pub fn run_export(app: &AppWindow) {
     spawn_export(app.as_weak(), targets, dir, format, params(app));
 }
 
+/// Cancel the running export batch from its progress overlay: take the overlay
+/// down at once and raise the cancel flag; the worker stops after the file in
+/// flight and reports how far it got in the status bar.
+pub fn cancel_export(app: &AppWindow) {
+    raise_batch_cancel();
+    app.set_export_in_progress(false);
+    app.set_busy(false);
+    app.set_status_text("Canceling export…".into());
+}
+
 /// Run an export batch on a worker thread, rendering each file through the
 /// preview pipeline and encoding it to the chosen format in `dir`. Drives the
-/// modal progress overlay; a failed file is badged with its error but does not
-/// abort the batch.
+/// cancellable modal progress overlay; a failed file is badged with its error
+/// but does not abort the batch, and a cancel stops the batch between files.
 fn spawn_export(
     weak: Weak<AppWindow>,
     targets: Vec<PathBuf>,
@@ -123,6 +137,7 @@ fn spawn_export(
     params: PreviewParams,
 ) {
     let ext = format.extension();
+    let (generation, cancel) = begin_file_batch();
     let _ = weak.upgrade_in_event_loop(|app| {
         app.set_export_in_progress(true);
         app.set_export_progress(0.0);
@@ -135,7 +150,12 @@ fn spawn_export(
         let total = targets.len();
         let mut ok = 0usize;
         let mut failed = 0usize;
+        let mut canceled = false;
         for (i, input) in targets.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                canceled = true;
+                break;
+            }
             let progress = i as f32 / total as f32;
             let text = display_name(input);
             let detail = format!("{}/{}", i + 1, total);
@@ -160,11 +180,20 @@ fn spawn_export(
             }
         }
         let _ = weak.upgrade_in_event_loop(move |app| {
+            // A later batch owns the UI now; leave its overlay and status alone.
+            if !batch_is_current(generation) {
+                return;
+            }
             app.set_export_in_progress(false);
             app.set_export_progress(1.0);
             app.set_busy(false);
             app.set_stage_text("".into());
-            app.set_status_text(format!("Exported {ok} file(s), {failed} failed").into());
+            let summary = if canceled {
+                format!("Export canceled — {ok} exported, {failed} failed")
+            } else {
+                format!("Exported {ok} file(s), {failed} failed")
+            };
+            app.set_status_text(summary.into());
         });
     });
 }

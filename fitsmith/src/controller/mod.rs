@@ -30,11 +30,10 @@ pub use inspect::*;
 pub use viewer::*;
 
 use std::cell::RefCell;
-use std::cmp::max;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use libfitz::analytics::{FileMetrics, MetricFamily};
 use libfitz::fitskit::CompressionType;
@@ -45,10 +44,6 @@ use crate::doc::LoadedDoc;
 use crate::files::{display_name, expand_inputs, is_compressed, scan_directory};
 use crate::{AppWindow, FileRow, view};
 
-/// Maximum total size of rendered previews to keep cached. Sized so a handful
-/// of full-frame images stay resident for instant blink / re-selection.
-/// TODO: make this user-configurable.
-const CACHE_CAPACITY_BYTES: usize = 1024 * 1024 * 1024;
 
 /// All UI-thread application state. Lives in a thread-local because Slint is
 /// single-threaded: every mutation happens either from a callback or from a
@@ -93,6 +88,14 @@ struct AppState {
     /// menu entries opened it. Decides the dropdown's metrics, whether the
     /// batch detects stars, and the export file-name prefix.
     analytics_family: MetricFamily,
+    /// Raised to ask the running export / compress / decompress batch worker to
+    /// stop between files. Each batch gets a fresh flag so cancelling one can't
+    /// silence the next; the batches are modal (each runs behind a blocking
+    /// progress overlay), so at most one is live and one flag serves them all.
+    batch_cancel: Arc<AtomicBool>,
+    /// Bumped when a file batch starts, so a superseded worker's final summary
+    /// can't touch the UI of a later batch.
+    batch_generation: u64,
 }
 
 impl AppState {
@@ -100,7 +103,13 @@ impl AppState {
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
         let max_mem = sys.available_memory();
-        let cache_capacity = max(CACHE_CAPACITY_BYTES, (max_mem * 4 / 5) as usize);
+        // Budget the preview cache at 80% of the memory available at startup,
+        // so plenty of full-frame images stay resident for instant blink /
+        // re-selection without ever budgeting more than the machine can give.
+        // The `.max(1)` only satisfies the LRU's positive-capacity assert when
+        // the available memory can't be read at all.
+        // TODO: make this user-configurable.
+        let cache_capacity = ((max_mem * 4 / 5) as usize).max(1);
 
         Self {
             paths: Vec::new(),
@@ -114,6 +123,8 @@ impl AppState {
             analytics_generation: 0,
             analytics_cancel: Arc::new(AtomicBool::new(false)),
             analytics_family: MetricFamily::Pixel,
+            batch_cancel: Arc::new(AtomicBool::new(false)),
+            batch_generation: 0,
         }
     }
 }
@@ -472,6 +483,32 @@ fn test_data(name: &str) -> PathBuf {
         .join("..")
         .join("test-data")
         .join(name)
+}
+
+/// Start a new modal file batch (export / compress / decompress): stop any
+/// straggling worker, and hand back the new generation and its fresh cancel
+/// flag. The worker checks the flag between files and gates its final summary
+/// on the generation still being current.
+fn begin_file_batch() -> (u64, Arc<AtomicBool>) {
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        st.batch_cancel.store(true, Ordering::Relaxed);
+        st.batch_generation += 1;
+        st.batch_cancel = Arc::new(AtomicBool::new(false));
+        (st.batch_generation, st.batch_cancel.clone())
+    })
+}
+
+/// Ask the running file batch to stop. The worker still finishes the file in
+/// flight, then reports how far it got in the status bar.
+fn raise_batch_cancel() {
+    STATE.with(|s| s.borrow().batch_cancel.store(true, Ordering::Relaxed));
+}
+
+/// Whether `generation` is still the live file batch; a superseded worker's
+/// final summary is dropped so it can't touch a later batch's UI.
+fn batch_is_current(generation: u64) -> bool {
+    STATE.with(|s| s.borrow().batch_generation == generation)
 }
 
 /// The working-set paths a bulk operation applies to: the checked rows, or the

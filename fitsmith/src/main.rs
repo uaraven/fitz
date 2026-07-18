@@ -94,6 +94,7 @@ fn main() -> Result<()> {
     ));
     forward!(on_run_compress, |app| controller::run_compress(&app));
     forward!(on_run_decompress, |app| controller::run_decompress(&app));
+    forward!(on_cancel_convert, |app| controller::cancel_convert(&app));
     forward!(on_open_export_dialog, |app| controller::open_export_dialog(
         &app
     ));
@@ -101,6 +102,7 @@ fn main() -> Result<()> {
         &app
     ));
     forward!(on_run_export, |app| controller::run_export(&app));
+    forward!(on_cancel_export, |app| controller::cancel_export(&app));
     forward!(on_open_analytics_dialog, |app| {
         controller::open_analytics_dialog(&app)
     });

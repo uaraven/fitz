@@ -84,7 +84,7 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
                 &stretched,
                 width,
                 height,
-                (cols - 1) as usize,
+                cols.saturating_sub(1) as usize,
                 rows as usize * 2,
             );
             println!("{}", convert_to_ansi(&preview, pw, ph, mode));
