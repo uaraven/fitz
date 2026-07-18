@@ -489,60 +489,53 @@ fn scale_physical_to_u16(pixels: &PixelData, values: &[f64]) -> Vec<u16> {
     }
 }
 
+/// Build an interleaved `RgbBuffer` for a `plane_len`-pixel image, `src` mapping
+/// each output pixel `i` to the three source-sample indices (R, G, B) that feed
+/// it. The single scaffolding behind [`rgb_from_cube`] and [`rgb_from_mono`]:
+/// a `U8` source stays 8-bit and copies raw; anything else is scaled to `u16`
+/// via [`scale_physical_to_u16`] first. Both take the same parallel interleave.
+fn interleave_rgb(
+    header: &Header,
+    img: &ImageData,
+    plane_len: usize,
+    src: impl Fn(usize) -> [usize; 3] + Sync,
+) -> RgbBuffer {
+    fn fill<T: Copy + Default + Send + Sync>(
+        samples: &[T],
+        plane_len: usize,
+        src: impl Fn(usize) -> [usize; 3] + Sync,
+    ) -> Vec<T> {
+        let mut out = vec![T::default(); plane_len * 3];
+        out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
+            let [r, g, b] = src(i);
+            px[0] = samples[r];
+            px[1] = samples[g];
+            px[2] = samples[b];
+        });
+        out
+    }
+
+    if let PixelData::U8(v) = &img.pixels {
+        return RgbBuffer::U8(fill(v, plane_len, src));
+    }
+    let u16_vals = scale_physical_to_u16(&img.pixels, &scaled_pixels(header, img));
+    RgbBuffer::U16(fill(&u16_vals, plane_len, src))
+}
+
 /// Interleave an already-debayered 3-plane RGB cube into an `RgbBuffer`,
 /// without running it through the demosaic algorithm.
 fn rgb_from_cube(header: &Header, img: &ImageData, width: usize, height: usize) -> RgbBuffer {
     let plane_len = width * height;
-
-    if let PixelData::U8(v) = &img.pixels {
-        let mut out = vec![0u8; plane_len * 3];
-        out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
-            px[0] = v[i];
-            px[1] = v[plane_len + i];
-            px[2] = v[2 * plane_len + i];
-        });
-        return RgbBuffer::U8(out);
-    }
-
-    let scaled = scaled_pixels(header, img);
-    let u16_vals = scale_physical_to_u16(&img.pixels, &scaled);
-
-    let mut out = vec![0u16; plane_len * 3];
-    out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
-        px[0] = u16_vals[i];
-        px[1] = u16_vals[plane_len + i];
-        px[2] = u16_vals[2 * plane_len + i];
-    });
-    RgbBuffer::U16(out)
+    interleave_rgb(header, img, plane_len, |i| {
+        [i, plane_len + i, 2 * plane_len + i]
+    })
 }
 
 /// Replicate a single-plane (monochrome) image's samples across all three
 /// channels, producing the same interleaved `RgbBuffer` shape [`rgb_from_cube`]
 /// builds from a 3-plane cube.
 fn rgb_from_mono(header: &Header, img: &ImageData, width: usize, height: usize) -> RgbBuffer {
-    let plane_len = width * height;
-
-    if let PixelData::U8(v) = &img.pixels {
-        let mut out = vec![0u8; plane_len * 3];
-        out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
-            px[0] = v[i];
-            px[1] = v[i];
-            px[2] = v[i];
-        });
-        return RgbBuffer::U8(out);
-    }
-
-    let scaled = scaled_pixels(header, img);
-    let u16_vals = scale_physical_to_u16(&img.pixels, &scaled);
-
-    let mut out = vec![0u16; plane_len * 3];
-    out.par_chunks_mut(3).enumerate().for_each(|(i, px)| {
-        let v = u16_vals[i];
-        px[0] = v;
-        px[1] = v;
-        px[2] = v;
-    });
-    RgbBuffer::U16(out)
+    interleave_rgb(header, img, width * height, |i| [i, i, i])
 }
 
 /// Load a 2D image's raw pixel values as a grayscale `RgbBuffer` (the sample
@@ -686,14 +679,19 @@ pub fn build_pixel_fits(
 /// via `push` rather than `set`.
 pub fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) {
     for kw in &src.keywords {
-        if is_reserved_keyword(&kw.name) {
-            continue;
-        }
-        if extra_drop.iter().any(|d| d.eq_ignore_ascii_case(&kw.name)) {
+        if is_droppable(&kw.name, extra_drop) {
             continue;
         }
         dest.push(kw.clone());
     }
+}
+
+/// True if a keyword must not be carried onto an output header: either a
+/// structural/reserved keyword (see [`is_reserved_keyword`]) or one the caller
+/// explicitly named in `extra_drop`. Shared by [`copy_metadata`] and
+/// [`copy_missing_metadata`] so both apply the same drop rule.
+fn is_droppable(name: &str, extra_drop: &[&str]) -> bool {
+    is_reserved_keyword(name) || extra_drop.iter().any(|d| d.eq_ignore_ascii_case(name))
 }
 
 /// Copy every non-structural keyword from `src` onto `dest` that `dest`
@@ -714,10 +712,7 @@ pub fn copy_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) {
 pub fn copy_missing_metadata(dest: &mut Header, src: &Header, extra_drop: &[&str]) -> usize {
     let mut copied = 0;
     for kw in &src.keywords {
-        if is_reserved_keyword(&kw.name) {
-            continue;
-        }
-        if extra_drop.iter().any(|d| d.eq_ignore_ascii_case(&kw.name)) {
+        if is_droppable(&kw.name, extra_drop) {
             continue;
         }
         if kw.value.is_some() && dest.find(&kw.name).is_some() {
