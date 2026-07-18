@@ -72,6 +72,14 @@ export component AppWindow inherits Window {
     in-out property <bool> op-keep-source: true;
     in-out property <bool> op-use-custom-dir: false;
     in-out property <string> op-output-dir: "";
+    // The cancellable progress overlay while a compress/decompress batch runs.
+    // One property set serves both operations — only one batch runs at a time —
+    // with `convert-title` saying which ("Compressing…" / "Decompressing…").
+    in property <bool> convert-in-progress: false;
+    in property <string> convert-title: "";
+    in property <float> convert-progress: 0;
+    in property <string> convert-progress-text: "";
+    in property <string> convert-progress-detail: "";
 
     // View ▸ Export… dialog. `export-count` is how many working-set files the
     // export will touch (the checked rows, or all when none are checked). Rust
@@ -167,6 +175,8 @@ export component AppWindow inherits Window {
     // Run the operation with the current `op-*` settings.
     callback run-compress();
     callback run-decompress();
+    // Stop the running compress/decompress batch after the file in flight.
+    callback cancel-convert();
     // View ▸ Export: Rust computes the file count and resets the dialog
     // settings, then shows it; browse opens the native folder picker for the
     // destination; run-export starts the batch with the current `export-*`
@@ -174,6 +184,8 @@ export component AppWindow inherits Window {
     callback open-export-dialog();
     callback browse-export-dir();
     callback run-export();
+    // Stop the running export batch after the file in flight.
+    callback cancel-export();
     // Tools ▸ Analytics / Tools ▸ Star metrics: Rust gathers the target files,
     // computes that family's metrics off-thread, fills the chart data and shows
     // the dialog. Two entries rather than a mode switch inside one: only the
@@ -618,6 +630,25 @@ export component AppWindow inherits Window {
         progress: root.export-progress;
         message: root.export-progress-text;
         detail: root.export-progress-detail;
+        cancellable: true;
+        cancel => {
+            root.cancel-export();
+        }
+    }
+
+    // Shown while a compress/decompress batch rewrites files. Cancellable:
+    // the worker stops between files, so every finished file stays valid.
+    if root.convert-in-progress: ProgressOverlay {
+        width: 100%;
+        height: 100%;
+        title: root.convert-title;
+        progress: root.convert-progress;
+        message: root.convert-progress-text;
+        detail: root.convert-progress-detail;
+        cancellable: true;
+        cancel => {
+            root.cancel-convert();
+        }
     }
 
     // Shown while the analytics batch reads and measures the target files.
