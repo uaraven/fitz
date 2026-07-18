@@ -29,21 +29,31 @@ The `edition = "2024"` crates require a recent stable Rust toolchain.
 
 ## Architecture
 
-A Cargo **workspace** with two crates:
+A Cargo **workspace** with three crates:
 
 - **`libfitz`** — the reusable library: FITS I/O (with transparent tile-decompression),
-  debayering, auto-stretch, per-channel splitting, header/pixel-stat inspection, header
-  copying, and image resizing. No CLI parsing, no terminal I/O, no interactive prompts — a
-  future GUI frontend can depend on this crate the same way the CLI does.
+  debayering, auto-stretch, per-channel splitting, header/pixel-stat inspection, star
+  detection, session analytics, export encoding, preview rendering, header copying, and
+  image resizing. No CLI parsing, no terminal I/O, no interactive prompts, no GUI types —
+  both frontends depend on it the same way.
 - **`fitz`** (in `fitz-cli/`) — the thin CLI binary: clap argument parsing, output-path
   derivation, the overwrite-confirmation prompt, `--verbose` progress printing, terminal
   rendering (`preview`/`kitty`/`terminal`), and text-report formatting for `info`. Depends on
   `libfitz` via a path dependency.
+- **`fitsmith`** — the Slint GUI frontend (see its own section below). Also depends on
+  `libfitz` only; all pixel/statistics work lives in the library.
 
-Key deps: **`fitskit`** (FITS read/write/tile-compression) and **`bayer`** (demosaicing) live
-in `libfitz`; **`clap`** (arg parsing), **`terminal_size`**/**`supports-color`**/**`libc`**
-(terminal capability detection) and **`base64`** (kitty graphics protocol) live in `fitz-cli`.
-**`tiff`**, **`rayon`**, and **`anyhow`** are used by both.
+Key deps: **`fitskit`** (FITS read/write/tile-compression), **`bayer`** (demosaicing) and
+**`image`** (JPEG/PNG encoding) live in `libfitz`; **`clap`** (arg parsing),
+**`terminal_size`**/**`supports-color`**/**`libc`** (terminal capability detection) and
+**`base64`** (kitty graphics protocol) live in `fitz-cli`; **`slint`**, **`rfd`** (native
+file dialogs) and **`sysinfo`** (cache sizing) live in `fitsmith`. **`tiff`**, **`rayon`**,
+and **`anyhow`** are used throughout.
+
+The release profile is split: the workspace builds at `opt-level = "z"` (size) with LTO,
+but `libfitz` itself builds at `opt-level = 2` — its tight per-pixel loops dominate
+runtime, and the size-optimized setting roughly doubles single-file stretch time (see the
+comments in the root `Cargo.toml`).
 
 ### `libfitz` layout
 
@@ -56,9 +66,27 @@ in `libfitz`; **`clap`** (arg parsing), **`terminal_size`**/**`supports-color`**
   `debayer::debayer`, `stretch::load_and_stretch`, `split_channel::split_channels`,
   `compress::compress`), each taking a plain `*Options` domain struct and returning an
   in-memory result. No path derivation, prompting, or printing — that's the CLI's job.
-- **`info.rs`** — `header_info`/`header_info_with_pixels` build a `HeaderInfo` struct
-  (resolution, bit depth, sky coordinates, `PixelStats`/histogram, …); formatting it into text
-  is left to the caller.
+- **`info.rs`** — `header_info`/`header_info_with` build a `HeaderInfo` struct (resolution,
+  bit depth, sky coordinates, and — per `InfoRequest` — `PixelStats`/histogram and a
+  `StarReport`); formatting it into text is left to the caller. `measure_frame` is the
+  shared engine that computes pixel statistics and star metrics together, reusing the
+  expensive intermediates (a mono frame's stats double as the detection background; an RGB
+  cube's green plane is materialized once for both).
+- **`stars.rs`** — star detection and shape measurement on a `MonoPlane` (threshold against
+  the plane's robust background, flood-fill blobs, reject non-stars, measure HFR/FWHM/
+  eccentricity, aggregate to medians). Driven by `info --stars`, the GUI stats panel, and
+  the Star-metrics batch.
+- **`analytics.rs`** — per-frame session metrics (`analyze_file`) keyed by acquisition time,
+  assembled into a plottable time `Series` per `Metric` (`build_series`), plus CSV output.
+  Backs the GUI's Analytics / Star metrics chart dialogs.
+- **`preview.rs`** — the display pipeline shared by CLI preview and GUI viewer: resolve the
+  debayer/stretch toggles into an RGB buffer (`preview_rgb`, `render_export_rgb`) or a
+  ready-to-paint RGBA8 buffer (`render_preview`).
+- **`export.rs`** — encode a rendered RGB image to FITS/TIFF/JPEG/PNG with per-format
+  options (`export_rgb`), and the one-call `export_file` that renders through the preview
+  pipeline first.
+- **`inspect.rs`** — aberration-inspector geometry: the nine fixed tile regions of a frame
+  and RGBA8 cropping.
 - **`resize.rs`** — generic box-filter image resizing (`resize_to_fit`), used by the CLI's
   terminal preview and reusable by a GUI's thumbnail/blink view.
 - **`test_support.rs`** (test-only) — fixtures: locate bundled `../test-data/`, copy into a
@@ -84,6 +112,31 @@ in `libfitz`; **`clap`** (arg parsing), **`terminal_size`**/**`supports-color`**
   half-blocks / kitty graphics protocol) and capability detection; not part of `libfitz`
   since a GUI frontend wouldn't use ANSI escape codes.
 - **`test_support.rs`** (test-only) — locates bundled `../test-data/` for the CLI's own tests.
+
+### `fitsmith` layout
+
+A Slint GUI ("FitSmith") over the same library. `ui/*.slint` holds the declarative UI
+(`app.slint` is the window; dialogs/panels are one file each); `build.rs` compiles it.
+Rust side, split by concern:
+
+- **`main.rs`** — window setup and callback wiring only; every callback forwards to a
+  `controller` function.
+- **`controller/`** — application logic bridging Slint to `libfitz`, split into `mod.rs`
+  (shared `AppState` thread-local, working set, checkbox selection, batch helpers),
+  `viewer.rs` (selection, off-thread load/render, blink), `convert.rs` (compress/decompress
+  batches), `export.rs` (export batch), `analytics.rs` (the chart batches and their
+  per-file `AnalyticsCache`), `inspect.rs` (aberration inspector). Batches run on worker
+  threads, marshal results back via `upgrade_in_event_loop`, are generation-guarded against
+  staleness, and are cancellable between files.
+- **`doc.rs`** / **`view.rs`** — `LoadedDoc` is the display-ready document built on the
+  worker (preview + header cards + stats, one `header_info_from` call); `view.rs` maps it
+  onto Slint properties. Both are free of threading; `doc.rs` is free of Slint types.
+- **`cache.rs`** — a small byte-budgeted LRU keeping rendered previews resident (budgeted
+  at 80% of available memory at startup).
+- **`chart.rs`** / **`chart_svg.rs`** — analytics `Series` → normalized chart geometry →
+  the on-screen chart and its SVG export.
+- **`files.rs`** — pure path helpers (FITS extensions, directory scan, output paths).
+- **`image.rs`** — the one RGBA8-buffer → `slint::Image` conversion point.
 
 ### Conventions that span files
 

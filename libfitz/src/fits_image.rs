@@ -284,21 +284,29 @@ pub fn green_plane(header: &Header, img: &ImageData) -> MonoPlane {
 }
 
 /// The physical (BSCALE/BZERO-applied) values of a 3-plane RGB cube's green
-/// channel. FITS stores the cube planar — the full red plane, then green, then
-/// blue — so the green channel is the middle `width*height` samples; only those
-/// are scaled, never materializing the red and blue planes as `f64`.
+/// channel — [`plane_values`] for the middle plane.
 fn green_plane_values(header: &Header, img: &ImageData) -> Vec<f64> {
+    plane_values(header, img, 1)
+}
+
+/// The physical (BSCALE/BZERO-applied) values of one plane of a planar image.
+/// FITS stores a cube planar — the full first plane, then the second, and so on
+/// — so plane `plane` is the samples `plane*width*height..(plane+1)*width*height`;
+/// only those are scaled, never materializing the other planes as `f64`. The
+/// caller must have established that the plane exists (e.g. via
+/// [`is_rgb_cube_shape`]); this indexes `axes[0..2]` and slices the samples.
+pub(crate) fn plane_values(header: &Header, img: &ImageData, plane: usize) -> Vec<f64> {
     let (bscale, bzero) = bscale_bzero(header);
     let plane_len = img.axes[0] * img.axes[1];
-    let green = plane_len..2 * plane_len;
+    let range = plane * plane_len..(plane + 1) * plane_len;
     let scale = |x: f64| bzero + bscale * x;
     match &img.pixels {
-        PixelData::U8(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
-        PixelData::I16(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
-        PixelData::I32(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
-        PixelData::I64(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
-        PixelData::F32(v) => v[green].par_iter().map(|&x| scale(x as f64)).collect(),
-        PixelData::F64(v) => v[green].par_iter().map(|&x| scale(x)).collect(),
+        PixelData::U8(v) => v[range].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::I16(v) => v[range].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::I32(v) => v[range].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::I64(v) => v[range].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::F32(v) => v[range].par_iter().map(|&x| scale(x as f64)).collect(),
+        PixelData::F64(v) => v[range].par_iter().map(|&x| scale(x)).collect(),
     }
 }
 
@@ -597,7 +605,12 @@ pub fn write_rgb16_fits(
     history: Option<&str>,
 ) -> Result<()> {
     let planes = deinterleave_to_planes(interleaved);
-    let pixels = PixelData::I16(planes.iter().map(|&p| (p as i32 - 32768) as i16).collect());
+    let pixels = PixelData::I16(
+        planes
+            .par_iter()
+            .map(|&p| (p as i32 - 32768) as i16)
+            .collect(),
+    );
     write_pixel_fits(
         output,
         vec![width, height, 3],

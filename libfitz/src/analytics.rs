@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use fitskit::FitsFile;
 
-use crate::fits_image::{detection_plane, find_image_hdu};
-use crate::info::{PixelStats, parse_date_obs, pixel_stats};
-use crate::stars::{StarDetectOptions, StarStats, detect_stars, plane_background};
+use crate::fits_image::find_image_hdu;
+use crate::info::{InfoRequest, PixelStats, measure_frame, parse_date_obs};
+use crate::stars::StarStats;
 
 /// Which dialog lists a metric — and, therefore, whether a batch has to detect
 /// stars to answer it. The two families are disjoint: no star metric appears in
@@ -239,24 +239,27 @@ pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> 
         return Ok(FileAnalysis::Skipped(SkipReason::NoDateObs));
     };
 
-    // Every image shape `detection_plane` and `pixel_stats` accept is analyzed:
-    // a mono frame and a CFA mosaic on their own values, an already-debayered
-    // RGB cube on its green channel (the plane with the most signal — see
-    // `detection_plane`). Only a shape neither can reduce (e.g. a >3-plane cube)
-    // surfaces as a read `Err`.
-    let stars = if opts.detect_stars {
-        let plane = detection_plane(header, img)?;
-        let bg = plane_background(&plane);
-        Some(detect_stars(&plane, &bg, &StarDetectOptions::default()))
-    } else {
-        None
-    };
+    // Every image shape star detection and `pixel_stats` accept is analyzed: a
+    // mono frame and a CFA mosaic on their own values, an already-debayered
+    // RGB cube on its green channel (the plane with the most signal). Both
+    // measurements come out of one `measure_frame` call, which shares the
+    // expensive intermediates between them. Only a shape detection can't
+    // reduce (e.g. a >3-plane cube) surfaces as a read `Err`.
+    let (stats, stars) = measure_frame(
+        header,
+        img,
+        InfoRequest {
+            pixel_stats: true,
+            stars: opts.detect_stars,
+        },
+    );
+    let stars = stars.transpose()?.map(|report| report.stats);
 
     Ok(FileAnalysis::Analyzed(FileMetrics {
         path: path.to_path_buf(),
         time,
         time_str: time_str.to_string(),
-        stats: pixel_stats(header, img),
+        stats: stats.expect("pixel stats were requested"),
         stars,
     }))
 }
