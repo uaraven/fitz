@@ -17,7 +17,9 @@ export component AberrationDialog inherits DialogCard {
     // The tile side in pixels, i.e. the crop at 1:1 (zoom 1x, view permitting).
     in property <length> tile-size;
     // 1.0 = tiles at their fitted/1:1 base size … 2.0 = doubled, panned. The
-    // slider clamps to that range on its own; the scroll handler clamps too.
+    // slider clamps to that range on its own. Never assign this directly while
+    // the dialog is open — go through `viewport.zoom-to()` so the pan offsets
+    // keep the same point centered.
     in-out property <float> zoom: 1.0;
     callback close();
 
@@ -50,6 +52,32 @@ export component AberrationDialog inherits DialogCard {
             property <length> cell: self.base-cell * root.zoom;
             property <length> grid-w: 3 * self.cell + 2 * root.gutter;
             property <length> grid-h: self.grid-w;
+
+            // Where the centre of the visible area sits inside the grid, as a
+            // 0..1 fraction of its side. Sampled before the zoom changes and
+            // restored after, so magnifying grows the mosaic around whatever is
+            // on screen rather than around its top-left corner.
+            property <float> anchor-fx;
+            property <float> anchor-fy;
+
+            // Change the zoom, keeping the currently centred point centred.
+            // Reads the pre-zoom geometry, assigns `root.zoom` (which re-runs
+            // the `cell`/`grid-*` bindings), then re-derives the pan offsets.
+            function zoom-to(z: float) {
+                self.anchor-fx = (-flick.viewport-x + flick.width / 2
+                    - (flick.viewport-width - self.grid-w) / 2) / self.grid-w;
+                self.anchor-fy = (-flick.viewport-y + flick.height / 2
+                    - (flick.viewport-height - self.grid-h) / 2) / self.grid-h;
+                root.zoom = z;
+                flick.viewport-x = clamp(
+                    flick.width / 2 - (flick.viewport-width - self.grid-w) / 2 - self.anchor-fx * self.grid-w,
+                    min(0px, flick.width - flick.viewport-width),
+                    0px);
+                flick.viewport-y = clamp(
+                    flick.height / 2 - (flick.viewport-height - self.grid-h) / 2 - self.anchor-fy * self.grid-h,
+                    min(0px, flick.height - flick.viewport-height),
+                    0px);
+            }
 
             flick := Flickable {
                 width: parent.width;
@@ -124,7 +152,11 @@ export component AberrationDialog inherits DialogCard {
                 width: 120px;
                 minimum: 1.0;
                 maximum: 2.0;
-                value <=> root.zoom;
+                // One-way, so the handler still sees the pre-zoom geometry.
+                value: root.zoom;
+                changed(v) => {
+                    viewport.zoom-to(v);
+                }
             }
             Text {
                 text: round(root.zoom * 10) / 10 + "x";

@@ -20,14 +20,42 @@ export component ImageView inherits Rectangle {
         ? min(root.width / root.natural-width, root.height / root.natural-height)
         : 1.0;
 
+    // The range the zoom slider spans. 0.2x–10x, except that a frame far larger
+    // than the view fits below 0.2x — extend the bottom to `fit-zoom` there, so
+    // Fit is always a position the slider can actually show.
+    out property <float> min-zoom: min(0.2, root.fit-zoom);
+    out property <float> max-zoom: 10.0;
+
+    // Where the centre of the visible area sits inside the scaled image, as a
+    // 0..1 fraction of each side. Sampled before the zoom changes and restored
+    // after, so zooming grows the image around whatever is on screen rather
+    // than around its top-left corner.
+    property <float> anchor-fx;
+    property <float> anchor-fy;
+
     public function fit() {
         root.zoom = root.fit-zoom;
     }
     public function actual-size() {
-        root.zoom = 1.0;
+        root.zoom-to(1.0);
     }
-    public function zoom-by(factor: float) {
-        root.zoom = clamp(root.zoom * factor, 0.02, 40.0);
+    // Change the zoom, keeping the currently centred point centred. Reads the
+    // pre-zoom geometry, assigns `zoom` (which re-runs the `scaled-*` and
+    // viewport bindings), then re-derives the pan offsets.
+    public function zoom-to(z: float) {
+        root.anchor-fx = (-flick.viewport-x + flick.width / 2
+            - (flick.viewport-width - root.scaled-width) / 2) / root.scaled-width;
+        root.anchor-fy = (-flick.viewport-y + flick.height / 2
+            - (flick.viewport-height - root.scaled-height) / 2) / root.scaled-height;
+        root.zoom = clamp(z, root.min-zoom, root.max-zoom);
+        flick.viewport-x = clamp(
+            flick.width / 2 - (flick.viewport-width - root.scaled-width) / 2 - root.anchor-fx * root.scaled-width,
+            min(0px, flick.width - flick.viewport-width),
+            0px);
+        flick.viewport-y = clamp(
+            flick.height / 2 - (flick.viewport-height - root.scaled-height) / 2 - root.anchor-fy * root.scaled-height,
+            min(0px, flick.height - flick.viewport-height),
+            0px);
     }
 
     // Reset to a fitted view whenever a new image (of a different size) loads;
