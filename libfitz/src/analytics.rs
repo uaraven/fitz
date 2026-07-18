@@ -167,7 +167,10 @@ pub enum SkipReason {
 // boxing to even them out would buy an allocation and an indirection on every
 // access to save moving 240 bytes once per file — a file whose statistics
 // already own a 2 KB histogram on the heap.
+// `Clone` so a caller can keep an outcome in a cache and still hand a copy to
+// whatever plots it (FitSmith's analytics cache does exactly this).
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
 pub enum FileAnalysis {
     Analyzed(FileMetrics),
     Skipped(SkipReason),
@@ -176,6 +179,7 @@ pub enum FileAnalysis {
 /// Every metric for one frame, computed in a single file read. Collect these
 /// once per batch; switching the plotted metric is then just a [`build_series`]
 /// call with no file re-read.
+#[derive(Clone)]
 pub struct FileMetrics {
     pub path: PathBuf,
     /// Acquisition time as seconds since the Unix epoch (see [`parse_date_obs`]),
