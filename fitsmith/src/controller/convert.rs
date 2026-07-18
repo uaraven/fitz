@@ -232,7 +232,10 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
             st.paths[i] = new.to_path_buf();
             st.files_model.set_row_data(i, make_row(new));
         }
+        // The rewritten file lives under a new path, so the stamp check can
+        // never reach the old entry — drop it here instead.
         st.cache.remove(&old.to_path_buf());
+        st.analytics_cache.remove(old);
     });
     update_memory(app);
 }
