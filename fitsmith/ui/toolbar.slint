@@ -1,4 +1,4 @@
-import { Button, CheckBox, HorizontalBox } from "std-widgets.slint";
+import { Button, CheckBox, HorizontalBox, Slider } from "std-widgets.slint";
 import { Separator } from "widgets.slint";
 
 // The top toolbar: file actions and view toggles on the left, zoom controls on
@@ -18,10 +18,21 @@ export component Toolbar inherits HorizontalBox {
     callback add-folder();
     callback remove-selected();
     callback clear();
+    // The image view's current zoom, and its slider range.
+    in property <float> zoom: 1.0;
+    in property <float> min-zoom: 0.2;
+    in property <float> max-zoom: 10.0;
+
     callback fit();
     callback actual-size();
-    callback zoom-in();
-    callback zoom-out();
+    callback zoom-to(float);
+
+    // Push externally-driven zooms (Fit, 1:1, a newly loaded frame) onto the
+    // slider. Assigning `value` does not re-enter `changed` — the widget only
+    // fires that from its own `set-value` — so this cannot loop.
+    changed zoom => {
+        zoom-slider.value = root.zoom;
+    }
 
     padding: 8px;
     spacing: 8px;
@@ -94,16 +105,22 @@ export component Toolbar inherits HorizontalBox {
             root.actual-size();
         }
     }
-    Button {
-        text: "−";
-        clicked => {
-            root.zoom-out();
+    zoom-slider := Slider {
+        width: 120px;
+        minimum: root.min-zoom;
+        maximum: root.max-zoom;
+        value: root.zoom;
+        // One-way, so the handler still sees the pre-zoom geometry. Dragging
+        // makes the widget assign its own `value`, which drops any binding we
+        // put here — hence the `changed zoom` handler below rather than a
+        // binding, to keep Fit / 1:1 reflected on the slider.
+        changed(v) => {
+            root.zoom-to(v);
         }
     }
-    Button {
-        text: "+";
-        clicked => {
-            root.zoom-in();
-        }
+    Text {
+        text: round(root.zoom * 10) / 10 + "x";
+        width: 40px;
+        vertical-alignment: center;
     }
 }
