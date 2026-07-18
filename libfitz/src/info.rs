@@ -570,8 +570,10 @@ fn count_into_slots<T: Sync>(
 /// does. A plane with no representable ceiling (a wide-integer cube) keeps the
 /// general float path.
 fn green_plane_stats(plane: &mut MonoPlane) -> PixelStats {
+    // The range check alone rejects a plane with no ceiling: an infinite (or
+    // NaN, or negative) `saturation` is never `contains`-ed.
     let sat = plane.saturation;
-    if sat.is_finite() && (0.0..VALUE_COUNT_SLOTS as f64).contains(&sat) {
+    if (0.0..VALUE_COUNT_SLOTS as f64).contains(&sat) {
         let slots = sat as usize + 1;
         let counts = count_into_slots(&plane.values, slots, |&v| {
             (v.round() as i64).clamp(0, slots as i64 - 1) as usize
