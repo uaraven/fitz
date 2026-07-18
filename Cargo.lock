@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "fitsmith"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "libfitz",
@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "fitz"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2842,7 +2842,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libfitz"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bayer",
