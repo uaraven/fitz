@@ -67,6 +67,20 @@ To build the whole workspace (including FitSmith):
 If FitSmith fails to build with a `pkg-config ... fontconfig was not found` error, the
 `fontconfig` dev package above is what's missing.
 
+## Packaging
+
+FitSmith can be built into a native installer for the OS you're running on, via
+[`cargo-bundle`](https://github.com/burtonageo/cargo-bundle):
+
+```shell
+./fitsmith/scripts/package-unix.sh       # macOS -> .dmg, Linux -> .deb + .rpm
+./fitsmith/scripts/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset)
+```
+
+There's no CI — each package has to be built on its own OS, since Slint's windowing and font
+libraries differ per platform. See [fitsmith/readme.md#packaging](fitsmith/readme.md#packaging)
+for prerequisites, output locations, and the unsigned-binary Gatekeeper/SmartScreen caveat.
+
 ## Note
 
 This is a small personal project and as such it is not thouroughly tested and not optimized in

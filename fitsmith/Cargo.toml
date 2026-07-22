@@ -10,8 +10,7 @@ path = "src/main.rs"
 
 # Per-OS installer metadata for `cargo bundle` (macOS `.app`/`.dmg`, Windows
 # `.msi`, Linux `.deb`/AppImage). Slint links no external SDK, so the bundle is a
-# single self-contained binary. Drop icon files into `fitsmith/assets/` and add an
-# `icon = [...]` list here to brand the bundle.
+# single self-contained binary.
 [package.metadata.bundle]
 name = "FitSmith"
 identifier = "dev.fitz.fitsmith"
@@ -22,6 +21,13 @@ preview, blinks through a working set, and inspects headers and pixel statistics
 All FITS and image operations are performed by libfitz.
 """
 category = "public.app-category.graphics-design"
+icon = [
+    "assets/32x32.png",
+    "assets/128x128.png",
+    "assets/128x128@2x.png",
+    "assets/256x256.png",
+    "assets/256x256@2x.png",
+]
 
 [dependencies]
 libfitz = { path = "../libfitz" }
