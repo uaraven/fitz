@@ -129,6 +129,32 @@ You can also pass files or folders on the command line to seed the working set:
 cargo run -p fitsmith -- path/to/images/
 ```
 
+## Packaging
+
+FitSmith can be packaged as a native installer per OS via [`cargo-bundle`](https://github.com/burtonageo/cargo-bundle)
+(install once with `cargo install cargo-bundle`). Two wrapper scripts drive it — there's no
+CI, since Slint's per-OS windowing/font dependencies mean each package has to be built on
+that OS:
+
+```shell
+./fitsmith/scripts/package-unix.sh       # macOS -> .dmg, Linux -> .deb + .rpm
+./fitsmith/scripts/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset on PATH)
+```
+
+On Linux, building the `.rpm` needs `rpmbuild` on `PATH` (`sudo dnf install rpm-build` on
+Fedora/RHEL, `sudo apt install rpm` on Debian/Ubuntu); the script skips it with an install
+hint if missing, and still builds the `.deb`.
+
+Output lands under `target/release/bundle/<osx|deb|rpm|msi>/`. Packages are unsigned — no Apple
+Developer ID or Windows code-signing certificate is used — so first launch shows a Gatekeeper
+warning on macOS (right-click the app -> Open) and a SmartScreen warning on Windows (More
+info -> Run anyway). If you change the app icon, regenerate the sizes in `fitsmith/assets/`
+(`32x32.png`, `128x128.png`, `128x128@2x.png`, `256x256.png`, `256x256@2x.png`) from the
+source image and cargo-bundle will convert them to `.icns`/`.ico` as needed.
+
+Because FitSmith links Slint under the GPLv3 (see below), any packaged binary you distribute
+carries that obligation — see [Slint and licensing](#slint-and-licensing).
+
 ## Slint and licensing
 
 FitSmith's user interface is built with [Slint](https://slint.dev/). Slint is available under
