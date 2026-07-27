@@ -1,0 +1,127 @@
+use crate::data::{Image, ImageType, PixelBuffer};
+use crate::errors::FitsError;
+use std::borrow::Cow;
+use std::path::Path;
+
+use crate::fits_bayer::parse_cfa;
+use crate::keywords::{BAYERPAT, BSCALE, BZERO};
+use fitskit::{FitsFile, HduData, ImageData, PixelData};
+use rayon::prelude::*;
+
+
+const MIN_U16:u32 = 0;
+const MAX_U16:u32 = 65535;
+
+const MIN_F32:f32 = 0.0;
+const MAX_F32:f32 = 1.0;
+fn fits_u8_to_u16(x: f32) -> u16 {
+    (x as u32 * 257u32).clamp(MIN_U16, MAX_U16) as u16
+}
+
+fn fits_u16_to_u16(x: f32) -> u16 {
+    (x as u32).clamp(MIN_U16, MAX_U16) as u16
+}
+
+fn fits_u32_to_f32(x: f32) -> f32 {
+    (x/ 4_294_967_295.0).clamp(MIN_F32, MAX_F32)
+}
+
+fn fits_u64_to_f32(x: f32) -> f32 {
+    (x/ 18_446_744_073_709_551_615.0).clamp(MIN_F32, MAX_F32)
+}
+
+/// Apply the image's BSCALE/BZERO scaling and clamp into a supported
+/// `PixelBuffer`: integer sources map to `u16` over the full 0..=65535 range,
+/// float/wide-integer sources to `f32` clamped to [0, 1]. Scaling and clamping
+/// fuse into a single parallel pass, and the output type follows the sample
+/// type directly.
+fn load_pixel_plane(img: &PixelData, b_scale: f32, b_zero: f32) -> PixelBuffer {
+    let scale = |x: f32| b_zero + b_scale * x;
+    let to_f32 = |x: f32| scale(x).clamp(0.0, 1.0);
+
+    match img {
+        PixelData::U8(v) => PixelBuffer::U16(v.par_iter().map(|&x| fits_u8_to_u16(scale(x as f32))).collect()),
+        PixelData::I16(v) => PixelBuffer::U16(v.par_iter().map(|&x| fits_u16_to_u16(scale(x as f32))).collect()),
+        PixelData::I32(v) => PixelBuffer::F32(v.par_iter().map(|&x| fits_u32_to_f32(x as f32)).collect()),
+        PixelData::I64(v) => PixelBuffer::F32(v.par_iter().map(|&x| fits_u64_to_f32(x as f32)).collect()),
+        PixelData::F32(v) => PixelBuffer::F32(v.par_iter().map(|&x| to_f32(x)).collect()),
+        PixelData::F64(v) => PixelBuffer::F32(v.par_iter().map(|&x| to_f32(x as f32)).collect()),
+    }
+}
+
+pub fn load_image_from_fits(file_path: &Path) -> Result<Image, FitsError> {
+    let fits_file = FitsFile::from_file(file_path)?;
+    let hdu_opt = fits_file.iter().find(|hdu|
+        matches!(hdu.data, HduData::Image(_)) || hdu.as_compressed_image().is_some());
+
+    if let Some(hdu) = hdu_opt {
+        // Borrow a plain image HDU, but decompress a tile-compressed one into an owned buffer.
+        let img: Cow<ImageData> = if let Some(compressed) = hdu.as_compressed_image() {
+            Cow::Owned(compressed.decompress()?)
+        } else if let HduData::Image(img) = &hdu.data {
+            Cow::Borrowed(img)
+        } else {
+            return Err(FitsError::new_invalid_img("Invalid image type"));
+        };
+
+        let axis_count = img.axes.len();
+        let bayer_pat =  hdu.header.get_string(BAYERPAT).map(parse_cfa);
+
+        let image_type = if axis_count > 2 {
+            ImageType::RGB
+        } else if bayer_pat.is_some() {
+            ImageType::CFA
+        } else {
+            ImageType::Grayscale
+        };
+
+
+        let width = img.width().ok_or_else(|| FitsError::new_invalid_img("No width"))?;
+        let height = img.height().ok_or_else(|| FitsError::new_invalid_img("No height"))?;
+
+        let b_scale = hdu.header.get_float(BSCALE).unwrap_or(1.0) as f32;
+        let b_zero = hdu.header.get_float(BZERO).unwrap_or(0.0) as f32;
+
+        let pixels = load_pixel_plane(&img.pixels, b_scale, b_zero);
+
+        Ok(Image {
+            image_type,
+            width,
+            height,
+            pixels,
+        })
+    } else {
+         Err(FitsError::new_invalid_img("Image HDU not found"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::{ImageType, PixelBuffer};
+    use crate::fits_file::load_image_from_fits;
+    use crate::test_support::test_data;
+
+    #[test]
+    fn test_load_scaled_i16_image() {
+        let input = test_data("cfa_orion.fits");
+        let loaded = load_image_from_fits(&input).unwrap();
+
+        assert_eq!(loaded.image_type, ImageType::CFA);
+        assert_eq!(loaded.width, 3856);
+        assert_eq!(loaded.height, 2180);
+        // An I16 source scales into the u16 pixel buffer.
+        assert!(matches!(loaded.pixels, PixelBuffer::U16(_)));
+    }
+
+    #[test]
+    fn test_load_compressed_file() {
+        let input = test_data("compressed.fits.fz");
+        let loaded = load_image_from_fits(&input).unwrap();
+
+        assert_eq!(loaded.image_type, ImageType::CFA);
+        assert_eq!(loaded.width, 3008);
+        assert_eq!(loaded.height, 3008);
+        // An I16 source scales into the u16 pixel buffer.
+        assert!(matches!(loaded.pixels, PixelBuffer::U16(_)));
+    }
+}

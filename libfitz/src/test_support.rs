@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use fitskit::{FitsFile, Header, HeaderValue, ImageData, PixelData};
 use tempfile::TempDir;
 
-use crate::fits_image::{BAYERPAT, BZERO, round_to_u16};
+use crate::fits_image::round_to_u16;
+use crate::keywords::{BAYERPAT, BZERO};
 
 /// Absolute path to a file under the workspace's `test-data/` directory.
 pub(crate) fn test_data(filename: &str) -> PathBuf {

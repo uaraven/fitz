@@ -23,7 +23,7 @@ pub mod stretch;
 
 mod errors;
 mod data;
-mod fit_file;
+mod fits_file;
 mod keywords;
 mod fits_bayer;
 #[cfg(test)]

@@ -870,7 +870,7 @@ pub(crate) fn stats_from_values(values: &mut Vec<f64>) -> PixelStats {
         .par_iter()
         .fold(
             || (f64::INFINITY, f64::NEG_INFINITY, 0),
-            |(mn, mx, z), &v| (mn.min(v), mx.max(v), z + if (v == 0.0) { 1 } else { 0 }),
+            |(mn, mx, z), &v| (mn.min(v), mx.max(v), z + if v == 0.0 { 1 } else { 0 }),
         )
         .reduce(
             || (f64::INFINITY, f64::NEG_INFINITY, 0),
@@ -883,7 +883,7 @@ pub(crate) fn stats_from_values(values: &mut Vec<f64>) -> PixelStats {
         .par_iter()
         .fold(
             || (0, 0),
-            |(mnc, mxc), &v| (mnc + if (v == min) { 1 } else { 0 }, mxc + if (v == max) { 1 } else { 0 }),
+            |(mnc, mxc), &v| (mnc + if v == min { 1 } else { 0 }, mxc + if v == max { 1 } else { 0 }),
         )
         .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
 

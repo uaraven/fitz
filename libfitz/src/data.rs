@@ -1,12 +1,14 @@
 
 
 /// A pixel buffer can be one of three types: u8, u16, or f32. Each type is represented by a vector of the corresponding type.
+#[derive(Debug, PartialEq)]
 pub enum PixelBuffer {
     U16(Vec<u16>),
     F32(Vec<f32>),
 }
 
 /// A Pixels struct contains a pixel buffer, width, and height. The pixel buffer can be one of three types: u8, u16, or f32.
+#[derive(Debug)]
 pub struct Pixels {
     pub data: PixelBuffer,
     pub width: usize,
@@ -14,6 +16,7 @@ pub struct Pixels {
 }
 
 /// An ImageType enum represents the type of an image, which can be either RGB or CFA (Color Filter Array) - unbayered.
+#[derive(Debug, PartialEq)]
 pub enum ImageType {
     RGB,
     Grayscale,
@@ -21,6 +24,7 @@ pub enum ImageType {
 }
 
 /// An Image struct contains an image type, width, height, and a vector of pixel buffers. The pixel buffers can be one of three types: u8, u16, or f32.
+#[derive(Debug)]
 pub struct Image {
     pub image_type: ImageType,
     pub width: usize,
