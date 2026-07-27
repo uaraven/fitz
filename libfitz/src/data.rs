@@ -26,17 +26,17 @@ pub struct Image {
     pub width: usize,
     pub height: usize,
 
-    pub channels: Vec<PixelBuffer>,
+    pub pixels: PixelBuffer,
 }
 
 impl Image {
     /// Creates a new Image with the specified image type, width, height, and pixel buffers.
-    pub fn new(image_type: ImageType, width: usize, height: usize, channels: Vec<PixelBuffer>) -> Self {
+    pub fn new(image_type: ImageType, width: usize, height: usize, pixels: PixelBuffer) -> Self {
         Self {
             image_type,
             width,
             height,
-            channels,
+            pixels,
         }
     }
 }
