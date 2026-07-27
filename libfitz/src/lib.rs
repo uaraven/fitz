@@ -22,5 +22,10 @@ pub mod split_channel;
 pub mod stars;
 pub mod stretch;
 
+mod errors;
+mod data;
+mod fit_file;
+
 #[cfg(test)]
 pub(crate) mod test_support;
+
