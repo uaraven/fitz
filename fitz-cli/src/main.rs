@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
-use libfitz::bayer::CFA;
+use libfitz::fits_bayer::CFA;
 use libfitz::fitskit::CompressionType;
 use rayon::prelude::*;
 

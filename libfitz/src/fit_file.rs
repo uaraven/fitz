@@ -1,87 +1,69 @@
+use std::borrow::Cow;
+
 use crate::data::{Image, PixelBuffer, ImageType};
 use crate::errors::FitsError;
 
-use fitskit::{Bitpix, FitsFile, HduData, PixelData};
+use fitskit::{FitsFile, HduData, ImageData, PixelData};
 use rayon::prelude::*;
+use crate::fits_bayer::parse_cfa;
+use crate::keywords::{BAYERPAT, BSCALE, BZERO};
 
-
-fn normalize(x: f32, min: f32, max: f32) -> f32 {
-    clamp((x - min) / (max - min))
-}
-
-fn clamp(x: f32) -> f32 {
-    if x < 0.0 {
-        0.0
-    } else if x > 1.0 {
-        1.0
-    } else {
-        x
-    }
-}
-
+/// Apply the image's BSCALE/BZERO scaling and clamp into a supported
+/// `PixelBuffer`: integer sources map to `u16` over the full 0..=65535 range,
+/// float/wide-integer sources to `f32` clamped to [0, 1]. Scaling and clamping
+/// fuse into a single parallel pass, and the output type follows the sample
+/// type directly.
 fn load_pixel_plane(img: &PixelData, b_scale: f32, b_zero: f32) -> PixelBuffer {
+    let scale = |x: f32| b_zero + b_scale * x;
+    let to_u16 = |x: f32| (scale(x) * 65535.0).clamp(0.0, 65535.0) as u16;
+    let to_f32 = |x: f32| scale(x).clamp(0.0, 1.0);
 
-    // scales the pixel value according to bscale and bzero parameters
-    let scaler = |x: f32| b_zero + b_scale * x;
-
-    let scaled_pixels: Vec<f32> = match img {
-        PixelData::U8(v) => v.par_iter().map(|&x| scaler(x as f32)).collect(),
-        PixelData::I16(v) => v.par_iter().map(|&x| scaler(x as f32)).collect(),
-        PixelData::I32(v) => v.par_iter().map(|&x| scaler(x as f32)).collect(),
-        PixelData::I64(v) => v.par_iter().map(|&x| scaler(x as f32)).collect(),
-        PixelData::F32(v) => v.par_iter().map(|&x| scaler(x)).collect(),
-        PixelData::F64(v) => v.par_iter().map(|&x| scaler(x as f32)).collect(),
-    };
-
-    // calculate min and max values for normalization via a parallel reduction
-    let (min, max) = scaled_pixels
-        .par_iter()
-        .fold(
-            || (f32::INFINITY, f32::NEG_INFINITY),
-            |(min, max), &x| (min.min(x), max.max(x)),
-        )
-        .reduce(
-            || (f32::INFINITY, f32::NEG_INFINITY),
-            |(min1, max1), (min2, max2)| (min1.min(min2), max1.max(max2)),
-        );
-
-    // normalize pixel values and convert them to supported pixel formats
-    match img.bitpix() {
-        Bitpix::U8 | Bitpix::I32 | Bitpix::I16 =>
-            PixelBuffer::U16(scaled_pixels.par_iter().map(|&x| (normalize(x, min, max) * 65535.0) as u16).collect()),
-        Bitpix::I64 | Bitpix::F32 | Bitpix::F64 =>
-            PixelBuffer::F32(scaled_pixels.par_iter().map(|&x| normalize(x, min, max)).collect()),
+    match img {
+        PixelData::U8(v) => PixelBuffer::U16(v.par_iter().map(|&x| to_u16(x as f32)).collect()),
+        PixelData::I16(v) => PixelBuffer::U16(v.par_iter().map(|&x| to_u16(x as f32)).collect()),
+        PixelData::I32(v) => PixelBuffer::U16(v.par_iter().map(|&x| to_u16(x as f32)).collect()),
+        PixelData::I64(v) => PixelBuffer::F32(v.par_iter().map(|&x| to_f32(x as f32)).collect()),
+        PixelData::F32(v) => PixelBuffer::F32(v.par_iter().map(|&x| to_f32(x)).collect()),
+        PixelData::F64(v) => PixelBuffer::F32(v.par_iter().map(|&x| to_f32(x as f32)).collect()),
     }
 }
 
-fn load_fits_data_from_file(file_path: &str) -> Result<Image, FitsError> {
-    // Open the FITS file
+pub fn load_image_from_fits(file_path: &str) -> Result<Image, FitsError> {
     let fits_file = FitsFile::from_file(file_path)?;
-
-    // Read the primary HDU (Header Data Unit)
     let hdu = fits_file.primary();
 
+    let axis_count = hdu.header.get_int("NAXIS").unwrap_or(2);
+    let bayer_pat = hdu.header.get_string(BAYERPAT).map(parse_cfa);
 
-    if let HduData::Image(img) = &hdu.data {
-        // Get the image dimensions
-        let width = img.width().ok_or_else(|| FitsError::new_invalid_img("No width"))?;
-        let height = img.width().ok_or_else(|| FitsError::new_invalid_img("No height"))?;
-
-        let b_scale =hdu.header.get_float("BSCALE").unwrap_or(1.0) as f32;
-        let b_zero =hdu.header.get_float("BZERO").unwrap_or(0.0) as f32;
-
-        let pixels = load_pixel_plane(&img.pixels, b_scale, b_zero);
-
-        // Create an Image struct with the loaded data
-        let image = Image {
-            image_type: ImageType::RGB, // Assuming RGB for this example; adjust as needed
-            width,
-            height,
-            pixels,
-        };
-
-        Ok(image)
+    let image_type = if axis_count > 2 {
+        ImageType::RGB
+    } else if bayer_pat.is_none() {
+        ImageType::CFA
     } else {
-        Err( FitsError::new_invalid_img("Invalid image type"))
-    }
+        ImageType::Grayscale
+    };
+
+    // Borrow a plain image HDU, but decompress a tile-compressed one into an owned buffer.
+    let img: Cow<ImageData> = if let Some(compressed) = hdu.as_compressed_image() {
+        Cow::Owned(compressed.decompress()?)
+    } else if let HduData::Image(img) = &hdu.data {
+        Cow::Borrowed(img)
+    } else {
+        return Err(FitsError::new_invalid_img("Invalid image type"));
+    };
+
+    let width = img.width().ok_or_else(|| FitsError::new_invalid_img("No width"))?;
+    let height = img.height().ok_or_else(|| FitsError::new_invalid_img("No height"))?;
+
+    let b_scale = hdu.header.get_float(BSCALE).unwrap_or(1.0) as f32;
+    let b_zero = hdu.header.get_float(BZERO).unwrap_or(0.0) as f32;
+
+    let pixels = load_pixel_plane(&img.pixels, b_scale, b_zero);
+
+    Ok(Image {
+        image_type,
+        width,
+        height,
+        pixels,
+    })
 }

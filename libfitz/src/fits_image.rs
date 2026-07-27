@@ -12,11 +12,8 @@ use bayer::{BayerDepth, CFA, RasterDepth, RasterMut, run_demosaic};
 use fitskit::{FitsFile, HduData, Header, HeaderValue, ImageData, Keyword, PixelData};
 use rayon::prelude::*;
 use tiff::encoder::{TiffEncoder, colortype};
-
-/// FITS header keywords used across the debayer/split commands.
-pub const BAYERPAT: &str = "BAYERPAT";
-pub const BSCALE: &str = "BSCALE";
-pub const BZERO: &str = "BZERO";
+use crate::fits_bayer::parse_cfa;
+use crate::keywords::{BAYERPAT, BSCALE, BZERO};
 
 /// CFA-mosaic keywords that become meaningless once an image is debayered into
 /// an RGB image. Dropped by the image commands (debayer/stretch/split) when
@@ -83,16 +80,6 @@ pub fn resolve_cfa(header: &Header, cli_pattern: Option<CFA>) -> Result<CFA> {
         .get_string(BAYERPAT)
         .ok_or_else(|| anyhow!("no BAYERPAT keyword in FITS header and no --pattern given"))?;
     parse_cfa(s).ok_or_else(|| anyhow!("unrecognized BAYERPAT value {s:?}"))
-}
-
-fn parse_cfa(s: &str) -> Option<CFA> {
-    match s.trim().to_ascii_uppercase().as_str() {
-        "RGGB" => Some(CFA::RGGB),
-        "GBRG" => Some(CFA::GBRG),
-        "BGGR" => Some(CFA::BGGR),
-        "GRBG" => Some(CFA::GRBG),
-        _ => None,
-    }
 }
 
 /// Round a physical pixel value to the nearest u16, clamping to its range.
