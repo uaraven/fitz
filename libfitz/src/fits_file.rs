@@ -4,12 +4,12 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use crate::fits_bayer::{cfa_str, parse_cfa};
-use crate::keywords::{BAYERPAT, BITPIX, BSCALE, BZERO, NAXIS};
-use fitskit::{Bitpix, FitsFile, Hdu, HduData, Header, HeaderValue, ImageData, PixelData};
+use crate::fits_image::copy_missing_metadata;
+use crate::keywords::{BAYERPAT, BSCALE, BZERO};
+use fitskit::{Bitpix, FitsFile, HduData, HeaderValue, ImageData, PixelData};
 use rayon::prelude::*;
-use crate::compress::CompressOptions;
 
-const MIN_U16:u32 = 0;
+const MIN_U16: u32 = 0;
 const MAX_U16:u32 = 65535;
 
 const MIN_F32:f32 = 0.0;
@@ -98,10 +98,10 @@ pub fn load_image_from_fits(file_path: &Path) -> Result<Image, FitsError> {
 
 
 struct SaveOptions {
-    compress_options: Option<CompressOptions>,
+    compress_options: Option<fitskit::CompressOptions>,
     bitpix: Bitpix,
 }
-fn save_file(target: &Path, header: Header, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
+fn save_file(target: &Path, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
     let (bscale, bzero, pixel_data) = match options.bitpix {
         Bitpix::U8 => (1.0, 0.0, PixelData::U8(img.pixels.as_u8())),
         Bitpix::I16 => {
@@ -131,19 +131,25 @@ fn save_file(target: &Path, header: Header, img: &Image, options: SaveOptions) -
     };
 
 
-    let bytes = if let Some(compress_options) = &options.compress_options {
+    let mut dst_file = if let Some(compress_options) = &options.compress_options {
         let mut compressed_fits = FitsFile::with_empty_primary();
         let mut co = fitskit::CompressOptions::default();
         co.algorithm = compress_options.algorithm;
         compressed_fits.push_extension(img_data.compress(&co)?);
-        compressed_fits.to_bytes()
+        compressed_fits
     } else {
         let mut file = FitsFile::with_primary_image(img_data);
+        file.primary_mut().header.set(BSCALE, HeaderValue::Integer(bscale as i64), None);
+        file.primary_mut().header.set(BZERO, HeaderValue::Integer(bzero as i64), None);
+
         if let ImageType::CFA(cfa) = img.image_type {
             file.primary_mut().header.set(BAYERPAT, HeaderValue::String(cfa_str(cfa).to_string()), None);
         }
-        file.to_bytes()
-    }?;
+        file
+    };
+
+    copy_missing_metadata(&mut dst_file.primary_mut().header, &img.header, &[]);
+    let bytes = dst_file.to_bytes()?;
 
     std::fs::write(target, bytes).map_err(|e| {
         FitsError::new_invalid_img(&format!("cannot write {}: {e}", target.display()))
@@ -154,10 +160,13 @@ fn save_file(target: &Path, header: Header, img: &Image, options: SaveOptions) -
 
 #[cfg(test)]
 mod tests {
-    use bayer::CFA;
     use crate::data::{ImageType, PixelBuffer};
-    use crate::fits_file::load_image_from_fits;
+    use crate::fits_file::{SaveOptions, load_image_from_fits, save_file};
     use crate::test_support::test_data;
+    use bayer::CFA;
+    use fitskit::{Bitpix, CompressOptions};
+    use sha2::{Digest, Sha256};
+    use tempfile::TempDir;
 
     #[test]
     fn test_load_scaled_i16_image() {
@@ -181,5 +190,40 @@ mod tests {
         assert_eq!(loaded.height, 3008);
         // An I16 source scales into the u16 pixel buffer.
         assert!(matches!(loaded.pixels, PixelBuffer::U16(_)));
+    }
+
+    #[test]
+    fn test_save_uncompressed_file() {
+        let input = test_data("cfa_orion.fits");
+        let loaded = load_image_from_fits(&input).unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let output = tmp.path().join("raw.fits");
+
+        save_file(&output, &loaded, SaveOptions { compress_options: None, bitpix: Bitpix::I16}).unwrap();
+
+        let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
+        assert_eq!(
+            actual,
+            "e5b5ff8800c404719862765593d39857559552120d656f41ac2ea85f85f4f7f3"
+        );
+    }
+
+    #[test]
+    fn test_save_compressed_file() {
+        let input = test_data("cfa_orion.fits");
+        let loaded = load_image_from_fits(&input).unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        let output = tmp.path().join("raw.fits.fz");
+        // let output = test_data("test.fits.fz");
+
+        save_file(&output, &loaded, SaveOptions { compress_options: Some(CompressOptions::default()), bitpix: Bitpix::I16}).unwrap();
+
+        let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
+        assert_eq!(
+            actual,
+            "82c2eaa2e12b4d06de6f1424985dea2a8e924f8ff3c0bb2f630d4f5adcb90a85"
+        );
     }
 }

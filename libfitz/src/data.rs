@@ -30,9 +30,10 @@ impl PixelBuffer {
 
     /// Converts this PixelBuffer to a vector of i16
     pub(crate) fn as_i16(&self) -> (f32, f32, Vec<i16>) {
-        const SCALE: u16 = 32767;
-        let u16_as_i16 = |x : u16| ((x  - SCALE) as i16).clamp(-(SCALE as i16)-1, SCALE as i16);
-        (SCALE as f32, 1.0, match self {
+        const ZERO: u16 = 32768;
+        const MIN: i16 = -32768;
+        let u16_as_i16 = |x: u16| (x as i32 - ZERO as i32).clamp(MIN as i32, ZERO as i32) as i16;
+        (1.0, ZERO as f32, match self {
             PixelBuffer::U16(data) => data.par_iter().map(|x| u16_as_i16(*x)).collect(),
             PixelBuffer::F32(data) => data.par_iter().map(|x| u16_as_i16((x * 65535.0) as u16)).collect(),
         })
@@ -40,10 +41,10 @@ impl PixelBuffer {
 
     /// Converts this PixelBuffer to a vector of i32
     pub(crate) fn as_i32(&self) -> (f32, f32, Vec<i32>) {
-        const SCALE: u32 = 2147483647;
+        const ZERO: u32 = 2147483648;
         const F32_SCALE: f32 = 4294967295.0;
-        let u32_as_i32 = |x : u32| ((x - SCALE) as i32).clamp(-(SCALE as i32)-1, SCALE as i32);
-        (SCALE as f32, 1.0, match self {
+        let u32_as_i32 = |x: u32| (x as i64 - ZERO as i64).clamp(-(ZERO as i64)-1, ZERO as i64) as i32;
+        (1.0, ZERO as f32, match self {
             PixelBuffer::U16(data) => data.par_iter().map(|x| u32_as_i32(0x10001*(*x as u32))).collect(),
             PixelBuffer::F32(data) => data.par_iter().map(|x| u32_as_i32((x * F32_SCALE) as u32)).collect(),
         })
@@ -51,11 +52,11 @@ impl PixelBuffer {
 
     /// Converts this PixelBuffer to a vector of i64
     pub(crate) fn as_i64(&self) -> (f32, f32, Vec<i64>) {
-        const SCALE: u64 = 9_223_372_036_854_775_807;
+        const ZERO: u64 = 9_223_372_036_854_775_808;
         const F32_SCALE: f32 = 18446744073709551615.0;
-        let u64_as_i64 = |x : u64| ((x - SCALE) as i64).clamp(-(SCALE as i64)-1, SCALE as i64);
+        let u64_as_i64 = |x: u64| (x as i128 - ZERO as i128).clamp(-(ZERO as i128)-1, ZERO as i128) as i64;
         let u16_as_u64 = |x: u16| 0x0001_0001_0001_0001_u64 * x as u64;
-        (SCALE as f32, 1.0, match self {
+        (1.0, ZERO as f32, match self {
             PixelBuffer::U16(data) => data.par_iter().map(|x| u64_as_i64(u16_as_u64(*x))).collect(),
             PixelBuffer::F32(data) => data.par_iter().map(|x| u64_as_i64((x * F32_SCALE) as u64)).collect(),
         })
@@ -74,14 +75,6 @@ impl PixelBuffer {
             PixelBuffer::F32(data) => data.par_iter().map(|x| *x as f64).collect(),
         }
     }
-}
-
-/// A Pixels struct contains a pixel buffer, width, and height. The pixel buffer can be one of three types: u8, u16, or f32.
-#[derive(Debug)]
-pub struct Pixels {
-    pub data: PixelBuffer,
-    pub width: usize,
-    pub height: usize,
 }
 
 /// An ImageType enum represents the type of an image, which can be either RGB or CFA (Color Filter Array) - unbayered.

@@ -1,5 +1,4 @@
 use bayer::CFA;
-use fitskit::Hdu;
 
 pub(crate) fn parse_cfa(s: &str) -> Option<CFA> {
     match s.trim().to_ascii_uppercase().as_str() {
