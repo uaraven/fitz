@@ -3,9 +3,9 @@ use crate::errors::FitsError;
 use std::borrow::Cow;
 use std::path::Path;
 
-use crate::fits_bayer::parse_cfa;
-use crate::keywords::{BAYERPAT, BSCALE, BZERO};
-use fitskit::{Bitpix, FitsFile, Hdu, HduData, ImageData, PixelData};
+use crate::fits_bayer::{cfa_str, parse_cfa};
+use crate::keywords::{BAYERPAT, BITPIX, BSCALE, BZERO, NAXIS};
+use fitskit::{Bitpix, FitsFile, Hdu, HduData, Header, HeaderValue, ImageData, PixelData};
 use rayon::prelude::*;
 use crate::compress::CompressOptions;
 
@@ -86,6 +86,7 @@ pub fn load_image_from_fits(file_path: &Path) -> Result<Image, FitsError> {
 
         Ok(Image {
             image_type,
+            header: hdu.header.clone(),
             width,
             height,
             pixels,
@@ -100,7 +101,7 @@ struct SaveOptions {
     compress_options: Option<CompressOptions>,
     bitpix: Bitpix,
 }
-fn save_file(target: &Path, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
+fn save_file(target: &Path, header: Header, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
     let (bscale, bzero, pixel_data) = match options.bitpix {
         Bitpix::U8 => (1.0, 0.0, PixelData::U8(img.pixels.as_u8())),
         Bitpix::I16 => {
@@ -125,11 +126,29 @@ fn save_file(target: &Path, img: &Image, options: SaveOptions) -> Result<(), Fit
 
     let img_data = match img.image_type {
         ImageType::RGB => ImageData::new(vec![img.width, img.height, 3], pixel_data),
-        ImageType::Grayscale => ImageData::new(vec![img.width, img.height, 1], pixel_data),
-        ImageType::CFA(_) => ImageData::new(vec![img.width, img.height, 1], pixel_data),
+        ImageType::Grayscale => ImageData::new(vec![img.width, img.height], pixel_data),
+        ImageType::CFA(_) => ImageData::new(vec![img.width, img.height], pixel_data),
     };
 
-    Hdu::new()
+
+    let bytes = if let Some(compress_options) = &options.compress_options {
+        let mut compressed_fits = FitsFile::with_empty_primary();
+        let mut co = fitskit::CompressOptions::default();
+        co.algorithm = compress_options.algorithm;
+        compressed_fits.push_extension(img_data.compress(&co)?);
+        compressed_fits.to_bytes()
+    } else {
+        let mut file = FitsFile::with_primary_image(img_data);
+        if let ImageType::CFA(cfa) = img.image_type {
+            file.primary_mut().header.set(BAYERPAT, HeaderValue::String(cfa_str(cfa).to_string()), None);
+        }
+        file.to_bytes()
+    }?;
+
+    std::fs::write(target, bytes).map_err(|e| {
+        FitsError::new_invalid_img(&format!("cannot write {}: {e}", target.display()))
+    })?;
+
     Ok(())
 }
 

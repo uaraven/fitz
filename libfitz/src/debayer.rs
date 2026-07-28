@@ -59,7 +59,7 @@ impl Image {
         if let ImageType::CFA(cfa) = self.image_type {
             let rgb_pixels = demosaic_to_rgb(&self.pixels, self.width, self.height, cfa);
             Some(rgb_pixels.map(|rgb_pixels| {
-                Image::new(ImageType::RGB, self.width, self.height, rgb_pixels)
+                Image::new(ImageType::RGB, self.header.clone(), self.width, self.height, rgb_pixels)
             }))
         } else {
             None

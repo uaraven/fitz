@@ -1,4 +1,5 @@
 use bayer::CFA;
+use fitskit::Header;
 use rayon::prelude::*;
 
 /// A pixel buffer can be one of three types: u8, u16, or f32. Each type is represented by a vector of the corresponding type.
@@ -95,6 +96,7 @@ pub enum ImageType {
 #[derive(Debug)]
 pub struct Image {
     pub image_type: ImageType,
+    pub header: Header,
     pub width: usize,
     pub height: usize,
 
@@ -103,9 +105,14 @@ pub struct Image {
 
 impl Image {
     /// Creates a new Image with the specified image type, width, height, and pixel buffers.
-    pub fn new(image_type: ImageType, width: usize, height: usize, pixels: PixelBuffer) -> Self {
+    pub fn new(image_type: ImageType,
+               header: Header,
+               width: usize,
+               height: usize,
+               pixels: PixelBuffer) -> Self {
         Self {
             image_type,
+            header,
             width,
             height,
             pixels,
