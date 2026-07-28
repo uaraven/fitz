@@ -274,7 +274,7 @@ mod tests {
     use std::fs::File;
     use tempfile::TempDir;
     use tiff::encoder::{TiffEncoder, colortype};
-    use crate::fits_file::load_image_from_fits;
+    use crate::fits_file::load_fits;
 
     fn write_tiff(output: &Path, width: usize, height: usize, samples: OutputSamples) {
         let file = File::create(output).unwrap();
@@ -603,7 +603,7 @@ mod tests {
     // TODO: Delete all the tests above
     #[test]
     fn debayer_cfa_image() {
-        let test_img = load_image_from_fits( &test_data("cfa_orion.fits")).unwrap();
+        let test_img = load_fits( &test_data("cfa_orion.fits")).unwrap();
         let debayered = test_img.debayer().unwrap().unwrap();
 
         assert_eq!(debayered.image_type, ImageType::RGB);

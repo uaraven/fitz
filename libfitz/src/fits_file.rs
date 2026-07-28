@@ -4,8 +4,7 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use crate::fits_bayer::{cfa_str, parse_cfa};
-use crate::fits_image::copy_missing_metadata;
-use crate::keywords::{BAYERPAT, BSCALE, BZERO};
+use crate::keywords::{copy_missing_metadata, BAYERPAT, BSCALE, BZERO};
 use fitskit::{Bitpix, FitsFile, HduData, HeaderValue, ImageData, PixelData};
 use rayon::prelude::*;
 
@@ -49,8 +48,12 @@ fn load_pixel_plane(img: &PixelData, b_scale: f32, b_zero: f32) -> PixelBuffer {
     }
 }
 
-pub fn load_image_from_fits(file_path: &Path) -> Result<Image, FitsError> {
-    let fits_file = FitsFile::from_file(file_path)?;
+/// Loads FITS file
+///
+/// If the file is compressed it will be automatically decompressed
+/// The resulting file is converted either to 16-bit unsigned or 32-bit float pixel format
+pub fn load_fits(source: &Path) -> Result<Image, FitsError> {
+    let fits_file = FitsFile::from_file(source)?;
     let hdu_opt = fits_file.iter().find(|hdu|
         matches!(hdu.data, HduData::Image(_)) || hdu.as_compressed_image().is_some());
 
@@ -97,11 +100,20 @@ pub fn load_image_from_fits(file_path: &Path) -> Result<Image, FitsError> {
 }
 
 
-struct SaveOptions {
-    compress_options: Option<fitskit::CompressOptions>,
-    bitpix: Bitpix,
+/// Options for saving the image
+/// Defines the target pixel format and the compression
+pub struct SaveOptions {
+    pub bitpix: Bitpix,
+    pub compress_options: Option<fitskit::CompressOptions>,
 }
-fn save_file(target: &Path, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
+
+/// Save the FITS file
+///
+/// Saves the FITS image in `img` to the file at the `target` path
+/// `options` contain [SaveOptions] struct with save options
+///
+/// The headers are copied from the source image
+pub fn save_fits(target: &Path, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
     let (bscale, bzero, pixel_data) = match options.bitpix {
         Bitpix::U8 => (1.0, 0.0, PixelData::U8(img.pixels.as_u8())),
         Bitpix::I16 => {
@@ -161,7 +173,7 @@ fn save_file(target: &Path, img: &Image, options: SaveOptions) -> Result<(), Fit
 #[cfg(test)]
 mod tests {
     use crate::data::{ImageType, PixelBuffer};
-    use crate::fits_file::{SaveOptions, load_image_from_fits, save_file};
+    use crate::fits_file::{SaveOptions, load_fits, save_fits};
     use crate::test_support::test_data;
     use bayer::CFA;
     use fitskit::{Bitpix, CompressOptions};
@@ -171,7 +183,7 @@ mod tests {
     #[test]
     fn test_load_scaled_i16_image() {
         let input = test_data("cfa_orion.fits");
-        let loaded = load_image_from_fits(&input).unwrap();
+        let loaded = load_fits(&input).unwrap();
 
         assert_eq!(loaded.image_type, ImageType::CFA(CFA::RGGB));
         assert_eq!(loaded.width, 3856);
@@ -183,7 +195,7 @@ mod tests {
     #[test]
     fn test_load_compressed_file() {
         let input = test_data("compressed.fits.fz");
-        let loaded = load_image_from_fits(&input).unwrap();
+        let loaded = load_fits(&input).unwrap();
 
         assert_eq!(loaded.image_type, ImageType::CFA(CFA::GRBG));
         assert_eq!(loaded.width, 3008);
@@ -195,12 +207,12 @@ mod tests {
     #[test]
     fn test_save_uncompressed_file() {
         let input = test_data("cfa_orion.fits");
-        let loaded = load_image_from_fits(&input).unwrap();
+        let loaded = load_fits(&input).unwrap();
 
         let tmp = TempDir::new().unwrap();
         let output = tmp.path().join("raw.fits");
 
-        save_file(&output, &loaded, SaveOptions { compress_options: None, bitpix: Bitpix::I16}).unwrap();
+        save_fits(&output, &loaded, SaveOptions { compress_options: None, bitpix: Bitpix::I16}).unwrap();
 
         let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
         assert_eq!(
@@ -212,13 +224,13 @@ mod tests {
     #[test]
     fn test_save_compressed_file() {
         let input = test_data("cfa_orion.fits");
-        let loaded = load_image_from_fits(&input).unwrap();
+        let loaded = load_fits(&input).unwrap();
 
         let tmp = TempDir::new().unwrap();
         let output = tmp.path().join("raw.fits.fz");
         // let output = test_data("test.fits.fz");
 
-        save_file(&output, &loaded, SaveOptions { compress_options: Some(CompressOptions::default()), bitpix: Bitpix::I16}).unwrap();
+        save_fits(&output, &loaded, SaveOptions { compress_options: Some(CompressOptions::default()), bitpix: Bitpix::I16}).unwrap();
 
         let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
         assert_eq!(
