@@ -2,30 +2,30 @@
 
 The goal of the `libfitz` library is to handle common operations with FITS files perfromed by fitz and FitSmith:
 
- - read fits files:
-   - read(path) -> (headers, pixels)
- - debayer(pixels: CFA) -> RGB pixel planes
- - CFA -> RGB without debayering - read pixels corresponding to each color and create a pixel plane for each. Green contains twice as many pixels as others, so it can be rescaled
- - autostretch(pixels: CFA|RGB) -> CFA|RGB
- - read/calculate additional file information:
-   - focal length
-   - pixel size
-   - binning
-   - calculated sampling arcsec/µm
- - calculate stats:
-   - mean
-   - median
-   - sigma
-   - avg deviation
-   - MAD
-   - min value (number of pixels with min value)
-   - max value (number of pixels with max value)
- - star detection
- - star metrics:
-   - star count
-   - HFR
-   - FWHM
-   - eccentricity
+ - [x] read fits files:
+   - [x] read(path) -> (headers, pixels)
+ - [x] debayer(pixels: CFA) -> RGB pixels, u16 bitpix
+ - [ ] CFA -> RGB without debayering - read pixels corresponding to each color and create a pixel plane for each. Green contains twice as many pixels as others, so it can be rescaled
+ - [ ] autostretch(pixels: CFA|RGB) -> CFA|RGB
+ - [ ] read/calculate additional file information:
+   - [ ] focal length
+   - [ ] pixel size
+   - [ ] binning
+   - [ ] calculated sampling arcsec/µm
+ - [ ] calculate stats:
+   - [ ] mean
+   - [ ] median
+   - [ ] sigma
+   - [ ] avg deviation
+   - [ ] MAD
+   - [ ] min value (number of pixels with min value)
+   - [ ] max value (number of pixels with max value)
+ - [ ] star detection
+ - [ ] star metrics:
+   - [ ] star count
+   - [ ] HFR
+   - [ ] FWHM
+   - [ ] eccentricity
 
 Internal pixel format in memory:
 

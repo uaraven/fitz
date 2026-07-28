@@ -5,9 +5,9 @@ use std::path::Path;
 
 use crate::fits_bayer::parse_cfa;
 use crate::keywords::{BAYERPAT, BSCALE, BZERO};
-use fitskit::{FitsFile, HduData, ImageData, PixelData};
+use fitskit::{Bitpix, FitsFile, Hdu, HduData, ImageData, PixelData};
 use rayon::prelude::*;
-
+use crate::compress::CompressOptions;
 
 const MIN_U16:u32 = 0;
 const MAX_U16:u32 = 65535;
@@ -65,12 +65,12 @@ pub fn load_image_from_fits(file_path: &Path) -> Result<Image, FitsError> {
         };
 
         let axis_count = img.axes.len();
-        let bayer_pat =  hdu.header.get_string(BAYERPAT).map(parse_cfa);
+        let bayer_pat =  hdu.header.get_string(BAYERPAT).and_then(parse_cfa);
 
         let image_type = if axis_count > 2 {
             ImageType::RGB
         } else if bayer_pat.is_some() {
-            ImageType::CFA
+            ImageType::CFA(bayer_pat.unwrap())
         } else {
             ImageType::Grayscale
         };
@@ -95,8 +95,47 @@ pub fn load_image_from_fits(file_path: &Path) -> Result<Image, FitsError> {
     }
 }
 
+
+struct SaveOptions {
+    compress_options: Option<CompressOptions>,
+    bitpix: Bitpix,
+}
+fn save_file(target: &Path, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
+    let (bscale, bzero, pixel_data) = match options.bitpix {
+        Bitpix::U8 => (1.0, 0.0, PixelData::U8(img.pixels.as_u8())),
+        Bitpix::I16 => {
+            let (bscale, bzero, data) = img.pixels.as_i16();
+            (bscale, bzero, PixelData::I16(data))
+        },
+        Bitpix::I32 => {
+            let (bscale, bzero, data) = img.pixels.as_i32();
+            (bscale, bzero, PixelData::I32(data))
+        },
+        Bitpix::I64 => {
+            let (bscale, bzero, data) = img.pixels.as_i64();
+            (bscale, bzero, PixelData::I64(data))
+        },
+        Bitpix::F32 => {
+            (1.0, 0.0, PixelData::F32(img.pixels.as_f32()))
+        },
+        Bitpix::F64 => {
+            (1.0, 0.0, PixelData::F64(img.pixels.as_f64()))
+        }
+    };
+
+    let img_data = match img.image_type {
+        ImageType::RGB => ImageData::new(vec![img.width, img.height, 3], pixel_data),
+        ImageType::Grayscale => ImageData::new(vec![img.width, img.height, 1], pixel_data),
+        ImageType::CFA(_) => ImageData::new(vec![img.width, img.height, 1], pixel_data),
+    };
+
+    Hdu::new()
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use bayer::CFA;
     use crate::data::{ImageType, PixelBuffer};
     use crate::fits_file::load_image_from_fits;
     use crate::test_support::test_data;
@@ -106,7 +145,7 @@ mod tests {
         let input = test_data("cfa_orion.fits");
         let loaded = load_image_from_fits(&input).unwrap();
 
-        assert_eq!(loaded.image_type, ImageType::CFA);
+        assert_eq!(loaded.image_type, ImageType::CFA(CFA::RGGB));
         assert_eq!(loaded.width, 3856);
         assert_eq!(loaded.height, 2180);
         // An I16 source scales into the u16 pixel buffer.
@@ -118,7 +157,7 @@ mod tests {
         let input = test_data("compressed.fits.fz");
         let loaded = load_image_from_fits(&input).unwrap();
 
-        assert_eq!(loaded.image_type, ImageType::CFA);
+        assert_eq!(loaded.image_type, ImageType::CFA(CFA::GRBG));
         assert_eq!(loaded.width, 3008);
         assert_eq!(loaded.height, 3008);
         // An I16 source scales into the u16 pixel buffer.
