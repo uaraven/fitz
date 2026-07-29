@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use bayer::CFA;
 use fitskit::{FitsFile, Header};
 use rayon::prelude::*;
-
+use crate::data::{Image, ImageType, PixelBuffer};
 use crate::fits_image::{LoadRgbNotice, RgbBuffer, find_image_hdu, load_rgb, round_to_u16};
 
 /// Working sample type for the stretch math. `f32` is more than precise enough
@@ -66,7 +66,7 @@ pub struct StretchedImage {
 /// Shared by the `stretch` and `preview` commands, which differ only in what
 /// they do with the stretched buffer (write it to a file vs. render it to the
 /// terminal).
-pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<StretchedImage> {
+pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<Image> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
@@ -76,14 +76,48 @@ pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<Stretched
     let loaded = load_rgb(header, img, opts.pattern, opts.force_demosaic)?;
 
     let pixels = auto_stretch(&loaded.rgb, opts.linked, opts.brightness);
-    Ok(StretchedImage {
-        width: loaded.width,
-        height: loaded.height,
-        pixels,
-        header: header.clone(),
-        notice: loaded.notice,
-    })
+    Ok(Image::new())
+    // Ok(StretchedImage {
+    //     width: loaded.width,
+    //     height: loaded.height,
+    //     pixels,
+    //     header: header.clone(),
+    //     notice: loaded.notice,
+    // })
 }
+
+pub fn stretch(input: &Image) -> Result<&Image> {
+    match input.image_type {
+        ImageType::RGB => {},
+        ImageType::CFA(_) => {},
+        ImageType::Grayscale => {},
+     }
+}
+
+fn stretch_rgb(input: &Image, brightness: f32) -> Result<&Image> {
+    let mut samples = to_normalized(&input.pixels);
+    let params: Vec<(Sample, Sample)> = (0..3usize)
+        .into_par_iter()
+        .map(|start| {
+            let mut chan: Vec<Sample> =
+                samples.iter().skip(start).step_by(3).copied().collect();
+            find_params(&mut chan, brightness)
+        })
+        .collect();
+    samples.par_chunks_mut(3).for_each(|px| {
+        for (c, v) in px.iter_mut().enumerate() {
+            let (shadows, midtones) = params[c];
+            *v = transfer(*v, shadows, midtones);
+        }
+    });
+
+    Ok(samples
+        .par_iter()
+        .map(|&v| round_to_u16((v * OUT_MAX) as f64))
+        .collect())
+}
+
+
 
 /// Apply an MTF/STF auto-stretch to an interleaved RGB image, returning
 /// interleaved 16-bit samples in `[0, 65535]`. With `linked`, one set of stretch
@@ -95,7 +129,7 @@ pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<Stretched
 ///
 /// This is a pure, in-memory transform so callers can do something other than
 /// write the result to a file.
-pub fn auto_stretch(rgb: &RgbBuffer, linked: bool, brightness: f32) -> Vec<u16> {
+pub fn auto_stretch(rgb: &PixelBuffer, linked: bool, brightness: f32) -> Vec<u16> {
     let mut samples = to_normalized(rgb);
 
     // Linked mode derives one stretch from all samples; otherwise the
@@ -134,16 +168,13 @@ pub fn auto_stretch(rgb: &RgbBuffer, linked: bool, brightness: f32) -> Vec<u16> 
 }
 
 /// Normalize the interleaved samples to `[0, 1]` based on the source bit depth.
-fn to_normalized(rgb: &RgbBuffer) -> Vec<Sample> {
+fn to_normalized(rgb: &PixelBuffer) -> Vec<Sample> {
     match rgb {
-        RgbBuffer::U8(v) => v
-            .par_iter()
-            .map(|&x| x as Sample / u8::MAX as Sample)
-            .collect(),
-        RgbBuffer::U16(v) => v
+        PixelBuffer::U16(v) => v
             .par_iter()
             .map(|&x| x as Sample / u16::MAX as Sample)
             .collect(),
+        PixelBuffer::F32(v ) => v.iter().map(|&x| x as Sample ).collect(),
     }
 }
 
