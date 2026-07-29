@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::iter::Map;
 use bayer::CFA;
 use fitskit::Header;
 use rayon::prelude::*;
@@ -110,5 +112,16 @@ impl Image {
             height,
             pixels,
         }
+    }
+
+    /// Returns the image headers as a String->String hash map
+    pub fn headers(&self) -> HashMap<String, String> {
+        let mut result = HashMap::new();
+        for keyword  in self.header.keywords.iter() {
+            if let Some(value) = &keyword.value {
+                result.insert(keyword.name.clone(), format!("{}", value));
+            }
+        }
+        result
     }
 }
