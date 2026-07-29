@@ -28,6 +28,12 @@ const NATIVE_BAYER_DEPTH16: BayerDepth = BayerDepth::Depth16LE;
 #[cfg(target_endian = "big")]
 const NATIVE_BAYER_DEPTH16: BayerDepth = BayerDepth::Depth16BE;
 
+/// An interleaved (R, G, B, R, G, B, …) image, either 8- or 16-bit per sample
+/// depending on the source's bit depth.
+pub enum RgbBuffer {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+}
 
 /// Find the first image in a FITS file, returning its header and pixels.
 ///

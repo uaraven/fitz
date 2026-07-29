@@ -66,7 +66,7 @@ pub struct StretchedImage {
 /// Shared by the `stretch` and `preview` commands, which differ only in what
 /// they do with the stretched buffer (write it to a file vs. render it to the
 /// terminal).
-pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<Image> {
+pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<StretchedImage> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
@@ -76,48 +76,39 @@ pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<Image> {
     let loaded = load_rgb(header, img, opts.pattern, opts.force_demosaic)?;
 
     let pixels = auto_stretch(&loaded.rgb, opts.linked, opts.brightness);
-    Ok(Image::new())
-    // Ok(StretchedImage {
-    //     width: loaded.width,
-    //     height: loaded.height,
-    //     pixels,
-    //     header: header.clone(),
-    //     notice: loaded.notice,
-    // })
+    Ok(StretchedImage {
+        width: loaded.width,
+        height: loaded.height,
+        pixels,
+        header: header.clone(),
+        notice: loaded.notice,
+    })
 }
 
-pub fn stretch(input: &Image) -> Result<&Image> {
-    match input.image_type {
-        ImageType::RGB => {},
-        ImageType::CFA(_) => {},
-        ImageType::Grayscale => {},
-     }
+/// Apply an MTF/STF auto-stretch to `image`, returning a new [`Image`] with the
+/// same shape and type as the input. An RGB image is stretched as three
+/// interleaved channels (see [`auto_stretch`]); a grayscale or CFA (raw,
+/// not-yet-demosaiced mosaic) image has a single channel and is always
+/// stretched from its own statistics, so `linked` only affects RGB input.
+///
+/// This is a pure, in-memory transform: it does no reading or writing to disk.
+pub fn stretch(image: &Image, linked: bool, brightness: f32) -> Image {
+    let channels = match image.image_type {
+        ImageType::RGB => 3,
+        ImageType::Grayscale | ImageType::CFA(_) => 1,
+    };
+
+    let mut samples = normalize_pixel_buffer(&image.pixels);
+    stretch_samples(&mut samples, channels, linked, brightness);
+
+    Image {
+        image_type: image.image_type.clone(),
+        header: image.header.clone(),
+        width: image.width,
+        height: image.height,
+        pixels: PixelBuffer::U16(samples_to_u16(&samples)),
+    }
 }
-
-fn stretch_rgb(input: &Image, brightness: f32) -> Result<&Image> {
-    let mut samples = to_normalized(&input.pixels);
-    let params: Vec<(Sample, Sample)> = (0..3usize)
-        .into_par_iter()
-        .map(|start| {
-            let mut chan: Vec<Sample> =
-                samples.iter().skip(start).step_by(3).copied().collect();
-            find_params(&mut chan, brightness)
-        })
-        .collect();
-    samples.par_chunks_mut(3).for_each(|px| {
-        for (c, v) in px.iter_mut().enumerate() {
-            let (shadows, midtones) = params[c];
-            *v = transfer(*v, shadows, midtones);
-        }
-    });
-
-    Ok(samples
-        .par_iter()
-        .map(|&v| round_to_u16((v * OUT_MAX) as f64))
-        .collect())
-}
-
-
 
 /// Apply an MTF/STF auto-stretch to an interleaved RGB image, returning
 /// interleaved 16-bit samples in `[0, 65535]`. With `linked`, one set of stretch
@@ -129,38 +120,48 @@ fn stretch_rgb(input: &Image, brightness: f32) -> Result<&Image> {
 ///
 /// This is a pure, in-memory transform so callers can do something other than
 /// write the result to a file.
-pub fn auto_stretch(rgb: &PixelBuffer, linked: bool, brightness: f32) -> Vec<u16> {
+pub fn auto_stretch(rgb: &RgbBuffer, linked: bool, brightness: f32) -> Vec<u16> {
     let mut samples = to_normalized(rgb);
+    stretch_samples(&mut samples, 3, linked, brightness);
+    samples_to_u16(&samples)
+}
 
-    // Linked mode derives one stretch from all samples; otherwise the
-    // interleaved R,G,B channels are each stretched from their own statistics.
-    // The transfer of one channel never reads another, so every channel's
-    // params are derived from the original normalized samples — which lets us
-    // compute the three independent channels' params in parallel and then apply
-    // the transfer in a single parallel pass. The math (and thus the output) is
-    // identical to processing the channels one after another.
+/// Stretch `samples` in place: `channels` interleaved planes (3 for RGB, 1 for
+/// a single-channel grayscale/CFA image). With `linked`, one set of stretch
+/// parameters (derived from all channels together) is applied to every
+/// channel; otherwise each channel is stretched from its own statistics, which
+/// also acts as an automatic background neutralization. The transfer of one
+/// channel never reads another, so every channel's params are derived from the
+/// original normalized samples — which lets us compute each channel's params in
+/// parallel and then apply the transfer in a single parallel pass. The math
+/// (and thus the output) is identical to processing the channels one after
+/// another.
+fn stretch_samples(samples: &mut [Sample], channels: usize, linked: bool, brightness: Sample) {
     if linked {
-        let (shadows, midtones) = find_params(&mut samples.clone(), brightness);
+        let (shadows, midtones) = find_params(&mut samples.to_vec(), brightness);
         samples
             .par_iter_mut()
             .for_each(|v| *v = transfer(*v, shadows, midtones));
     } else {
-        let params: Vec<(Sample, Sample)> = (0..3usize)
+        let params: Vec<(Sample, Sample)> = (0..channels)
             .into_par_iter()
             .map(|start| {
                 let mut chan: Vec<Sample> =
-                    samples.iter().skip(start).step_by(3).copied().collect();
+                    samples.iter().skip(start).step_by(channels).copied().collect();
                 find_params(&mut chan, brightness)
             })
             .collect();
-        samples.par_chunks_mut(3).for_each(|px| {
+        samples.par_chunks_mut(channels).for_each(|px| {
             for (c, v) in px.iter_mut().enumerate() {
                 let (shadows, midtones) = params[c];
                 *v = transfer(*v, shadows, midtones);
             }
         });
     }
+}
 
+/// Round normalized `[0, 1]` samples to interleaved 16-bit samples in `[0, 65535]`.
+fn samples_to_u16(samples: &[Sample]) -> Vec<u16> {
     samples
         .par_iter()
         .map(|&v| round_to_u16((v * OUT_MAX) as f64))
@@ -168,13 +169,28 @@ pub fn auto_stretch(rgb: &PixelBuffer, linked: bool, brightness: f32) -> Vec<u16
 }
 
 /// Normalize the interleaved samples to `[0, 1]` based on the source bit depth.
-fn to_normalized(rgb: &PixelBuffer) -> Vec<Sample> {
+fn to_normalized(rgb: &RgbBuffer) -> Vec<Sample> {
     match rgb {
+        RgbBuffer::U8(v) => v
+            .par_iter()
+            .map(|&x| x as Sample / u8::MAX as Sample)
+            .collect(),
+        RgbBuffer::U16(v) => v
+            .par_iter()
+            .map(|&x| x as Sample / u16::MAX as Sample)
+            .collect(),
+    }
+}
+
+/// Normalize a [`PixelBuffer`]'s samples to `[0, 1]`: `U16` scales by its max,
+/// `F32` is assumed already in `[0, 1]`.
+fn normalize_pixel_buffer(pixels: &PixelBuffer) -> Vec<Sample> {
+    match pixels {
         PixelBuffer::U16(v) => v
             .par_iter()
             .map(|&x| x as Sample / u16::MAX as Sample)
             .collect(),
-        PixelBuffer::F32(v ) => v.iter().map(|&x| x as Sample ).collect(),
+        PixelBuffer::F32(v) => v.par_iter().copied().collect(),
     }
 }
 
@@ -476,6 +492,71 @@ mod tests {
         let per_channel = auto_stretch(&buf, false, DEFAULT_BRIGHTNESS);
         let linked = auto_stretch(&buf, true, DEFAULT_BRIGHTNESS);
         assert_ne!(per_channel, linked);
+    }
+
+    #[test]
+    fn stretch_image_preserves_shape_and_type_on_real_cfa_data() {
+        // `stretch` never demosaics: a CFA input stays CFA, same width/height,
+        // just restretched into a u16 buffer.
+        let loaded = crate::fits_file::load_fits(&test_data("cfa_orion.fits")).unwrap();
+
+        let stretched = stretch(&loaded, false, DEFAULT_BRIGHTNESS);
+
+        assert_eq!(stretched.image_type, loaded.image_type);
+        assert_eq!(stretched.width, loaded.width);
+        assert_eq!(stretched.height, loaded.height);
+        match stretched.pixels {
+            PixelBuffer::U16(v) => {
+                assert_eq!(v.len(), loaded.width * loaded.height);
+                assert!(v.iter().any(|&x| x > 0));
+                assert!(v.iter().any(|&x| x < u16::MAX));
+            }
+            PixelBuffer::F32(_) => panic!("expected a u16 pixel buffer"),
+        }
+    }
+
+    #[test]
+    fn stretch_image_preserves_shape_and_type_on_real_debayered_rgb_data() {
+        // A debayered RGB image stays RGB and keeps its shape, with all three
+        // interleaved planes present.
+        let loaded = crate::fits_file::load_fits(&test_data("cfa_orion.fits")).unwrap();
+        let rgb = loaded.debayer().unwrap().unwrap();
+
+        let stretched = stretch(&rgb, false, DEFAULT_BRIGHTNESS);
+
+        assert_eq!(stretched.image_type, ImageType::RGB);
+        assert_eq!(stretched.width, rgb.width);
+        assert_eq!(stretched.height, rgb.height);
+        match stretched.pixels {
+            PixelBuffer::U16(v) => assert_eq!(v.len(), rgb.width * rgb.height * 3),
+            PixelBuffer::F32(_) => panic!("expected a u16 pixel buffer"),
+        }
+    }
+
+    #[test]
+    fn stretch_image_linked_and_per_channel_differ_on_imbalanced_color() {
+        // Same imbalanced-color scenario as `linked_and_per_channel_differ_on_imbalanced_color`,
+        // exercised through the pure `Image -> Image` entry point.
+        let n = 32usize;
+        let samples: Vec<u16> = (0..n)
+            .flat_map(|i| {
+                let r = 40000 + (i % 100) as u16;
+                let g = 8000 + (i % 100) as u16;
+                let b = 1000 + (i % 100) as u16;
+                [r, g, b]
+            })
+            .collect();
+        let image = Image {
+            image_type: ImageType::RGB,
+            header: Header::default(),
+            width: n,
+            height: 1,
+            pixels: PixelBuffer::U16(samples),
+        };
+
+        let per_channel = stretch(&image, false, DEFAULT_BRIGHTNESS);
+        let linked = stretch(&image, true, DEFAULT_BRIGHTNESS);
+        assert_ne!(per_channel.pixels, linked.pixels);
     }
 
     #[test]

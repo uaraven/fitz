@@ -22,6 +22,15 @@ impl Display for FitsError {
     }
 }
 
+impl std::error::Error for FitsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FitsError::FitsError(e) => Some(e),
+            FitsError::InvalidImageData(_) => None,
+        }
+    }
+}
+
 impl From<Error> for FitsError {
      fn from(value: Error) -> Self {
         FitsError::FitsError(value)

@@ -22,10 +22,9 @@ pub mod stars;
 pub mod stretch;
 
 mod errors;
-mod data;
-mod fits_file;
+pub mod data;
+pub mod fits_file;
 mod keywords;
 mod fits_bayer;
 #[cfg(test)]
 pub(crate) mod test_support;
-

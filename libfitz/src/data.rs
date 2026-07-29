@@ -80,7 +80,7 @@ impl PixelBuffer {
 }
 
 /// An ImageType enum represents the type of an image, which can be either RGB or CFA (Color Filter Array) - unbayered.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ImageType {
     RGB,
     Grayscale,
