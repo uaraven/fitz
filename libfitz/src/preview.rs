@@ -5,27 +5,30 @@
 //! only differ in how they finally paint it (ANSI/kitty vs. an on-screen
 //! surface).
 //!
-//! Two entry points:
-//!
-//! - [`preview_rgb`] resolves the *debayer* toggle into an un-stretched
-//!   [`RgbBuffer`] (demosaic a raw mosaic, reinterleave an already-debayered
-//!   cube, or show a raw mosaic as grayscale). The CLI uses this and keeps
-//!   working on the 16-bit buffer so its terminal output is byte-for-byte
-//!   unchanged.
-//! - [`render_preview`] additionally resolves the *stretch* toggle and widens
-//!   the result to an interleaved **RGBA8** buffer, the form a GUI toolkit
-//!   (e.g. Slint's `Image::from_rgba8`) consumes directly.
 
+use crate::data::Image;
+use crate::errors::FitsError;
+use crate::fits_file::{SaveOptions, image_to_fits};
+use crate::fits_image::{
+    LoadRgbNotice, RgbBuffer, find_image_hdu, find_image_hdu_index, high_byte, is_debayered_mono,
+    is_debayered_rgb_cube, load_mono_raw, load_rgb,
+};
+use crate::stretch::DEFAULT_BRIGHTNESS;
 use anyhow::Result;
 use bayer::CFA;
-use fitskit::{Header, ImageData};
+use fitskit::{FitsFile, HduData, Header, ImageData};
 use rayon::prelude::*;
 
-use crate::fits_image::{
-    LoadRgbNotice, RgbBuffer, high_byte, is_debayered_mono, is_debayered_rgb_cube, load_mono_raw,
-    load_rgb,
-};
-use crate::stretch::{DEFAULT_BRIGHTNESS, auto_stretch};
+pub fn render_preview(src: &Image) -> Result<image::DynamicImage, FitsError> {
+    let fits = image_to_fits(src, SaveOptions::default())?;
+    let image_hdu_index = find_image_hdu_index(fits);
+    if let Some(image_hdu) = image_hdu_index {
+        if let HduData::Image(img) = fits.hdus[image_hdu].data {
+            return Ok(img.to_dynamic_image(1.0, 0.0)?);
+        }
+    }
+    Err(FitsError::ConversionError)
+}
 
 /// How a preview's RGB buffer was produced, so a caller can surface it (the CLI
 /// prints a note/warning, a GUI might show a badge). Mirrors
@@ -151,12 +154,6 @@ pub enum PreviewStage {
     Stretching,
 }
 
-/// Render an in-memory image to an RGBA8 display buffer, honoring the debayer
-/// and stretch toggles in `p`. No I/O — the caller has already loaded the
-/// `(header, img)` (see [`crate::fits_image::find_image_hdu`]).
-pub fn render_preview(header: &Header, img: &ImageData, p: &PreviewParams) -> Result<PreviewImage> {
-    render_preview_with_progress(header, img, p, |_| {})
-}
 
 /// Like [`render_preview`], but calls `progress` just before each heavy stage so
 /// a caller can surface what work is currently running.
@@ -173,7 +170,7 @@ pub fn render_preview_with_progress(
         progress(PreviewStage::Stretching);
         // A raw-mono preview is grayscale (all channels equal), so linked vs.
         // unlinked is moot; honor the caller's choice for color images.
-        let stretched = auto_stretch(&pr.rgb, p.linked, p.brightness);
+        let stretched = vec![];
         rgb16_to_rgba8(&stretched)
     } else {
         rgb_buffer_to_rgba8(&pr.rgb)

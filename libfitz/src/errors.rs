@@ -5,6 +5,8 @@ use fitskit::error::Error;
 pub enum FitsError {
     FitsError(Error),
     InvalidImageData(String),
+    DecompressionError,
+    ConversionError,
 }
 
 impl FitsError {

@@ -12,6 +12,7 @@ use bayer::{BayerDepth, CFA, RasterDepth, RasterMut, run_demosaic};
 use fitskit::{FitsFile, HduData, Header, HeaderValue, ImageData, Keyword, PixelData};
 use rayon::prelude::*;
 use tiff::encoder::{TiffEncoder, colortype};
+use crate::errors::FitsError;
 use crate::fits_bayer::parse_cfa;
 use crate::keywords::{copy_metadata, BAYERPAT, BSCALE, BZERO};
 
@@ -45,8 +46,7 @@ pub enum RgbBuffer {
 /// alongside the `Z*` compression keywords.
 pub fn find_image_hdu<'a>(
     fits: &'a FitsFile,
-    input: &Path,
-) -> Result<(&'a Header, Cow<'a, ImageData>)> {
+) -> Result<(&'a Header, Cow<'a, ImageData>), FitsError> {
     for hdu in &fits.hdus {
         if let HduData::Image(img) = &hdu.data {
             return Ok((&hdu.header, Cow::Borrowed(img)));
@@ -54,11 +54,11 @@ pub fn find_image_hdu<'a>(
         if let Some(cimg) = hdu.as_compressed_image() {
             let img = cimg
                 .decompress()
-                .with_context(|| format!("{}: decompression failed", input.display()))?;
+                .map_err(FitsError::DecompressionError)?;
             return Ok((&hdu.header, Cow::Owned(img)));
         }
     }
-    Err(anyhow!("no image data found in {}", input.display()))
+    Err(FitsError::new_invalid_img("Cannot find image"))
 }
 
 /// Locate the index of the HDU holding image data (a plain image HDU, or a
@@ -944,7 +944,7 @@ mod tests {
         // uncompressed.fit is a 3008x3008 GRBG unsigned-16 mosaic.
         let path = test_data("uncompressed.fit");
         let fits = FitsFile::from_file(&path).unwrap();
-        let (header, img) = find_image_hdu(&fits, &path).unwrap();
+        let (header, img) = find_image_hdu(&fits).unwrap();
         let plane = detection_plane(header, img.as_ref()).unwrap();
 
         assert_eq!((plane.width, plane.height), (1504, 1504));

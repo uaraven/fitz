@@ -5,11 +5,14 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use libfitz::fits_image::{find_image_hdu, high_byte, rgb16_to_rgb8};
-use libfitz::fitskit::FitsFile;
-use libfitz::preview::{PreviewSource, preview_rgb};
+use bayer::CFA;
+use libfitz::data::Image;
+use libfitz::fits_file::load_fits;
+use libfitz::fits_image::{find_image_hdu, high_byte, is_debayered_mono, is_debayered_rgb_cube, load_mono_raw, load_rgb, rgb16_to_rgb8};
+use libfitz::fitskit::{FitsFile, Header, ImageData};
+use libfitz::preview::{render_preview, PreviewRgb, PreviewSource};
 use libfitz::resize::resize_to_fit;
-use libfitz::stretch::auto_stretch;
+use libfitz::stretch::stretch;
 
 use crate::io_prompt::print_step;
 use crate::kitty;
@@ -99,10 +102,7 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
 /// values, skipping color interpolation entirely; an already-debayered image
 /// has nothing to skip, so the flag is ignored with a warning.
 fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, usize, Vec<u16>)> {
-    let fits =
-        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
-    let (header, img) = find_image_hdu(&fits, input)?;
-    let img = img.as_ref();
+    let img = load_fits(input).with_context(|| format!("cannot read {}", input.display()))?;
 
     let pr = preview_rgb(
         header,
@@ -133,6 +133,36 @@ fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, us
     let linked = opts.core.linked || pr.source == PreviewSource::RawMono;
     let pixels = auto_stretch(&pr.rgb, linked, opts.core.brightness);
     Ok((pr.width, pr.height, pixels))
+}
+
+
+pub fn preview_rgb(
+    header: &Header,
+    img: &ImageData,
+    debayer: bool,
+    pattern: Option<CFA>,
+    force_demosaic: bool,
+) -> Result<Image> {
+    // Debayer on, or an already-debayered image (which has nothing to skip):
+    // let load_rgb do the right thing and report how it did it.
+    if debayer || is_debayered_rgb_cube(header, img) || is_debayered_mono(header, img) {
+        let loaded = load_rgb(header, img, pattern, force_demosaic)?;
+        return Ok(PreviewRgb {
+            width: loaded.width,
+            height: loaded.height,
+            rgb: loaded.rgb,
+            source: loaded.notice.into(),
+        });
+    }
+
+    // Debayer off on a genuine raw mosaic: grayscale, no color interpolation.
+    let (width, height, rgb) = load_mono_raw(header, img)?;
+    Ok(PreviewRgb {
+        width,
+        height,
+        rgb,
+        source: PreviewSource::RawMono,
+    })
 }
 
 /// Render an interleaved 16-bit RGB image as ANSI text. Each character cell

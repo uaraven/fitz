@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::fits_bayer::{cfa_str, parse_cfa};
 use crate::keywords::{copy_missing_metadata, BAYERPAT, BSCALE, BZERO};
-use fitskit::{Bitpix, FitsFile, HduData, HeaderValue, ImageData, PixelData};
+use fitskit::{Bitpix, CompressOptions, FitsFile, HduData, HeaderValue, ImageData, PixelData};
 use rayon::prelude::*;
 
 const MIN_U16: u32 = 0;
@@ -107,13 +107,25 @@ pub struct SaveOptions {
     pub compress_options: Option<fitskit::CompressOptions>,
 }
 
-/// Save the FITS file
-///
-/// Saves the FITS image in `img` to the file at the `target` path
-/// `options` contain [SaveOptions] struct with save options
-///
-/// The headers are copied from the source image
-pub fn save_fits(target: &Path, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
+impl Default for SaveOptions {
+    fn default() -> Self {
+        SaveOptions {
+            bitpix: Bitpix::I16,
+            compress_options: None,
+        }
+    }
+}
+
+impl SaveOptions {
+    fn default_compressed() -> Self {
+        SaveOptions {
+            bitpix: Bitpix::I16,
+            compress_options: Some( CompressOptions::default()),
+        }
+    }
+}
+
+pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<&FitsFile, FitsError> {
     let (bscale, bzero, pixel_data) = match options.bitpix {
         Bitpix::U8 => (1.0, 0.0, PixelData::U8(img.pixels.as_u8())),
         Bitpix::I16 => {
@@ -161,6 +173,17 @@ pub fn save_fits(target: &Path, img: &Image, options: SaveOptions) -> Result<(),
     };
 
     copy_missing_metadata(&mut dst_file.primary_mut().header, &img.header, &[]);
+    Ok(&dst_file)
+}
+
+/// Save the FITS file
+///
+/// Saves the FITS image in `img` to the file at the `target` path
+/// `options` contain [SaveOptions] struct with save options
+///
+/// The headers are copied from the source image
+pub fn save_fits(target: &Path, img: &Image, options: SaveOptions) -> Result<(), FitsError> {
+    let dst_file = image_to_fits(img, options)?;
     let bytes = dst_file.to_bytes()?;
 
     std::fs::write(target, bytes).map_err(|e| {
