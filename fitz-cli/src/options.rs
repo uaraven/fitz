@@ -33,27 +33,8 @@ pub struct DebayerOptions {
     pub multi_file: bool,
 }
 
-/// The stretch knobs the `Image`-based pipeline still supports: unlike the old
-/// pre-refactor `libfitz::stretch::StretchOptions`, there is no `pattern`/
-/// `force_demosaic` override — `Image::debayer` always reads the Bayer pattern
-/// from the FITS header.
-#[derive(Clone, Copy, Debug)]
-pub struct StretchCore {
-    pub linked: bool,
-    pub brightness: f32,
-}
-
-impl Default for StretchCore {
-    fn default() -> Self {
-        StretchCore {
-            linked: false,
-            brightness: libfitz::stretch::DEFAULT_BRIGHTNESS,
-        }
-    }
-}
-
 pub struct StretchOptions {
-    pub core: StretchCore,
+    pub core: libfitz::stretch::StretchOptions,
     pub yes: bool,
     pub verbose: bool,
     pub format: libfitz::debayer::OutputFormat,
@@ -64,7 +45,7 @@ pub struct StretchOptions {
 impl Default for StretchOptions {
     fn default() -> Self {
         StretchOptions {
-            core: StretchCore::default(),
+            core: libfitz::stretch::StretchOptions::default(),
             yes: false,
             verbose: false,
             format: libfitz::debayer::OutputFormat::Fits,
@@ -94,7 +75,7 @@ pub struct InfoOptions {
 
 pub struct PreviewOptions {
     pub verbose: bool,
-    pub core: StretchCore,
+    pub core: libfitz::stretch::StretchOptions,
     /// Force kitty graphics protocol rendering, bypassing auto-detection.
     pub force_kitty: bool,
     /// Force true-color ASCII rendering, bypassing auto-detection.

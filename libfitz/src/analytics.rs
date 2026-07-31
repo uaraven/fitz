@@ -224,7 +224,7 @@ pub struct Series {
 pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> {
     let fits =
         FitsFile::from_file(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let (header, img) = find_image_hdu(&fits)?;
+    let (header, img) = find_image_hdu(&fits, path)?;
     let img = img.as_ref();
 
     // Prefer DATE-LOC (the observer's local wall clock) so the chart reads in

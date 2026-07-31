@@ -48,11 +48,9 @@ pub fn encode_image(rgb8: &[u8], width: usize, height: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libfitz::data::PixelBuffer;
-    use libfitz::fits_file::load_fits;
     use libfitz::fits_image::rgb16_to_rgb8;
     use libfitz::resize::resize_to_fit;
-    use libfitz::stretch::DEFAULT_BRIGHTNESS;
+    use libfitz::stretch::{StretchOptions, load_and_stretch};
 
     use crate::test_support::test_data;
 
@@ -104,14 +102,14 @@ mod tests {
         // Full pipeline on a bundled frame: load -> stretch -> scale -> encode,
         // then decode the payload back and confirm it equals the 8-bit RGB.
         let input = test_data("uncompressed.fit");
-        let loaded = load_fits(&input).unwrap();
-        let rgb = loaded.debayer().unwrap().unwrap();
-        let stretched = rgb.stretch(false, DEFAULT_BRIGHTNESS);
-        let PixelBuffer::U16(pixels) = stretched.pixels else {
-            panic!("expected a u16 pixel buffer");
-        };
-        let (pw, ph, preview) =
-            resize_to_fit(&pixels, stretched.width, stretched.height, 120, 120);
+        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
+        let (pw, ph, preview) = resize_to_fit(
+            &stretched.pixels,
+            stretched.width,
+            stretched.height,
+            120,
+            120,
+        );
 
         let rgb8 = rgb16_to_rgb8(&preview);
         let seq = encode_image(&rgb8, pw, ph);

@@ -262,7 +262,7 @@ pub(crate) mod tests {
         write_star_field_fits(&path, width, height, background, stars);
 
         let fits = FitsFile::from_file(&path).unwrap();
-        let (header, img) = find_image_hdu(&fits).unwrap();
+        let (header, img) = find_image_hdu(&fits, &path).unwrap();
         detection_plane(header, img.as_ref()).unwrap()
     }
 
@@ -407,7 +407,7 @@ pub(crate) mod tests {
     fn real_mosaic_detects_plausible_stars() {
         let path = test_data("uncompressed.fit");
         let fits = FitsFile::from_file(&path).unwrap();
-        let (header, img) = find_image_hdu(&fits).unwrap();
+        let (header, img) = find_image_hdu(&fits, &path).unwrap();
         let plane = detection_plane(header, img.as_ref()).unwrap();
         let stats = detect(&plane);
 

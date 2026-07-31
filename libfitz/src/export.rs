@@ -20,34 +20,11 @@ use rayon::prelude::*;
 use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
 
 use crate::compress::{CompressOptions, compress_fits};
-use crate::data::{ImageType, PixelBuffer};
 use crate::debayer::{OutputSamples, to_output_samples};
-use crate::fits_file::load_fits;
 use crate::fits_image::{
     CFA_KEYWORDS, RgbBuffer, build_pixel_fits, deinterleave_to_planes, high_byte,
 };
-use crate::stretch::DEFAULT_BRIGHTNESS;
-
-/// Debayer + auto-stretch settings for [`export_file`]. The `Image` pipeline
-/// always demosaics a CFA source and always stretches, so this only carries
-/// the stretch's own knobs (unlike the old preview-era `PreviewParams`, which
-/// also toggled debayer/stretch on and off and took a pattern override).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct ExportParams {
-    /// Stretch all channels together instead of independently.
-    pub linked: bool,
-    /// Auto-stretch target background level in `(0, 1)`; higher is brighter.
-    pub brightness: f32,
-}
-
-impl Default for ExportParams {
-    fn default() -> Self {
-        ExportParams {
-            linked: false,
-            brightness: DEFAULT_BRIGHTNESS,
-        }
-    }
-}
+use crate::preview::{PreviewParams, render_export_rgb};
 
 /// FITS pixel storage requested for an exported image, mapping to a FITS
 /// `BITPIX`: `I8` → byte (8), `I16` → signed short (16, using the unsigned-16
@@ -105,36 +82,20 @@ impl ExportFormat {
     }
 }
 
-/// Render a FITS `input` through the debayer/stretch pipeline (per `params`)
-/// and write it to `output` in `format`. The one-call entry point a frontend
-/// uses per file; a failure names the offending input.
+/// Render a FITS `input` through the debayer/stretch preview pipeline (per
+/// `params`) and write it to `output` in `format`. The one-call entry point a
+/// frontend uses per file; a failure names the offending input.
 pub fn export_file(
     input: &Path,
     output: &Path,
-    params: &ExportParams,
+    params: &PreviewParams,
     format: &ExportFormat,
 ) -> Result<()> {
-    let image = load_fits(input).with_context(|| format!("cannot read {}", input.display()))?;
-    let debayered = match image.debayer() {
-        Some(result) => result.context("debayering failed")?,
-        None => image,
-    };
-    let stretched = debayered.stretch(params.linked, params.brightness);
-
-    let (width, height) = (stretched.width, stretched.height);
-    let header = stretched.header.clone();
-    let PixelBuffer::U16(samples) = stretched.pixels else {
-        unreachable!("Image::stretch always returns u16 pixels");
-    };
-    // A single-channel (grayscale) result has nothing to color with, so
-    // replicate it across R/G/B for the RGB-only encoders below.
-    let rgb = if stretched.image_type == ImageType::RGB {
-        RgbBuffer::U16(samples)
-    } else {
-        RgbBuffer::U16(samples.into_iter().flat_map(|v| [v, v, v]).collect())
-    };
-
-    export_rgb(output, width, height, rgb, Some(&header), format)
+    let fits =
+        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let (header, img) = crate::fits_image::find_image_hdu(&fits, input)?;
+    let (width, height, rgb) = render_export_rgb(header, img.as_ref(), params)?;
+    export_rgb(output, width, height, rgb, Some(header), format)
 }
 
 /// Encode an already-rendered interleaved RGB buffer to `output` in `format`.
@@ -291,8 +252,8 @@ mod tests {
     use fitskit::{Bitpix, HduData};
     use tempfile::TempDir;
 
-    fn default_params() -> ExportParams {
-        ExportParams::default()
+    fn default_params() -> PreviewParams {
+        PreviewParams::default()
     }
 
     /// The BITPIX of the primary image in a written FITS file.

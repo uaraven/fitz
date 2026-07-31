@@ -7,9 +7,8 @@ use anyhow::{Context, Result, anyhow};
 use fitskit::FitsFile;
 
 use crate::fits_image::{
-    CFA_KEYWORDS, find_image_hdu_index, header_is_rgb_cube_shape,
+    CFA_KEYWORDS, copy_missing_metadata, find_image_hdu_index, header_is_rgb_cube_shape,
 };
-use crate::keywords::copy_missing_metadata;
 
 /// Merge `source`'s header onto `target`'s, filling in only what `target`
 /// doesn't already carry — its own resolution, bit depth, channel count,

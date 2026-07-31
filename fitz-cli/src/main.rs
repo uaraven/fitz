@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
-use bayer::CFA;
 use clap::{Parser, Subcommand, ValueEnum};
+use libfitz::bayer::CFA;
 use libfitz::fitskit::CompressionType;
 use rayon::prelude::*;
 
@@ -667,14 +667,10 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
         files,
     } = args;
 
-    if pattern.is_some() || force_demosaic {
-        terminal::print_warning(
-            "--pattern/--force-demosaic have no effect on stretch: the Bayer pattern is always read from the FITS header",
-        );
-    }
-
     let opts = StretchOptions {
-        core: options::StretchCore {
+        core: libfitz::stretch::StretchOptions {
+            pattern: pattern.map(Into::into),
+            force_demosaic,
             linked: linked_channel,
             brightness,
         },
@@ -758,15 +754,11 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         no_debayer,
     } = args;
 
-    if pattern.is_some() || force_demosaic {
-        terminal::print_warning(
-            "--pattern/--force-demosaic have no effect on preview: the Bayer pattern is always read from the FITS header",
-        );
-    }
-
     let opts = PreviewOptions {
         verbose,
-        core: options::StretchCore {
+        core: libfitz::stretch::StretchOptions {
+            pattern: pattern.map(Into::into),
+            force_demosaic,
             linked: linked_channel,
             brightness,
         },

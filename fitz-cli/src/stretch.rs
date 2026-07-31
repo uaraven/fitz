@@ -3,43 +3,39 @@
 
 use std::path::Path;
 
+use anyhow::Result;
+use libfitz::debayer::OutputFormat;
+use libfitz::fits_image::{CFA_KEYWORDS, write_rgb16_fits, write_rgb16_tiff};
+
 use crate::io_prompt::{ensure_can_write, print_load_rgb_notice, print_progress, print_step};
 use crate::options::StretchOptions;
-use anyhow::Result;
-use libfitz::data::PixelBuffer;
-use libfitz::debayer::OutputFormat;
-use libfitz::fits_file::SaveOptions;
-use libfitz::fits_image::{CFA_KEYWORDS, write_rgb16_fits, write_rgb16_tiff};
-use libfitz::fitskit::Bitpix;
 
 pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
     ensure_can_write(output, opts.yes)?;
     print_progress(opts.verbose, input, output);
 
     print_step(opts.verbose, "reading");
-    let image = libfitz::fits_file::load_fits(input)?;
+    let stretched = libfitz::stretch::load_and_stretch(input, &opts.core)?;
 
+    print_load_rgb_notice(opts.verbose, input, stretched.notice);
     print_step(opts.verbose, "stretching");
-    let stretched = image.stretch(opts.core.linked, opts.core.brightness);
 
     print_step(opts.verbose, "writing");
     match opts.format {
         OutputFormat::Tiff => {
-            // TODO: Write tiff
-            // write_rgb16_tiff(output, stretched.width, stretched.height, &stretched.pixels)
-            Ok(())
+            write_rgb16_tiff(output, stretched.width, stretched.height, &stretched.pixels)
         }
         OutputFormat::Fits => {
             let history = format!("stretched by fitz {}", env!("CARGO_PKG_VERSION"));
-            let options = SaveOptions {
-                bitpix: match image.pixels {
-                    PixelBuffer::U16(_) => Bitpix::I16,
-                    PixelBuffer::F32(_) => Bitpix::F32,
-                },
-                compress_options: None,
-            };
-            libfitz::fits_file::save_fits(output, &stretched, options)?;
-            Ok(())
+            write_rgb16_fits(
+                output,
+                stretched.width,
+                stretched.height,
+                &stretched.pixels,
+                Some(&stretched.header),
+                CFA_KEYWORDS,
+                Some(&history),
+            )
         }
     }
 }
