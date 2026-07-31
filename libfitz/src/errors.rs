@@ -20,6 +20,8 @@ impl Display for FitsError {
         match self {
             FitsError::FitsError(e) => write!(f, "FITS error: {e}"),
             FitsError::InvalidImageData(msg) => write!(f, "invalid image data: {msg}"),
+            FitsError::DecompressionError => write!(f, "decompression error"),
+            FitsError::ConversionError => write!(f, "conversion error"),
         }
     }
 }
@@ -29,6 +31,8 @@ impl std::error::Error for FitsError {
         match self {
             FitsError::FitsError(e) => Some(e),
             FitsError::InvalidImageData(_) => None,
+            FitsError::DecompressionError => None,
+            FitsError::ConversionError => None,
         }
     }
 }

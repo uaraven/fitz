@@ -54,7 +54,7 @@ pub fn find_image_hdu<'a>(
         if let Some(cimg) = hdu.as_compressed_image() {
             let img = cimg
                 .decompress()
-                .map_err(FitsError::DecompressionError)?;
+                .map_err(|_| FitsError::DecompressionError)?;
             return Ok((&hdu.header, Cow::Owned(img)));
         }
     }

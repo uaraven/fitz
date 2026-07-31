@@ -172,7 +172,7 @@ pub fn debayer(input: &Path, opts: &DebayerOptions) -> Result<DebayeredImage> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input)?;
+    let (header, img) = find_image_hdu(&fits)?;
     let img = img.as_ref();
 
     let source = SourceFormat::from_image(header, img);

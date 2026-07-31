@@ -667,10 +667,14 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
         files,
     } = args;
 
+    if pattern.is_some() || force_demosaic {
+        terminal::print_warning(
+            "--pattern/--force-demosaic have no effect on stretch: the Bayer pattern is always read from the FITS header",
+        );
+    }
+
     let opts = StretchOptions {
-        core: libfitz::stretch::StretchOptions {
-            pattern: pattern.map(Into::into),
-            force_demosaic,
+        core: options::StretchCore {
             linked: linked_channel,
             brightness,
         },
@@ -754,11 +758,15 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         no_debayer,
     } = args;
 
+    if pattern.is_some() || force_demosaic {
+        terminal::print_warning(
+            "--pattern/--force-demosaic have no effect on preview: the Bayer pattern is always read from the FITS header",
+        );
+    }
+
     let opts = PreviewOptions {
         verbose,
-        core: libfitz::stretch::StretchOptions {
-            pattern: pattern.map(Into::into),
-            force_demosaic,
+        core: options::StretchCore {
             linked: linked_channel,
             brightness,
         },

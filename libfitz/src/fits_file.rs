@@ -125,7 +125,7 @@ impl SaveOptions {
     }
 }
 
-pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<&FitsFile, FitsError> {
+pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<FitsFile, FitsError> {
     let (bscale, bzero, pixel_data) = match options.bitpix {
         Bitpix::U8 => (1.0, 0.0, PixelData::U8(img.pixels.as_u8())),
         Bitpix::I16 => {
@@ -173,7 +173,7 @@ pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<&FitsFile, Fit
     };
 
     copy_missing_metadata(&mut dst_file.primary_mut().header, &img.header, &[]);
-    Ok(&dst_file)
+    Ok(dst_file)
 }
 
 /// Save the FITS file

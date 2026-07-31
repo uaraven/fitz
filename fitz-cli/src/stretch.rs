@@ -20,7 +20,7 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
     let image = libfitz::fits_file::load_fits(input)?;
 
     print_step(opts.verbose, "stretching");
-    let stretched = libfitz::stretch::stretch(&image, opts.core.linked, opts.core.brightness);
+    let stretched = image.stretch(opts.core.linked, opts.core.brightness);
 
     print_step(opts.verbose, "writing");
     match opts.format {

@@ -20,25 +20,26 @@ const MAD_NORM: Sample = 1.4826;
 
 const OUT_MAX: Sample = u16::MAX as Sample;
 
+impl Image {
+    /// Apply an MTF/STF auto-stretch to `image`, returning a new [`Image`] with the
+    /// same shape and type as the input.
+    /// This is a pure, in-memory transform: it does no reading or writing to disk.
+    pub fn stretch(&self, linked: bool, brightness: f32) -> Image {
+        let channels = match self.image_type {
+            ImageType::RGB => 3,
+            ImageType::Grayscale | ImageType::CFA(_) => 1,
+        };
 
-/// Apply an MTF/STF auto-stretch to `image`, returning a new [`Image`] with the
-/// same shape and type as the input. 
-/// This is a pure, in-memory transform: it does no reading or writing to disk.
-pub fn stretch(image: &Image, linked: bool, brightness: f32) -> Image {
-    let channels = match image.image_type {
-        ImageType::RGB => 3,
-        ImageType::Grayscale | ImageType::CFA(_) => 1,
-    };
+        let mut samples = normalize_pixel_buffer(&self.pixels);
+        stretch_samples(&mut samples, channels, linked, brightness);
 
-    let mut samples = normalize_pixel_buffer(&image.pixels);
-    stretch_samples(&mut samples, channels, linked, brightness);
-
-    Image {
-        image_type: image.image_type.clone(),
-        header: image.header.clone(),
-        width: image.width,
-        height: image.height,
-        pixels: PixelBuffer::U16(samples_to_u16(&samples)),
+        Image {
+            image_type: self.image_type.clone(),
+            header: self.header.clone(),
+            width: self.width,
+            height: self.height,
+            pixels: PixelBuffer::U16(samples_to_u16(&samples)),
+        }
     }
 }
 
@@ -204,7 +205,7 @@ mod tests {
         // just restretched into a u16 buffer.
         let loaded = crate::fits_file::load_fits(&test_data("cfa_orion.fits")).unwrap();
 
-        let stretched = stretch(&loaded, false, DEFAULT_BRIGHTNESS);
+        let stretched = loaded.stretch( false, DEFAULT_BRIGHTNESS);
 
         assert_eq!(stretched.image_type, loaded.image_type);
         assert_eq!(stretched.width, loaded.width);
@@ -226,7 +227,7 @@ mod tests {
         let loaded = crate::fits_file::load_fits(&test_data("cfa_orion.fits")).unwrap();
         let rgb = loaded.debayer().unwrap().unwrap();
 
-        let stretched = stretch(&rgb, false, DEFAULT_BRIGHTNESS);
+        let stretched = rgb.stretch( false, DEFAULT_BRIGHTNESS);
 
         assert_eq!(stretched.image_type, ImageType::RGB);
         assert_eq!(stretched.width, rgb.width);
@@ -258,8 +259,8 @@ mod tests {
             pixels: PixelBuffer::U16(samples),
         };
 
-        let per_channel = stretch(&image, false, DEFAULT_BRIGHTNESS);
-        let linked = stretch(&image, true, DEFAULT_BRIGHTNESS);
+        let per_channel = image.stretch( false, DEFAULT_BRIGHTNESS);
+        let linked = image.stretch( true, DEFAULT_BRIGHTNESS);
         assert_ne!(per_channel.pixels, linked.pixels);
     }
 }

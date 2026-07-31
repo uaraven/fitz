@@ -66,7 +66,7 @@ pub fn split_channels(input: &Path, opts: &SplitChannelOptions) -> Result<SplitC
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input)?;
+    let (header, img) = find_image_hdu(&fits)?;
     let img = img.as_ref();
 
     let try_demosaic = opts.force_demosaic || get_bayerpat(header).is_some();
@@ -334,7 +334,7 @@ mod tests {
                 .to_string();
 
             let fits = FitsFile::from_file(&output).unwrap();
-            let (_, img) = find_image_hdu(&fits, &output).unwrap();
+            let (_, img) = find_image_hdu(&fits).unwrap();
             let actual = format!("{:x}", Sha256::digest(img.pixels.to_bytes()));
             assert_eq!(actual, expected);
         }
@@ -351,7 +351,7 @@ mod tests {
         let input = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&input, 4, 3);
         let fits = FitsFile::from_file(&input).unwrap();
-        let (_, img) = find_image_hdu(&fits, &input).unwrap();
+        let (_, img) = find_image_hdu(&fits).unwrap();
         assert!(is_rgb_cube_shape(img.as_ref()));
     }
 

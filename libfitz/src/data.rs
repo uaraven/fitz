@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-use std::iter::Map;
 use bayer::CFA;
 use fitskit::Header;
 use rayon::prelude::*;
+use std::collections::HashMap;
 
 /// A pixel buffer can be one of three types: u8, u16, or f32. Each type is represented by a vector of the corresponding type.
 #[derive(Debug, PartialEq)]
