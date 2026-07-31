@@ -2,17 +2,72 @@
 //! already-debayered cube) and produce the pixel samples ready to be written
 //! out as FITS or TIFF, in the source's own bit depth or a requested one.
 
+use std::io::Cursor;
 use std::path::Path;
 use std::str::FromStr;
 
-use anyhow::{Context, Result};
-use bayer::CFA;
+use anyhow::{anyhow, Context, Result};
+use bayer::{RasterDepth, CFA, RasterMut, run_demosaic, BayerDepth};
 use fitskit::{Bitpix, FitsFile, Header, ImageData, PixelData};
 use rayon::prelude::*;
-
+use crate::data::{Image, ImageType, PixelBuffer};
 use crate::fits_image::{
     LoadRgbNotice, RgbBuffer, bscale_bzero, find_image_hdu, load_rgb, rgb16_to_rgb8,
 };
+
+
+
+#[cfg(target_endian = "little")]
+const NATIVE_BAYER_DEPTH16: BayerDepth = BayerDepth::Depth16LE;
+#[cfg(target_endian = "big")]
+const NATIVE_BAYER_DEPTH16: BayerDepth = BayerDepth::Depth16BE;
+
+fn demosaic_to_rgb(
+    img: &PixelBuffer,
+    width: usize, height: usize,
+    cfa: CFA,
+) -> Result<PixelBuffer> {
+
+    let raw = img.as_u16_bytes();
+
+    // we always work with 16-bit images internally, meaning 6 bytes per RGB pixel
+    let mut out_buf = vec![0u8; 6 * width * height];
+    {
+        let mut raster = RasterMut::new(width, height, RasterDepth::Depth16, &mut out_buf);
+        run_demosaic(
+            &mut Cursor::new(&raw[..]),
+            NATIVE_BAYER_DEPTH16,
+            cfa,
+            bayer::Demosaic::Linear,
+            &mut raster,
+        ).map_err(|e| anyhow!("{e}"))?;
+    }
+
+    let rgb = PixelBuffer::U16(
+            out_buf
+                .par_chunks_exact(2)
+                .map(|c| u16::from_ne_bytes([c[0], c[1]]))
+                .collect());
+
+    Ok(rgb)
+}
+
+impl Image {
+
+    /// Debayers the image into the RGB image
+    pub fn debayer(&self) -> Option<Result<Image>> {
+        if let ImageType::CFA(cfa) = self.image_type {
+            let rgb_pixels = demosaic_to_rgb(&self.pixels, self.width, self.height, cfa);
+            Some(rgb_pixels.map(|rgb_pixels| {
+                Image::new(ImageType::RGB, self.header.clone(), self.width, self.height, rgb_pixels)
+            }))
+        } else {
+            None
+        }
+    }
+}
+
+// Delete all the implementations below
 
 /// Output container for a debayered (or stretched) image.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -117,7 +172,7 @@ pub fn debayer(input: &Path, opts: &DebayerOptions) -> Result<DebayeredImage> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input)?;
+    let (header, img) = find_image_hdu(&fits)?;
     let img = img.as_ref();
 
     let source = SourceFormat::from_image(header, img);
@@ -219,6 +274,7 @@ mod tests {
     use std::fs::File;
     use tempfile::TempDir;
     use tiff::encoder::{TiffEncoder, colortype};
+    use crate::fits_file::load_fits;
 
     fn write_tiff(output: &Path, width: usize, height: usize, samples: OutputSamples) {
         let file = File::create(output).unwrap();
@@ -543,4 +599,19 @@ mod tests {
     fn debayer_uncompressed_fit_bpp32_matches_known_hash() {
         assert_debayer_matches_known_hash(32, "debayer/uncompressed-bpp32.sha256");
     }
+
+    // TODO: Delete all the tests above
+    #[test]
+    fn debayer_cfa_image() {
+        let test_img = load_fits( &test_data("cfa_orion.fits")).unwrap();
+        let debayered = test_img.debayer().unwrap().unwrap();
+
+        assert_eq!(debayered.image_type, ImageType::RGB);
+        assert_eq!(debayered.width, test_img.width);
+        assert_eq!(debayered.height, test_img.height);
+
+        let sha = format!("{:x}", Sha256::digest(debayered.pixels.as_u16_bytes()));
+        assert_eq!(sha, "d4166430a8d94b586bee199d500fe26a25af0dbe65f79f932e786f2f7c8a0beb");
+    }
+
 }

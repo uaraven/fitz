@@ -142,7 +142,7 @@ pub fn header_info_with(input: &Path, req: InfoRequest) -> Result<HeaderInfo> {
     let fits =
         FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let (header, img) = find_image_hdu(&fits, input)?;
+    let (header, img) = find_image_hdu(&fits)?;
     Ok(header_info_from(header, img.as_ref(), req))
 }
 
@@ -869,11 +869,11 @@ pub(crate) fn stats_from_values(values: &mut Vec<f64>) -> PixelStats {
     let (min, max, zeros) = values
         .par_iter()
         .fold(
-            || (f64::INFINITY, f64::NEG_INFINITY, 0usize),
-            |(mn, mx, z), &v| (mn.min(v), mx.max(v), z + (v == 0.0) as usize),
+            || (f64::INFINITY, f64::NEG_INFINITY, 0),
+            |(mn, mx, z), &v| (mn.min(v), mx.max(v), z + if v == 0.0 { 1 } else { 0 }),
         )
         .reduce(
-            || (f64::INFINITY, f64::NEG_INFINITY, 0usize),
+            || (f64::INFINITY, f64::NEG_INFINITY, 0),
             |a, b| (a.0.min(b.0), a.1.max(b.1), a.2 + b.2),
         );
 
@@ -882,8 +882,8 @@ pub(crate) fn stats_from_values(values: &mut Vec<f64>) -> PixelStats {
     let (min_count, max_count) = values
         .par_iter()
         .fold(
-            || (0usize, 0usize),
-            |(mnc, mxc), &v| (mnc + (v == min) as usize, mxc + (v == max) as usize),
+            || (0, 0),
+            |(mnc, mxc), &v| (mnc + if v == min { 1 } else { 0 }, mxc + if v == max { 1 } else { 0 }),
         )
         .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
 
@@ -1010,7 +1010,7 @@ mod tests {
         write_mosaic_fits(&input, 4, 4, Some("RGGB"));
 
         let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let (header, img) = find_image_hdu(&fits).unwrap();
         let img = img.as_ref();
         let stats = pixel_stats(header, img);
 
@@ -1058,7 +1058,7 @@ mod tests {
         write_mosaic_fits(&input, 3, 3, None);
 
         let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let (header, img) = find_image_hdu(&fits).unwrap();
         let img = img.as_ref();
         let stats = pixel_stats(header, img);
         assert_eq!(stats.median, 4.0);
@@ -1260,7 +1260,7 @@ mod tests {
         write_mosaic_fits(&input, 3, 3, None);
 
         let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let (header, img) = find_image_hdu(&fits).unwrap();
         let img = img.as_ref();
         let stats = pixel_stats(header, img);
         assert_eq!(stats.zeros, 1);
@@ -1284,7 +1284,7 @@ mod tests {
 
         for input in [mono, cube] {
             let fits = FitsFile::from_file(&input).unwrap();
-            let (header, img) = find_image_hdu(&fits, &input).unwrap();
+            let (header, img) = find_image_hdu(&fits).unwrap();
             let img = img.as_ref();
 
             // The old two-pass computation, done by hand.
@@ -1457,7 +1457,7 @@ mod tests {
         for name in ["uncompressed.fit", "compressed.fits.fz"] {
             let input = test_data(name);
             let fits = FitsFile::from_file(&input).unwrap();
-            let (header, img) = find_image_hdu(&fits, &input).unwrap();
+            let (header, img) = find_image_hdu(&fits).unwrap();
             let stats = pixel_stats(header, img.as_ref());
 
             // Real sky frames are star-sparse, so the robust noise estimate must
@@ -1486,7 +1486,7 @@ mod tests {
         // deliberately leaves `mode` out.
         let input = test_data("uncompressed.fit");
         let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let (header, img) = find_image_hdu(&fits).unwrap();
         let img = img.as_ref();
 
         let fast = pixel_stats(header, img);
@@ -1507,7 +1507,7 @@ mod tests {
         // the general fold+sort path on every field.
         let input = test_data("uncompressed.fit");
         let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let (header, img) = find_image_hdu(&fits).unwrap();
         let img = img.as_ref();
 
         let fast = pixel_stats(header, img);
@@ -1547,7 +1547,7 @@ mod tests {
         crate::test_support::write_mono_f32_fits(&input, 4, 4);
 
         let fits = FitsFile::from_file(&input).unwrap();
-        let (header, img) = find_image_hdu(&fits, &input).unwrap();
+        let (header, img) = find_image_hdu(&fits).unwrap();
         let stats = pixel_stats(header, img.as_ref());
         assert_eq!(stats.min_count, 1);
         assert_eq!(stats.max_count, 1);

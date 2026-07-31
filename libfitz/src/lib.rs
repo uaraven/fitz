@@ -4,7 +4,6 @@
 //! CLI parsing, terminal output, or interactive prompts — those live in the
 //! `fitz` binary crate, which is a thin wrapper over this library.
 
-pub use bayer;
 pub use fitskit;
 
 pub mod analytics;
@@ -22,5 +21,10 @@ pub mod split_channel;
 pub mod stars;
 pub mod stretch;
 
+mod errors;
+pub mod data;
+pub mod fits_file;
+mod keywords;
+mod fits_bayer;
 #[cfg(test)]
 pub(crate) mod test_support;
