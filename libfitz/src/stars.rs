@@ -1,13 +1,7 @@
 //! Star detection and per-star shape measurement on a grayscale [`Image`]:
-//! threshold against the image's own robust background (its [`Stats`]),
-//! flood-fill the connected blobs above it, reject everything that isn't a
-//! usable star, and measure what survives — HFR, FWHM and eccentricity,
-//! aggregated across the frame. Pure and `Send` — no file I/O, no terminal
-//! output — so a GUI star-metrics panel and the CLI's `info --stars` both
-//! drive it.
-//!
-//! HFR and FWHM aggregate as plain medians; eccentricity does not, and
-//! [`aggregate`] explains at length why not.
+//! threshold against the image's own background, flood-fill the blobs above
+//! it, reject anything that isn't a usable star, and measure what survives —
+//! HFR, FWHM and eccentricity, aggregated across the frame.
 
 use rayon::prelude::*;
 
@@ -18,34 +12,25 @@ use anyhow::{Result, bail};
 use bayer::CFA;
 use fitskit::Header;
 
-/// Multiplier turning a Gaussian's standard deviation into its full width at
-/// half maximum: `2 * sqrt(2 * ln 2)`.
+/// Multiplier converting a Gaussian's standard deviation into its full width
+/// at half maximum.
 const FWHM_PER_SIGMA: f64 = 2.3548;
 
 /// Multiplier turning a median absolute deviation into an estimate of the
 /// standard deviation of normally distributed data.
 const MAD_TO_SIGMA: f64 = 1.4826;
 
-/// The robust background a detection threshold is built from: an [`Image`]'s
-/// median, and its median absolute deviation scaled to a σ estimate.
-///
-/// Both are robust to the very stars being detected, which is why thresholding
-/// on them isn't chicken-and-egg.
+/// A frame's robust background level: its median and noise, unaffected by
+/// the stars sitting on top of it.
 #[derive(Clone, Copy, Debug)]
 pub struct Background {
     pub median: f64,
-    /// Median absolute deviation from the median, scaled by [`MAD_TO_SIGMA`] so
-    /// it estimates σ for Gaussian noise while ignoring stars entirely.
+    /// Median absolute deviation from the median, scaled to estimate noise σ.
     pub mad: f64,
 }
 
 impl Background {
-    /// The background implied by an image's own [`Stats`] — the single source
-    /// [`Image::detect_stars`] builds its threshold from, whatever plane it is
-    /// run on.
-    ///
-    /// [`Stats::mad`] is the raw median absolute deviation; this is where it
-    /// becomes the σ estimate the threshold expects.
+    /// Builds a `Background` from an image's statistics.
     pub fn from_stats(stats: &Stats) -> Self {
         Background {
             median: stats.median as f64,
@@ -55,28 +40,9 @@ impl Background {
 }
 
 impl Image {
-    /// Build the plane [`Image::detect_stars`] should run on:
-    ///   - a CFA mosaic → the green super-pixel plane, each pixel the mean of
-    ///     one 2x2 cell's two green sites, so `(w/2 x h/2)`;
-    ///   - a monochrome frame → a copy of the frame itself;
-    ///   - an already-debayered RGB image → its green channel, at full
-    ///     resolution ([`Image::plane`]).
-    ///
-    /// **A CFA frame's measurements come out in half-resolution pixels.** An
-    /// HFR or FWHM measured here reads about half the number NINA reports for
-    /// the same frame. That is inherent to the super-pixel plane and is not a
-    /// bug: every frame in a session comes off the same sensor, so the trend —
-    /// the only thing a time series shows — is unaffected. A caller that
-    /// reports absolute numbers should say which plane they were measured on
-    /// (compare the returned image's width/height against the source frame's).
-    /// An RGB image's green plane is *full* resolution, so its numbers read
-    /// about twice a raw mosaic's — the same caveat, opposite sign.
-    ///
-    /// Why a super-pixel plane at all: a star profile sampled through a Bayer
-    /// filter is not a PSF, and the HFR measured from it is noise. And why
-    /// green: a Bayer sensor has twice as many green sites as red or blue, so
-    /// green carries the most signal and the least noise, and detecting on
-    /// green keeps a debayered frame's numbers comparable to a raw mosaic's.
+    /// Builds the plane star detection should run on: the green super-pixel
+    /// plane of a CFA mosaic (half resolution), the green channel of an
+    /// already-debayered RGB image, or the frame itself if it's grayscale.
     pub fn detection_plane(&self) -> Result<Image> {
         match self.image_type {
             ImageType::RGB => Ok(self
@@ -108,15 +74,8 @@ impl Image {
         }
     }
 
-    /// Detect the stars on this image and aggregate their shapes to per-frame
-    /// medians.
-    ///
-    /// The threshold is built from this image's own [`Stats`] via
-    /// [`Background::from_stats`] — never from a different frame's — and the
-    /// saturation ceiling from its own estimated bit depth, so a caller that
-    /// wants the mosaic/green-channel caveats above must call
-    /// [`Image::detection_plane`] first and detect on *that* image, not the
-    /// raw source frame.
+    /// Detects the stars on this image and aggregates their shapes into
+    /// per-frame HFR, FWHM and eccentricity.
     pub fn detect_stars(&self, opts: &StarDetectOptions) -> StarStats {
         let stats = &self.stats().channels[0];
         let bg = Background::from_stats(stats);
@@ -137,12 +96,7 @@ impl Image {
     }
 }
 
-/// A pixel buffer's samples on the 0..=65535 scale, as `f64`.
-///
-/// A `F32` buffer holds normalized `[0, 1]` values and is mapped by a *fixed*
-/// full-scale factor, the same one [`crate::stats`] bins by — deliberately not
-/// the frame's own max, which would rescale every frame differently and make a
-/// session's ADU trend meaningless.
+/// Converts a pixel buffer's samples to `f64` values on the 0..=65535 scale.
 fn samples(pixels: &PixelBuffer) -> Vec<f64> {
     match pixels {
         PixelBuffer::U16(v) => v.par_iter().map(|&x| x as f64).collect(),
@@ -153,9 +107,8 @@ fn samples(pixels: &PixelBuffer) -> Vec<f64> {
     }
 }
 
-/// Reduce a raw mosaic to its green super-pixel plane: one output pixel per
-/// 2x2 CFA cell, the mean of that cell's two green sites. A 2x2 cell is the
-/// quantum here, so an odd width or height drops its last column/row.
+/// Reduces a raw mosaic to its green super-pixel plane: one output pixel per
+/// 2x2 CFA cell, the mean of that cell's two green sites.
 pub(crate) fn green_super_pixels(
     values: &[f64],
     width: usize,
@@ -177,9 +130,7 @@ pub(crate) fn green_super_pixels(
     (pw, ph, plane)
 }
 
-/// Tuning for [`detect_stars`]. Not user-configurable — [`Default`] is the only
-/// constructor the frontends use. It is a struct rather than three constants so
-/// the tests can drive each rejection path directly.
+/// Tuning parameters for star detection.
 #[derive(Clone, Copy, Debug)]
 pub struct StarDetectOptions {
     /// Detection threshold in MAD-sigmas above the background.
@@ -193,13 +144,8 @@ pub struct StarDetectOptions {
 
 impl Default for StarDetectOptions {
     fn default() -> Self {
-        // Full-resolution numbers. A CFA frame detects on a half-resolution
-        // green super-pixel plane, where every blob's area is ~4x smaller — a
-        // star covering 20 px on the sensor covers ~5 px there, right at the
-        // floor. The bounds are not scaled by the plane's sampling because the
-        // real mosaic's detected count (pinned in this module's tests) shows
-        // the floor is not eating its stars; scale them here, not lower them
-        // globally, if that ever stops being true.
+        // Sized for full-resolution frames; a CFA mosaic's half-resolution
+        // plane still clears these bounds in practice.
         Self {
             sigma_k: 5.0,
             min_pixels: 5,
@@ -214,19 +160,17 @@ pub struct Star {
     pub x: f64,
     pub y: f64,
     pub flux: f64,
-    /// Half-flux radius: the flux-weighted mean radius, NINA's definition.
+    /// Half-flux radius: the flux-weighted mean radius from the star's centroid.
     pub hfr: f64,
     pub fwhm: f64,
-    /// Ellipticity along the x/y axes: `(mxx - myy) / (mxx + myy)`.
+    /// Ellipticity along the star's x/y axes.
     pub e1: f64,
-    /// Ellipticity along the diagonals: `2 mxy / (mxx + myy)`.
+    /// Ellipticity along the star's diagonal axes.
     pub e2: f64,
 }
 
 impl Star {
-    /// This star's own eccentricity. Meaningful for a bright, well-sampled
-    /// star; on a faint one it is mostly noise, and strongly biased high — see
-    /// [`aggregate`] for why the frame's number is not the median of these.
+    /// This star's own eccentricity — noisy and biased high for a faint star.
     pub fn eccentricity(&self) -> f64 {
         eccentricity_from_ellipticity(self.e1.hypot(self.e2))
     }
@@ -243,13 +187,9 @@ pub struct StarStats {
     pub eccentricity: Option<f64>,
 }
 
-/// Every 8-connected blob of set cells in `mask`, as pixel indices.
-///
-/// The fill is iterative with an explicit stack, never recursive: a bright
-/// nebula is one blob spanning millions of pixels and would blow the stack.
-/// Each visited cell is cleared, so the mask doubles as the visited set. (A
-/// run-length + union-find pass is the fallback if profiling ever demands it;
-/// it is not warranted up front.)
+/// Finds every 8-connected blob of set cells in `mask`, as pixel indices.
+/// Iterative rather than recursive, so a blob spanning millions of pixels
+/// can't overflow the stack.
 fn blobs_above_threshold(mask: &mut [bool], width: usize, height: usize) -> Vec<Vec<usize>> {
     let mut blobs = Vec::new();
     let mut stack = Vec::new();
@@ -280,15 +220,8 @@ fn blobs_above_threshold(mask: &mut [bool], width: usize, height: usize) -> Vec<
     blobs
 }
 
-/// Whether a blob is a star worth measuring: within the area bounds, clear of
-/// the frame border (a truncated PSF makes garbage moments), and not
-/// flat-topped.
-///
-/// `saturation` is the full scale of the plane's estimated bit depth — never
-/// the plane's observed maximum, which would reject the brightest star in
-/// every frame. The rejection exists to drop stars that are genuinely
-/// clipped: a flat top biases HFR low, which is exactly the frame you would
-/// otherwise wrongly call well-focused.
+/// Whether a blob is a star worth measuring: the right size, clear of the
+/// frame border, and not saturated.
 fn accept(
     blob: &[usize],
     values: &[f64],
@@ -353,41 +286,16 @@ fn measure(blob: &[usize], values: &[f64], width: usize, background: f64) -> Opt
     })
 }
 
-/// Eccentricity from the ellipticity magnitude `|e| = (λ₁ - λ₂) / (λ₁ + λ₂)`,
-/// as the axis-ratio deficit `1 - λ₂/λ₁ ⇒ 1 - sqrt((1 - |e|) / (1 + |e|))` — the
-/// same number, reached from a quantity that survives averaging (see
-/// [`aggregate`]). 0 for a round star, approaching 1 for a streak.
-///
-/// Deliberately *not* the geometric eccentricity so this
-/// formula is linear in the axis ratio instead, so a 10% axis-ratio difference
-/// reads as ~0.1.
+/// Converts an ellipticity magnitude into an eccentricity that scales
+/// linearly with the star's axis ratio: 0 for a round star, approaching 1
+/// for a streak.
 fn eccentricity_from_ellipticity(e: f64) -> f64 {
     (1.0 - ((1.0 - e) / (1.0 + e)).sqrt()).clamp(0.0, 1.0)
 }
 
-/// Reduce per-star measurements to per-frame values — medians, not means, so
-/// one satellite streak that survives the rejections cannot move the number.
-///
-/// **Eccentricity is aggregated as a vector, not as a median of the per-star
-/// eccentricities**, and the distinction is not cosmetic. The per-star
-/// ellipticity magnitude `e = hypot(e1, e2)` is a rectified statistic — it is
-/// ≥ 0 whichever way the measurement noise pushed the moments, so noise alone
-/// lifts it off zero and never cancels; `1 - sqrt((1-e)/(1+e))` inherits that
-/// bias whatever star it is applied to. On a real noisy field of round stars
-/// (`noise_does_not_fabricate_elongation`) the per-star median reads 0.124 — a
-/// fake elongation that tracks brightness rather than shape, and would
-/// dominate any frame whose star list is mostly faint.
-///
-/// The ellipticity components `e1`/`e2` are *signed*, so their noise is
-/// symmetric and does cancel: taking each one's median first and forming the
-/// magnitude afterwards recovers 0.015 on that same field, while still
-/// reporting 0.5 for a 2:1 elongation and 0.091 for a 10% one.
-///
-/// The trade-off is that this measures the field's *common* elongation. Star
-/// shapes that fan out symmetrically — pure field rotation about the frame
-/// centre, or radial coma — partially cancel and read low. That is the right
-/// bias for what this number is for: trailing and tracking drift, which push
-/// every star the same way.
+/// Reduces per-star measurements to per-frame values: medians for HFR and
+/// FWHM, and a noise-resistant vector average for eccentricity so a handful
+/// of faint, noisy stars can't fabricate elongation that isn't there.
 fn aggregate(stars: &[Star]) -> StarStats {
     let median_of = |f: fn(&Star) -> f64| {
         (!stars.is_empty()).then(|| median_in_place(&mut stars.iter().map(f).collect::<Vec<_>>()))
@@ -402,10 +310,7 @@ fn aggregate(stars: &[Star]) -> StarStats {
     }
 }
 
-/// The median of `values`, sorting them in place. `values` is a handful of
-/// per-star scalar measurements (not pixel intensities, so [`Image::stats`]'s
-/// histogram-counting median doesn't apply here). Panics on an empty slice —
-/// every caller in this module only reaches it behind `!stars.is_empty()`.
+/// The median of `values`, computed in place. Panics on an empty slice.
 fn median_in_place(values: &mut [f64]) -> f64 {
     let mid = values.len() / 2;
     values.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
@@ -431,15 +336,13 @@ pub(crate) mod tests {
     };
     use tempfile::TempDir;
 
-    /// The detection plane of a FITS frame on disk, reached the way the
-    /// frontends reach it.
+    /// The detection plane of a FITS frame loaded from disk.
     fn plane_of(path: &std::path::Path) -> Image {
         load_fits(path).unwrap().detection_plane().unwrap()
     }
 
-    /// The detection plane of a synthetic star field, written out as a real
-    /// unsigned-16 FITS frame first so the plane comes from the same path a
-    /// captured sub would take.
+    /// The detection plane of a synthetic star field written to a temporary
+    /// FITS file.
     fn star_field_plane(
         width: usize,
         height: usize,
