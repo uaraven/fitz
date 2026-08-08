@@ -353,31 +353,35 @@ fn measure(blob: &[usize], values: &[f64], width: usize, background: f64) -> Opt
     })
 }
 
-/// Eccentricity from the ellipticity magnitude `|e| = (λ₁ - λ₂) / (λ₁ + λ₂)`.
+/// Eccentricity from the ellipticity magnitude `|e| = (λ₁ - λ₂) / (λ₁ + λ₂)`,
+/// as the axis-ratio deficit `1 - λ₂/λ₁ ⇒ 1 - sqrt((1 - |e|) / (1 + |e|))` — the
+/// same number, reached from a quantity that survives averaging (see
+/// [`aggregate`]). 0 for a round star, approaching 1 for a streak.
 ///
-/// `sqrt(1 - λ₂/λ₁)` rewritten as `sqrt(2|e| / (1 + |e|))` — the same number,
-/// reached from a quantity that survives averaging (see [`aggregate`]). 0 for a
-/// round star, approaching 1 for a streak.
+/// Deliberately *not* the geometric eccentricity so this
+/// formula is linear in the axis ratio instead, so a 10% axis-ratio difference
+/// reads as ~0.1.
 fn eccentricity_from_ellipticity(e: f64) -> f64 {
-    (2.0 * e / (1.0 + e)).clamp(0.0, 1.0).sqrt()
+    (1.0 - ((1.0 - e) / (1.0 + e)).sqrt()).clamp(0.0, 1.0)
 }
 
 /// Reduce per-star measurements to per-frame values — medians, not means, so
 /// one satellite streak that survives the rejections cannot move the number.
 ///
 /// **Eccentricity is aggregated as a vector, not as a median of the per-star
-/// eccentricities**, and the distinction is not cosmetic. Eccentricity is a
-/// rectified statistic: `sqrt(1 - λ₂/λ₁)` is ≥ 0 whichever way the measurement
-/// noise pushed the moments, and the square root is vertical at 0, so noise
-/// alone lifts it far off zero and never cancels. On round synthetic stars at
-/// this frame's sampling the per-star median reads 0.70 at the detection limit
-/// and still 0.08 at SNR 2000 — a fake elongation that tracks brightness rather
-/// than shape, and it dominates any frame whose star list is mostly faint.
+/// eccentricities**, and the distinction is not cosmetic. The per-star
+/// ellipticity magnitude `e = hypot(e1, e2)` is a rectified statistic — it is
+/// ≥ 0 whichever way the measurement noise pushed the moments, so noise alone
+/// lifts it off zero and never cancels; `1 - sqrt((1-e)/(1+e))` inherits that
+/// bias whatever star it is applied to. On a real noisy field of round stars
+/// (`noise_does_not_fabricate_elongation`) the per-star median reads 0.124 — a
+/// fake elongation that tracks brightness rather than shape, and would
+/// dominate any frame whose star list is mostly faint.
 ///
 /// The ellipticity components `e1`/`e2` are *signed*, so their noise is
 /// symmetric and does cancel: taking each one's median first and forming the
-/// magnitude afterwards recovers 0.03–0.19 on those same round stars while
-/// still reporting 0.866 for a 2:1 elongation and 0.417 for a 10% one.
+/// magnitude afterwards recovers 0.015 on that same field, while still
+/// reporting 0.5 for a 2:1 elongation and 0.091 for a 10% one.
 ///
 /// The trade-off is that this measures the field's *common* elongation. Star
 /// shapes that fan out symmetrically — pure field rotation about the frame
@@ -528,17 +532,18 @@ pub(crate) mod tests {
         let round = star_field_plane(60, 60, 1000.0, &[(30.0, 30.0, 2.0, 2.0, 5000.0)]);
         assert!(detect(&round).eccentricity.unwrap() < 0.05);
 
-        // σx = 2σy ⇒ sqrt(1 − λ₂/λ₁) = sqrt(1 − ¼) ≈ 0.866.
+        // σx = 2σy ⇒ 1 − λ₂/λ₁ = 1 − sqrt(¼) = 1 − ½ = 0.5.
         let elongated = star_field_plane(60, 60, 1000.0, &[(30.0, 30.0, 4.0, 2.0, 5000.0)]);
         let ecc = detect(&elongated).eccentricity.unwrap();
-        assert!((ecc - 0.866).abs() < 0.05, "eccentricity {ecc}");
+        assert!((ecc - 0.5).abs() < 0.05, "eccentricity {ecc}");
 
-        // A 10% axis-ratio difference: eccentricity is savagely non-linear near
-        // 0, so this reads 0.417, not "about 0.1". Pinned because that surprise
-        // is the reason a small measurement bias looks like a broken metric.
+        // A 10% axis-ratio difference: 1 − σx/σy = 1 − 2.0/2.2 ≈ 0.091. Pinned
+        // against the geometric eccentricity (0.417 for this same star) as the
+        // evidence this formula is linear in the axis ratio rather than steep
+        // near 0.
         let mild = star_field_plane(60, 60, 1000.0, &[(30.0, 30.0, 2.0, 2.2, 5000.0)]);
         let ecc = detect(&mild).eccentricity.unwrap();
-        assert!((ecc - 0.417).abs() < 0.03, "eccentricity {ecc}");
+        assert!((ecc - 0.091).abs() < 0.03, "eccentricity {ecc}");
     }
 
     /// Round stars must stay round as they get fainter.
@@ -699,7 +704,7 @@ pub(crate) mod tests {
         // points the same way — so the vector aggregation barely moves it,
         // which is the evidence it suppresses only noise and not real shape.
         let ecc = stats.eccentricity.unwrap();
-        assert!((ecc - 0.69).abs() < 0.02, "eccentricity {ecc}");
+        assert!((ecc - 0.278).abs() < 0.02, "eccentricity {ecc}");
     }
 
     /// Stars detected on `uncompressed.fit`'s green super-pixel plane with the
