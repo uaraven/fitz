@@ -1,11 +1,11 @@
 [package]
 name = "libfitz"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
-fitskit = { version = "0.2.0", features = ["gzip"] }
+fitskit = { version = "0.2.0", features = ["gzip", "image"] }
 anyhow = "1"
 bayer = "0.1.5"
 rayon = "1"

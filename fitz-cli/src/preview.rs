@@ -5,11 +5,10 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use libfitz::fits_image::{find_image_hdu, high_byte, rgb16_to_rgb8};
-use libfitz::fitskit::FitsFile;
-use libfitz::preview::{PreviewSource, preview_rgb};
+use rayon::prelude::*;
+use libfitz::data::ImageType;
+use libfitz::fits_file::load_fits;
 use libfitz::resize::resize_to_fit;
-use libfitz::stretch::auto_stretch;
 
 use crate::io_prompt::print_step;
 use crate::kitty;
@@ -45,6 +44,14 @@ fn choose_renderer(opts: &PreviewOptions) -> Renderer {
     } else {
         Renderer::Ansi(terminal_color_mode())
     }
+}
+
+pub(crate) fn high_byte(rgb: u16) -> u8 {
+    (rgb >> 8 & 0xFF) as u8
+}
+
+pub(crate) fn rgb16_to_rgb8(rgb16: &Vec<u16>) -> Vec<u8> {
+    rgb16.par_iter().map(|&p| high_byte(p)).collect()
 }
 
 /// Render `input` to the terminal: load the image (debayering if needed),
@@ -99,40 +106,49 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
 /// values, skipping color interpolation entirely; an already-debayered image
 /// has nothing to skip, so the flag is ignored with a warning.
 fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, usize, Vec<u16>)> {
-    let fits =
-        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
-    let (header, img) = find_image_hdu(&fits, input)?;
-    let img = img.as_ref();
+    let image = load_fits(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let pr = preview_rgb(
-        header,
-        img,
-        !opts.no_debayer,
-        opts.core.pattern,
-        opts.core.force_demosaic,
-    )?;
+    let is_mosaic = matches!(image.image_type, ImageType::CFA(_));
 
-    // Surface how the preview was produced, matching the previous messages;
-    // the plain demosaic path stays silent, as it did before.
-    match pr.source {
-        PreviewSource::RawMono => print_step(opts.verbose, "loading raw (no debayer)"),
-        // `--no-debayer` on an image that's already debayered: it had no effect.
-        PreviewSource::AlreadyDebayeredRgbCube | PreviewSource::AlreadyDebayeredMono
-            if opts.no_debayer =>
-        {
-            print_warning(&format!(
-                "{}: already debayered — ignoring --no-debayer",
-                input.display()
-            ));
+    let source = if opts.no_debayer && is_mosaic {
+        print_step(opts.verbose, "loading raw (no debayer)");
+        image
+    } else {
+        match image.debayer() {
+            Some(demosaiced) => demosaiced.context("debayering failed")?,
+            // Already RGB or grayscale: nothing to demosaic. If the caller asked
+            // to skip debayering, that request had no effect — say so.
+            None => {
+                if opts.no_debayer {
+                    print_warning(&format!(
+                        "{}: already debayered — ignoring --no-debayer",
+                        input.display()
+                    ));
+                }
+                image
+            }
         }
-        _ => {}
-    }
+    };
 
     // A raw-mono preview stretches its (grayscale) channels together, matching
     // the previous behavior; color previews honor the `--linked` option.
-    let linked = opts.core.linked || pr.source == PreviewSource::RawMono;
-    let pixels = auto_stretch(&pr.rgb, linked, opts.core.brightness);
-    Ok((pr.width, pr.height, pixels))
+    let linked = opts.core.linked || is_mosaic && opts.no_debayer;
+    let stretched = source.stretch(linked, opts.core.brightness);
+
+    let (width, height, image_type) = (stretched.width, stretched.height, stretched.image_type);
+    // `Image::stretch` returns normalized `[0, 1]` f32 samples; narrow to the
+    // 16-bit domain the terminal renderers below work in.
+    let samples = stretched.pixels.as_u16();
+
+    // A single-channel (raw mosaic or grayscale) result has nothing to color
+    // with, so replicate it across R/G/B for the interleaved renderers below.
+    let pixels = if image_type == ImageType::RGB {
+        samples
+    } else {
+        samples.into_iter().flat_map(|v| [v, v, v]).collect()
+    };
+
+    Ok((width, height, pixels))
 }
 
 /// Render an interleaved 16-bit RGB image as ANSI text. Each character cell
@@ -258,7 +274,8 @@ fn push_color_ansi(out: &mut String, is_bg: bool, r: u16, g: u16, b: u16, mode: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libfitz::stretch::{StretchOptions, load_and_stretch};
+    use libfitz::fits_file::load_fits;
+    use libfitz::stretch::DEFAULT_BRIGHTNESS;
 
     use crate::test_support::test_data;
 
@@ -336,28 +353,37 @@ mod tests {
         assert!(text.contains('▄'));
     }
 
+    /// Debayer + stretch a fixture the same way `load_preview_pixels` does,
+    /// returning the interleaved RGB u16 buffer plus its dimensions.
+    fn debayer_and_stretch(path: &std::path::Path) -> (usize, usize, Vec<u16>) {
+        let loaded = load_fits(path).unwrap();
+        let rgb = loaded.debayer().unwrap().unwrap();
+        let stretched = rgb.stretch(false, DEFAULT_BRIGHTNESS);
+        let pixels = stretched.pixels.as_u16();
+        (stretched.width, stretched.height, pixels)
+    }
+
     #[test]
     fn preview_real_image_runs_and_renders_cells() {
         // Full pipeline on the bundled frame: it must complete and emit at
         // least one half-block cell.
         let input = test_data("uncompressed.fit");
-        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
+        let (width, height, pixels) = debayer_and_stretch(&input);
 
-        let (pw, ph, preview) =
-            resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
+        let (pw, ph, preview) = resize_to_fit(&pixels, width, height, 80, 48);
         let text = convert_to_ansi(&preview, pw, ph, ColorMode::TrueColor);
         assert!(text.contains('▄'));
     }
 
     #[test]
     fn scale_stretched_real_image_fits_box_and_keeps_aspect() {
-        // Full pipeline on the bundled frame: load + stretch + scale to a small
-        // terminal-sized box. The frame is square, so the preview must be too.
+        // Full pipeline on the bundled frame: load + debayer + stretch + scale
+        // to a small terminal-sized box. The frame is square, so the preview
+        // must be too.
         let input = test_data("uncompressed.fit");
-        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
+        let (width, height, pixels) = debayer_and_stretch(&input);
 
-        let (pw, ph, preview) =
-            resize_to_fit(&stretched.pixels, stretched.width, stretched.height, 80, 48);
+        let (pw, ph, preview) = resize_to_fit(&pixels, width, height, 80, 48);
         assert!(pw <= 80 && ph <= 48);
         assert_eq!(preview.len(), pw * ph * 3);
         assert_eq!(pw, ph, "square source should yield a square preview");

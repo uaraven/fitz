@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::debayer::OutputFormat;
 use libfitz::fitskit::CompressionType;
 
 pub struct Options {
@@ -24,20 +25,58 @@ impl Default for Options {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct DebayerCore {
+    pub bpp: i32,
+    pub output_format: OutputFormat,
+    pub compress: bool,
+    pub quality: u8,
+}
+
 #[derive(Default)]
 pub struct DebayerOptions {
-    pub core: libfitz::debayer::DebayerOptions,
+    pub core: DebayerCore,
     pub yes: bool,
     pub verbose: bool,
     pub output: Option<PathBuf>,
     pub multi_file: bool,
 }
 
+impl Default for DebayerCore {
+    fn default() -> Self {
+        Self {
+            bpp: -32,
+            output_format: OutputFormat::Fits,
+            compress: false,
+            quality: 90,
+        }
+    }
+}
+
+/// The stretch knobs the `Image`-based pipeline still supports: unlike the old
+/// pre-refactor `libfitz::stretch::StretchOptions`, there is no `pattern`/
+/// `force_demosaic` override — `Image::debayer` always reads the Bayer pattern
+/// from the FITS header.
+#[derive(Clone, Copy, Debug)]
+pub struct StretchCore {
+    pub linked: bool,
+    pub brightness: f32,
+}
+
+impl Default for StretchCore {
+    fn default() -> Self {
+        StretchCore {
+            linked: false,
+            brightness: libfitz::stretch::DEFAULT_BRIGHTNESS,
+        }
+    }
+}
+
 pub struct StretchOptions {
-    pub core: libfitz::stretch::StretchOptions,
+    pub core: StretchCore,
     pub yes: bool,
     pub verbose: bool,
-    pub format: libfitz::debayer::OutputFormat,
+    pub format: OutputFormat,
     pub output: Option<PathBuf>,
     pub multi_file: bool,
 }
@@ -45,10 +84,10 @@ pub struct StretchOptions {
 impl Default for StretchOptions {
     fn default() -> Self {
         StretchOptions {
-            core: libfitz::stretch::StretchOptions::default(),
+            core: StretchCore::default(),
             yes: false,
             verbose: false,
-            format: libfitz::debayer::OutputFormat::Fits,
+            format: OutputFormat::Fits,
             output: None,
             multi_file: false,
         }
@@ -75,7 +114,7 @@ pub struct InfoOptions {
 
 pub struct PreviewOptions {
     pub verbose: bool,
-    pub core: libfitz::stretch::StretchOptions,
+    pub core: StretchCore,
     /// Force kitty graphics protocol rendering, bypassing auto-detection.
     pub force_kitty: bool,
     /// Force true-color ASCII rendering, bypassing auto-detection.
@@ -88,10 +127,12 @@ pub struct PreviewOptions {
 }
 
 pub struct SplitChannelOptions {
-    pub core: libfitz::split_channel::SplitChannelOptions,
     pub yes: bool,
     pub verbose: bool,
     pub format: libfitz::split_channel::ChannelFormat,
+    /// Extract R/G/B straight from the raw mosaic (half-size, undebayered)
+    /// via `Image::split_cfa` instead of debayering first.
+    pub cfa: bool,
     pub r_prefix: Option<String>,
     pub r_dir: Option<PathBuf>,
     pub g_prefix: Option<String>,
@@ -103,10 +144,10 @@ pub struct SplitChannelOptions {
 impl Default for SplitChannelOptions {
     fn default() -> Self {
         SplitChannelOptions {
-            core: libfitz::split_channel::SplitChannelOptions::default(),
             yes: false,
             verbose: false,
             format: libfitz::split_channel::ChannelFormat::I16,
+            cfa: false,
             r_prefix: None,
             r_dir: None,
             g_prefix: None,

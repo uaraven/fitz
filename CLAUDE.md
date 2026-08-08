@@ -29,19 +29,21 @@ The `edition = "2024"` crates require a recent stable Rust toolchain.
 
 ## Architecture
 
-A Cargo **workspace** with three crates:
+A Cargo **workspace** with two active crates, plus a third parked one:
 
 - **`libfitz`** — the reusable library: FITS I/O (with transparent tile-decompression),
-  debayering, auto-stretch, per-channel splitting, header/pixel-stat inspection, star
-  detection, session analytics, export encoding, preview rendering, header copying, and
-  image resizing. No CLI parsing, no terminal I/O, no interactive prompts, no GUI types —
-  both frontends depend on it the same way.
+  debayering, auto-stretch, per-channel splitting, pixel statistics, star detection,
+  preview rendering, header copying, and image resizing. No CLI parsing, no terminal I/O,
+  no interactive prompts, no GUI types.
 - **`fitz`** (in `fitz-cli/`) — the thin CLI binary: clap argument parsing, output-path
   derivation, the overwrite-confirmation prompt, `--verbose` progress printing, terminal
-  rendering (`preview`/`kitty`/`terminal`), and text-report formatting for `info`. Depends on
-  `libfitz` via a path dependency.
-- **`fitsmith`** — the Slint GUI frontend (see its own section below). Also depends on
-  `libfitz` only; all pixel/statistics work lives in the library.
+  rendering (`preview`/`kitty`/`terminal`), and the `info` report (header summary,
+  statistics blocks, histogram). Depends on `libfitz` via a path dependency.
+- **`fitsmith`** — the Slint GUI frontend. **Currently parked**: it still builds against
+  the removed `fits_image`/`info` modules, so it is out of the workspace `members` list
+  (see the comment in the root `Cargo.toml`) and does not compile. `libfitz`'s GUI-only
+  `export.rs` and `analytics.rs` were removed with it; both need rewriting against the
+  `Image` API when the GUI is ported. Until then, `--workspace` means `libfitz` + `fitz`.
 
 Key deps: **`fitskit`** (FITS read/write/tile-compression), **`bayer`** (demosaicing) and
 **`image`** (JPEG/PNG encoding) live in `libfitz`; **`clap`** (arg parsing),
@@ -57,38 +59,42 @@ comments in the root `Cargo.toml`).
 
 ### `libfitz` layout
 
-- **`fits_image.rs`** — shared image plumbing: locate the image HDU (`find_image_hdu`,
-  transparently decompressing `ZIMAGE` HDUs), resolve the Bayer pattern (`resolve_cfa`),
-  demosaic into an interleaved RGB buffer (`demosaic_to_rgb`, `load_rgb`), write results back
-  as FITS or TIFF, and copy/filter header metadata.
-- **`debayer.rs`**, **`stretch.rs`**, **`split_channel.rs`**, **`compress.rs`**,
-  **`decompress.rs`**, **`copy_header.rs`** — one pure "compute" function per command (e.g.
-  `debayer::debayer`, `stretch::load_and_stretch`, `split_channel::split_channels`,
-  `compress::compress`), each taking a plain `*Options` domain struct and returning an
-  in-memory result. No path derivation, prompting, or printing — that's the CLI's job.
-- **`info.rs`** — `header_info`/`header_info_with` build a `HeaderInfo` struct (resolution,
-  bit depth, sky coordinates, and — per `InfoRequest` — `PixelStats`/histogram and a
-  `StarReport`); formatting it into text is left to the caller. `measure_frame` is the
-  shared engine that computes pixel statistics and star metrics together, reusing the
-  expensive intermediates (a mono frame's stats double as the detection background; an RGB
-  cube's green plane is materialized once for both).
-- **`stars.rs`** — star detection and shape measurement on a `MonoPlane` (threshold against
-  the plane's robust background, flood-fill blobs, reject non-stars, measure HFR/FWHM/
-  eccentricity, aggregate to medians). Driven by `info --stars`, the GUI stats panel, and
-  the Star-metrics batch.
-- **`analytics.rs`** — per-frame session metrics (`analyze_file`) keyed by acquisition time,
-  assembled into a plottable time `Series` per `Metric` (`build_series`), plus CSV output.
-  Backs the GUI's Analytics / Star metrics chart dialogs.
-- **`preview.rs`** — the display pipeline shared by CLI preview and GUI viewer: resolve the
-  debayer/stretch toggles into an RGB buffer (`preview_rgb`, `render_export_rgb`) or a
-  ready-to-paint RGBA8 buffer (`render_preview`).
-- **`export.rs`** — encode a rendered RGB image to FITS/TIFF/JPEG/PNG with per-format
-  options (`export_rgb`), and the one-call `export_file` that renders through the preview
-  pipeline first.
+Everything is built around one type: **`data::Image`** — an `ImageType` (`Grayscale`,
+`CFA(pattern)` or `RGB`), the source `Header`, width/height, and a `PixelBuffer` that is
+either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on it.
+
+- **`data.rs`** — `Image`, `ImageType`, `PixelBuffer`, and the sample conversions
+  (`as_u8`/`as_u16`/`as_i16`/…, `interleave_planes`/`deinterleave_planes`, `plane`,
+  `round_to_u16`).
+- **`fits_file.rs`** — the file boundary: `load_fits` (transparently decompressing a
+  `ZIMAGE` HDU, applying BSCALE/BZERO, and classifying the `ImageType`), `save_fits` /
+  `image_to_fits`, `export_as_tiff`, the header-only `load_header` -> `ImageMeta` fast path, and
+  `find_image_hdu_index`.
+- **`stats.rs`** — `Image::stats() -> Vec<Stats>`, one `Stats` per colour channel, computed
+  from a single parallel value-count pass (mean/median/sigma/avg-dev/MAD, min/max and their
+  counts, mode, zero and saturated counts, estimated bit depth, 256-bin histogram). Also
+  hosts the shared selection-based `median_in_place`.
+- **`debayer.rs`**, **`stretch.rs`**, **`split_channel.rs`** — one `Image` method each:
+  `Image::debayer` (`Option<Result<Image>>`, `None` when there is nothing to demosaic),
+  `Image::with_pattern` (the `--pattern`/`--force-demosaic` override), `Image::stretch`,
+  `Image::split_channels` -> `[Image; 3]`.
+- **`compress.rs`**, **`decompress.rs`**, **`copy_header.rs`** — container-level operations
+  that work on `fitskit::FitsFile` directly rather than on `Image`, since they must
+  round-trip pixel data and headers untouched.
+- **`stars.rs`** — `detection_plane(&Image) -> MonoPlane` (green super-pixel plane for a
+  mosaic, green channel for RGB, the frame itself for mono), then detection and shape
+  measurement against the plane's own `Background` (threshold, flood-fill blobs, reject
+  non-stars, measure HFR/FWHM/eccentricity — HFR/FWHM as medians, eccentricity as a vector
+  median of the signed ellipticity components, since a per-star eccentricity is rectified
+  and noise can only inflate it).
+- **`keywords.rs`** — header keyword policy: which names are structural/reserved, and the
+  `copy_metadata`/`copy_missing_metadata`/`carry_over_metadata`/`add_history` helpers.
+- **`preview.rs`** — `render_preview`: an `Image` to an `image::DynamicImage`.
 - **`inspect.rs`** — aberration-inspector geometry: the nine fixed tile regions of a frame
   and RGBA8 cropping.
 - **`resize.rs`** — generic box-filter image resizing (`resize_to_fit`), used by the CLI's
-  terminal preview and reusable by a GUI's thumbnail/blink view.
+  terminal preview.
+- **`errors.rs`** / **`fits_bayer.rs`** — `FitsError`, and `BAYERPAT` string ↔ `CFA`.
 - **`test_support.rs`** (test-only) — fixtures: locate bundled `../test-data/`, copy into a
   temp dir, synthesize small FITS images.
 
@@ -100,24 +106,30 @@ comments in the root `Cargo.toml`).
   output-path derivation (`output_path` for compress/decompress, `derive_output_path` for
   debayer/stretch) and `process_files`, the batch driver.
 - **`options.rs`** — CLI-side option structs (`Options`, `DebayerOptions`, `StretchOptions`,
-  `SplitChannelOptions`, …), each composing the matching `libfitz::*::*Options` plus
-  CLI-only fields (`yes`, `verbose`, `output`, `multi_file`).
+  `SplitChannelOptions`, …) holding both the command knobs and the CLI-only fields (`yes`,
+  `verbose`, `output`, `multi_file`), plus the `OutputFormat` (FITS/TIFF) enum.
 - **Per-command wrapper modules** — `compress.rs`, `decompress.rs`, `debayer.rs`, `stretch.rs`,
   `split_channel.rs`, `copy_header.rs`, `info.rs`. Each resolves the output path, calls
   `io_prompt::ensure_can_write`, calls into `libfitz`, prints `--verbose` progress, and
-  writes the result.
-- **`io_prompt.rs`** — the interactive overwrite-confirmation prompt (`ensure_can_write`) and
-  `print_progress`/`print_step` verbose-output helpers.
+  writes the result. `debayer.rs` also owns `apply_pattern` (the `--pattern`/
+  `--force-demosaic` policy) and `source_bitpix`, both reused by `stretch`/`split`.
+- **`summary.rs`** — the curated `info` header summary: which keywords are worth showing, in
+  what order, and how each is formatted (sexagesimal coordinates, bit-depth and channel
+  labels, the telescope's optical figure, `trim_float`).
+- **`io_prompt.rs`** — the interactive overwrite-confirmation prompt (`ensure_can_write`),
+  the `print_progress`/`print_step` verbose-output helpers, and `print_debayer_notice`.
 - **`preview.rs`**, **`kitty.rs`**, **`terminal.rs`** — terminal-only rendering (ANSI
-  half-blocks / kitty graphics protocol) and capability detection; not part of `libfitz`
-  since a GUI frontend wouldn't use ANSI escape codes.
+  half-blocks / kitty graphics protocol), capability detection, and the 16→8-bit narrowing
+  (`high_byte`/`rgb16_to_rgb8`); not part of `libfitz` since a GUI frontend wouldn't use
+  ANSI escape codes.
 - **`test_support.rs`** (test-only) — locates bundled `../test-data/` for the CLI's own tests.
 
-### `fitsmith` layout
+### `fitsmith` layout (parked)
 
-A Slint GUI ("FitSmith") over the same library. `ui/*.slint` holds the declarative UI
-(`app.slint` is the window; dialogs/panels are one file each); `build.rs` compiles it.
-Rust side, split by concern:
+A Slint GUI ("FitSmith") over the same library, currently **out of the workspace** and not
+compiling — it is written against the removed `libfitz::fits_image`/`libfitz::info` API.
+`ui/*.slint` holds the declarative UI (`app.slint` is the window; dialogs/panels are one
+file each); `build.rs` compiles it. Rust side, split by concern:
 
 - **`main.rs`** — window setup and callback wiring only; every callback forwards to a
   `controller` function.
@@ -129,8 +141,8 @@ Rust side, split by concern:
   threads, marshal results back via `upgrade_in_event_loop`, are generation-guarded against
   staleness, and are cancellable between files.
 - **`doc.rs`** / **`view.rs`** — `LoadedDoc` is the display-ready document built on the
-  worker (preview + header cards + stats, one `header_info_from` call); `view.rs` maps it
-  onto Slint properties. Both are free of threading; `doc.rs` is free of Slint types.
+  worker (preview + header cards + stats); `view.rs` maps it onto Slint properties. Both
+  are free of threading; `doc.rs` is free of Slint types.
 - **`cache.rs`** — a small byte-budgeted LRU keeping rendered previews resident (budgeted
   at 80% of available memory at startup).
 - **`chart.rs`** / **`chart_svg.rs`** — analytics `Series` → normalized chart geometry →
@@ -138,28 +150,39 @@ Rust side, split by concern:
 - **`files.rs`** — pure path helpers (FITS extensions, directory scan, output paths).
 - **`image.rs`** — the one RGBA8-buffer → `slint::Image` conversion point.
 
+Porting it means rebuilding `libfitz`'s `export.rs` and `analytics.rs` on the `Image` API
+(both were deleted with it, and are recoverable from git history), and replacing
+`header_info_from` with `load_fits`/`load_header` + `Image::stats()`.
+
 ### Conventions that span files
 
 - **Batch processing, per-file errors:** `process_files` runs the command over every input
   path; a failure on one file prints `fitz: <path>: <err>` to stderr and is recorded, but
   does not abort the batch. The process exit code is FAILURE if any file failed.
-- **Transparent decompression on read:** `find_image_hdu` in `libfitz`'s `fits_image.rs` is
-  the single entry point the `debayer`/`stretch`/`split`/`info` commands use to get an image.
-  It borrows a plain image HDU but decompresses a tile-compressed (`ZIMAGE`) HDU into an owned
-  `ImageData`, returning a `Cow<ImageData>`, so every read-side command works on `.fz` inputs
-  with no separate decompress step. The compressed HDU's header carries the original
-  keywords (BAYERPAT, BSCALE/BZERO, RA/DEC, …), so downstream logic is unchanged.
-- **Shared "already debayered" detection:** `load_rgb` in `libfitz`'s `fits_image.rs` is the
-  single source of truth for debayer/stretch/split. A 2D image is demosaiced; a 3-plane image
-  (`NAXIS3=3`) with **no** `BAYERPAT` header is treated as an already-debayered RGB image and
-  skips demosaicing. `--force-demosaic` overrides this (and then needs a Bayer pattern from
-  `--pattern` or the header). The Bayer pattern resolves from `--pattern` first, else the
-  FITS `BAYERPAT` keyword (`resolve_cfa`). `load_rgb` itself does no printing — it returns a
-  `LoadRgbNotice` (`Demosaiced` / `AlreadyDebayeredRgbCube` / `AlreadyDebayeredMono`) that each
-  CLI wrapper matches on to print the right message, so `libfitz` stays free of terminal I/O.
-- **Pixel scaling:** physical pixel values are recovered via `BSCALE`/`BZERO`
-  (`scaled_pixels` / `bscale_bzero`). FITS RGB output uses the unsigned-16 convention
-  (BITPIX 16 with BZERO 32768) so 0..=65535 round-trips (`write_rgb16_fits`).
+- **Transparent decompression on read:** `load_fits` in `libfitz`'s `fits_file.rs` is the
+  single entry point every read-side command uses. It borrows a plain image HDU but
+  decompresses a tile-compressed (`ZIMAGE`) HDU, so every command works on `.fz` inputs with
+  no separate decompress step. The compressed HDU's header carries the original keywords
+  (BAYERPAT, BSCALE/BZERO, RA/DEC, …), so downstream logic is unchanged. `load_header` is
+  the header-only counterpart for callers that never touch pixels (plain `info`).
+- **Interleaved in memory, planar on disk:** an `ImageType::RGB` `Image` is always
+  interleaved (`R,G,B,R,G,B,…`) — debayering, stretching, statistics and `plane()` all
+  assume it. A FITS cube is stored *planar*. `load_fits` interleaves and `image_to_fits`
+  de-interleaves; nothing else in the crate may reorder colour samples.
+- **Shared "already debayered" detection:** `load_fits` is the single source of truth. A
+  3-plane image (`NAXIS3=3`) is `ImageType::RGB`; a 2D image with a `BAYERPAT` header is
+  `CFA(pattern)`; a 2D image without one is `Grayscale`. `Image::debayer` returns `None` for
+  anything but `CFA`, so a "debayer" of an already-debayered frame is a no-op rather than an
+  error. `--pattern`/`--force-demosaic` override the classification via `Image::with_pattern`
+  (see `apply_pattern` in the CLI's `debayer.rs`). `libfitz` does no printing — the CLI's
+  `print_debayer_notice` matches on the `ImageType` to explain a no-op run.
+- **Pixel scaling:** `load_fits` applies `BSCALE`/`BZERO` and normalizes into the
+  `PixelBuffer` domain: integer sources become `u16` over 0..=65535, float and wide-integer
+  sources become `f32` over `[0, 1]`. FITS output uses the unsigned-16 convention
+  (BITPIX 16 with BZERO 32768) so 0..=65535 round-trips.
+- **CFA keywords follow the image type:** `image_to_fits` writes `BAYERPAT` for a
+  `CFA` image and drops the whole `CFA_KEYWORDS` set for anything else, so a debayered cube
+  or a split-out channel never carries a stale mosaic pattern.
 - **Output destinations:** when `-o`/`--output` is omitted, outputs are placed beside the
   input with a suffix (`_debayer`/`_stretch`) or `.fz`. With multiple inputs, `--output` is
   treated as a directory. Compress/decompress delete the original unless `-k`/`--keep` or
@@ -168,9 +191,9 @@ Rust side, split by concern:
   labels), both in `fitz-cli`'s `io_prompt.rs`, gate stdout on the global `--verbose` flag.
 
 Tests live inline in each module under `#[cfg(test)]`. Most domain-logic tests (including the
-SHA-256 regression tests against bundled fixtures) live in `libfitz`, exercising the pure
-`*_file`-equivalent functions directly; `fitz-cli` keeps tests for CLI-only concerns (path
-derivation, ANSI/kitty rendering, terminal capability detection).
+SHA-256 regression tests against bundled fixtures) live in `libfitz`, exercising the `Image`
+methods directly; `fitz-cli` keeps tests for CLI-only concerns (path derivation, the `info`
+report shape, ANSI/kitty rendering, terminal capability detection).
 
 ### Rules when making changes
 

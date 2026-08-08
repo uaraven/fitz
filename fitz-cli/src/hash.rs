@@ -1,9 +1,9 @@
 use std::io::Write as _;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use libfitz::fits_image::find_image_hdu;
-use libfitz::fitskit::FitsFile;
+use anyhow::{Context, Result, anyhow};
+use libfitz::fits_file::find_image_hdu_index;
+use libfitz::fitskit::HduData;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy)]
@@ -21,19 +21,25 @@ pub(crate) fn hash_file(input: &Path, target: HashTarget) -> Result<()> {
             hex(Sha256::digest(&data))
         }
         HashTarget::Header => {
-            let fits = FitsFile::from_file(input)
+            let fits = libfitz::raw_fits::load_raw(input)
                 .with_context(|| format!("cannot read {}", input.display()))?;
-            let (header, _) = find_image_hdu(&fits, input)?;
+            let idx = find_image_hdu_index(&fits)
+                .ok_or_else(|| anyhow!("Image HDU not found in {}", input.display()))?;
             let mut buf = Vec::new();
-            header
+            fits.hdus[idx]
+                .header
                 .write_to(&mut buf)
                 .with_context(|| format!("cannot serialize header of {}", input.display()))?;
             hex(Sha256::digest(&buf))
         }
         HashTarget::Image => {
-            let fits = FitsFile::from_file(input)
+            let fits = libfitz::raw_fits::load_raw(input)
                 .with_context(|| format!("cannot read {}", input.display()))?;
-            let (_, img) = find_image_hdu(&fits, input)?;
+            let idx = find_image_hdu_index(&fits)
+                .ok_or_else(|| anyhow!("Image HDU not found in {}", input.display()))?;
+            let HduData::Image(img) = &fits.hdus[idx].data else {
+                return Err(anyhow!("Invalid image type in {}", input.display()));
+            };
             hex(Sha256::digest(img.pixels.to_bytes()))
         }
     };

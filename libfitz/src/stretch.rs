@@ -1,14 +1,10 @@
 //! Load a FITS image (debayering it first if needed) and apply an MTF/STF
-//! auto-stretch, returning the stretched 16-bit result in memory.
+//! auto-stretch, returning the stretched result in memory as normalized `[0,
+//! 1]` `f32` samples.
 
-use std::path::Path;
-
-use anyhow::{Context, Result};
-use bayer::CFA;
-use fitskit::{FitsFile, Header};
+use crate::data::{Image, ImageType, PixelBuffer};
+use crate::stats::{Stats, single_channel_stats};
 use rayon::prelude::*;
-
-use crate::fits_image::{LoadRgbNotice, RgbBuffer, find_image_hdu, load_rgb, round_to_u16};
 
 /// Working sample type for the stretch math. `f32` is more than precise enough
 /// for a 16-bit result and halves the normalized-image buffer versus `f64`.
@@ -25,140 +21,90 @@ const MAD_NORM: Sample = 1.4826;
 
 const OUT_MAX: Sample = u16::MAX as Sample;
 
-/// Domain options controlling how an image is loaded and stretched.
-pub struct StretchOptions {
-    /// Bayer pattern override; takes precedence over the FITS headers.
-    pub pattern: Option<CFA>,
-    /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB image.
-    pub force_demosaic: bool,
-    /// Apply one shared set of stretch parameters to all channels instead of
-    /// stretching each channel independently.
-    pub linked: bool,
-    /// Target background level (in `(0, 1)`) the auto-stretch pulls the
-    /// median towards; higher values brighten the result.
-    pub brightness: f32,
-}
+impl Image {
+    /// Apply an MTF/STF auto-stretch to `image`, returning a new [`Image`] with the
+    /// same shape and type as the input and its pixels normalized to `[0, 1]`
+    /// `f32` samples — a stretch is a tonal remap, not a bit-depth decision, so
+    /// it always returns the full-precision result rather than pre-quantizing
+    /// to 16 bits; callers narrow on export as needed.
+    /// This is a pure, in-memory transform: it does no reading or writing to disk.
+    pub fn stretch(&self, linked: bool, brightness: f32) -> Image {
+        let channels = match self.image_type {
+            ImageType::RGB => 3,
+            ImageType::Grayscale | ImageType::CFA(_) => 1,
+        };
 
-impl Default for StretchOptions {
-    fn default() -> Self {
-        StretchOptions {
-            pattern: None,
-            force_demosaic: false,
-            linked: false,
-            brightness: DEFAULT_BRIGHTNESS,
+        let mut samples = normalize_pixel_buffer(&self.pixels);
+        let params = self.stretch_params(linked, channels, brightness);
+        apply_params(&mut samples, channels, &params);
+
+        Image {
+            image_type: self.image_type,
+            header: self.header.clone(),
+            width: self.width,
+            height: self.height,
+            pixels: PixelBuffer::F32(samples),
+        }
+    }
+
+    /// Derive one `(shadows, midtones)` pair per channel, reusing [`Image::stats`]'s
+    /// already-computed median/MAD rather than re-selecting them from the raw
+    /// samples. With `linked`, all channels share a single set of parameters
+    /// derived from their combined statistics (all interleaved planes treated
+    /// as one channel, via [`single_channel_stats`]); otherwise each channel is
+    /// stretched from its own statistics, which also acts as an automatic
+    /// background neutralization.
+    fn stretch_params(
+        &self,
+        linked: bool,
+        channels: usize,
+        brightness: Sample,
+    ) -> Vec<(Sample, Sample)> {
+        if linked {
+            let params = find_params(&single_channel_stats(&self.pixels).channels[0], brightness);
+            vec![params; channels]
+        } else {
+            self.stats()
+                .channels
+                .iter()
+                .map(|s| find_params(s, brightness))
+                .collect()
         }
     }
 }
 
-/// The result of [`load_and_stretch`]: the interleaved 16-bit stretched image,
-/// its dimensions, the source header (for a caller that wants to write it back
-/// out), and the [`LoadRgbNotice`] describing how the RGB buffer was obtained.
-pub struct StretchedImage {
-    pub width: usize,
-    pub height: usize,
-    pub pixels: Vec<u16>,
-    pub header: Header,
-    pub notice: LoadRgbNotice,
+/// Apply per-channel `(shadows, midtones)` params to `samples` in place:
+/// `channels` interleaved planes (3 for RGB, 1 for a single-channel
+/// grayscale/CFA image), `params[c]` applying to channel `c`.
+fn apply_params(samples: &mut [Sample], channels: usize, params: &[(Sample, Sample)]) {
+    samples.par_chunks_mut(channels).for_each(|px| {
+        for (c, v) in px.iter_mut().enumerate() {
+            let (shadows, midtones) = params[c];
+            *v = transfer(*v, shadows, midtones);
+        }
+    });
 }
 
-/// Load a FITS image (debayering if needed) and apply the auto-stretch.
-/// Shared by the `stretch` and `preview` commands, which differ only in what
-/// they do with the stretched buffer (write it to a file vs. render it to the
-/// terminal).
-pub fn load_and_stretch(input: &Path, opts: &StretchOptions) -> Result<StretchedImage> {
-    let fits =
-        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
-
-    let (header, img) = find_image_hdu(&fits, input)?;
-    let img = img.as_ref();
-
-    let loaded = load_rgb(header, img, opts.pattern, opts.force_demosaic)?;
-
-    let pixels = auto_stretch(&loaded.rgb, opts.linked, opts.brightness);
-    Ok(StretchedImage {
-        width: loaded.width,
-        height: loaded.height,
-        pixels,
-        header: header.clone(),
-        notice: loaded.notice,
-    })
-}
-
-/// Apply an MTF/STF auto-stretch to an interleaved RGB image, returning
-/// interleaved 16-bit samples in `[0, 65535]`. With `linked`, one set of stretch
-/// parameters (derived from all channels together) is applied to every channel;
-/// otherwise each channel is stretched from its own statistics, which also acts
-/// as an automatic background neutralization. `brightness` is the target
-/// background level (in `(0, 1)`) the stretched median is pulled towards; higher
-/// values brighten the result (see `--brightness`).
-///
-/// This is a pure, in-memory transform so callers can do something other than
-/// write the result to a file.
-pub fn auto_stretch(rgb: &RgbBuffer, linked: bool, brightness: f32) -> Vec<u16> {
-    let mut samples = to_normalized(rgb);
-
-    // Linked mode derives one stretch from all samples; otherwise the
-    // interleaved R,G,B channels are each stretched from their own statistics.
-    // The transfer of one channel never reads another, so every channel's
-    // params are derived from the original normalized samples — which lets us
-    // compute the three independent channels' params in parallel and then apply
-    // the transfer in a single parallel pass. The math (and thus the output) is
-    // identical to processing the channels one after another.
-    if linked {
-        let (shadows, midtones) = find_params(&mut samples.clone(), brightness);
-        samples
-            .par_iter_mut()
-            .for_each(|v| *v = transfer(*v, shadows, midtones));
-    } else {
-        let params: Vec<(Sample, Sample)> = (0..3usize)
-            .into_par_iter()
-            .map(|start| {
-                let mut chan: Vec<Sample> =
-                    samples.iter().skip(start).step_by(3).copied().collect();
-                find_params(&mut chan, brightness)
-            })
-            .collect();
-        samples.par_chunks_mut(3).for_each(|px| {
-            for (c, v) in px.iter_mut().enumerate() {
-                let (shadows, midtones) = params[c];
-                *v = transfer(*v, shadows, midtones);
-            }
-        });
-    }
-
-    samples
-        .par_iter()
-        .map(|&v| round_to_u16((v * OUT_MAX) as f64))
-        .collect()
-}
-
-/// Normalize the interleaved samples to `[0, 1]` based on the source bit depth.
-fn to_normalized(rgb: &RgbBuffer) -> Vec<Sample> {
-    match rgb {
-        RgbBuffer::U8(v) => v
-            .par_iter()
-            .map(|&x| x as Sample / u8::MAX as Sample)
-            .collect(),
-        RgbBuffer::U16(v) => v
+/// Normalize a [`PixelBuffer`]'s samples to `[0, 1]`: `U16` scales by its max,
+/// `F32` is assumed already in `[0, 1]`.
+fn normalize_pixel_buffer(pixels: &PixelBuffer) -> Vec<Sample> {
+    match pixels {
+        PixelBuffer::U16(v) => v
             .par_iter()
             .map(|&x| x as Sample / u16::MAX as Sample)
             .collect(),
+        PixelBuffer::F32(v) => v.par_iter().copied().collect(),
     }
 }
 
-/// Derive the `(shadows, midtones)` STF parameters from a set of normalized
-/// samples, targeting `target_bg` (in `(0, 1)`) as the background brightness the
-/// median should map to (see `--brightness`). `samples` is consumed as scratch:
-/// it's reordered by the median selection and then overwritten in place with
-/// absolute deviations.
-fn find_params(samples: &mut [Sample], target_bg: Sample) -> (Sample, Sample) {
-    let med = median(samples);
-
-    for v in samples.iter_mut() {
-        *v = (*v - med).abs();
-    }
-    let mad = median(samples) * MAD_NORM;
+/// Derive the `(shadows, midtones)` STF parameters from a channel's already-
+/// computed [`Stats`] (see [`Image::stretch_params`]), targeting `target_bg`
+/// (in `(0, 1)`) as the background brightness the median should map to (see
+/// `--brightness`). `Stats::median`/`Stats::mad` are in the native
+/// `0..=65535` pixel scale; both are normalized into `[0, 1]` here.
+fn find_params(stats: &Stats, target_bg: Sample) -> (Sample, Sample) {
+    let med = stats.median / OUT_MAX;
+    let mad = (stats.mad / OUT_MAX) * MAD_NORM;
 
     let shadows = (med + SHADOWS_CLIP * mad).clamp(0.0, 1.0);
     // Keep the midtone strictly inside (0, 1) as `mtf` requires: degenerate
@@ -197,91 +143,11 @@ fn mtf(m: Sample, x: Sample) -> Sample {
     }
 }
 
-/// The median of `values`, selecting in place. For an even count this averages
-/// the two central elements. Returns 0.0 for an empty slice.
-fn median(values: &mut [Sample]) -> Sample {
-    let n = values.len();
-    if n == 0 {
-        return 0.0;
-    }
-
-    let mid = n / 2;
-    let hi = *select_nth(values, mid);
-    if n % 2 == 1 {
-        hi
-    } else {
-        let lo = *select_nth(values, mid - 1);
-        (lo + hi) / 2.0
-    }
-}
-
-/// Partition `values` so the element at `k` is the one that belongs there in
-/// sorted order, returning a reference to it (a total order is fine: samples are
-/// always finite).
-fn select_nth(values: &mut [Sample], k: usize) -> &Sample {
-    let (_, nth, _) = values.select_nth_unstable_by(k, |a, b| a.total_cmp(b));
-    nth
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fits_image::write_rgb16_fits;
-    use crate::test_support::{
-        output_header, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
-        write_rgb_cube_fits,
-    };
-    use fitskit::HduData;
-    use sha2::{Digest, Sha256};
-    use tempfile::TempDir;
-
-    fn stretch_to_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
-        let stretched = load_and_stretch(input, opts)?;
-        let history = "stretched by fitz tests".to_string();
-        write_rgb16_fits(
-            output,
-            stretched.width,
-            stretched.height,
-            &stretched.pixels,
-            Some(&stretched.header),
-            crate::fits_image::CFA_KEYWORDS,
-            Some(&history),
-        )
-    }
-
-    #[test]
-    fn stretch_fits_preserves_metadata_and_drops_bayerpat() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits_with_metadata(&input, 8, 6, Some("RGGB"));
-
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
-
-        let header = output_header(&output);
-        assert_eq!(header.get_string("OBJECT"), Some("M31"));
-        assert_eq!(header.get_float("CRVAL1"), Some(10.68));
-        assert!(header.find("BAYERPAT").is_none());
-    }
-
-    #[test]
-    fn stretch_fz_output_does_not_leak_container_keywords() {
-        let tmp = TempDir::new().unwrap();
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(
-            &test_data("compressed.fits.fz"),
-            &output,
-            &StretchOptions::default(),
-        )
-        .unwrap();
-
-        let header = output_header(&output);
-        for kw in [
-            "TFORM1", "TFIELDS", "ZIMAGE", "ZCMPTYPE", "ZNAXIS1", "XTENSION", "EXTNAME", "BAYERPAT",
-        ] {
-            assert!(header.find(kw).is_none(), "{kw} leaked into stretch output");
-        }
-    }
+    use crate::test_support::test_data;
+    use fitskit::Header;
 
     #[test]
     fn mtf_hits_its_anchor_points() {
@@ -303,135 +169,50 @@ mod tests {
     }
 
     #[test]
-    fn median_of_even_and_odd_counts() {
-        assert_eq!(median(&mut [3.0, 1.0, 2.0]), 2.0);
-        assert_eq!(median(&mut [4.0, 1.0, 3.0, 2.0]), 2.5);
-    }
+    fn stretch_image_preserves_shape_and_type_on_real_cfa_data() {
+        // `stretch` never demosaics: a CFA input stays CFA, same width/height,
+        // just restretched into normalized `[0, 1]` f32 samples — a stretch is
+        // a tonal remap, not a bit-depth decision.
+        let loaded = crate::fits_file::load_fits(&test_data("cfa_orion.fits")).unwrap();
 
-    /// Build a gradient mosaic, debayer + stretch it, and return the
-    /// interleaved 16-bit output along with its dimensions.
-    fn stretched_gradient(width: usize, height: usize, linked: bool) -> Vec<u16> {
-        let max = (width * height) as Sample;
-        let samples: Vec<u16> = (0..width * height * 3)
-            .map(|i| ((i % (width * height)) as Sample / max * OUT_MAX) as u16)
-            .collect();
-        auto_stretch(&RgbBuffer::U16(samples), linked, DEFAULT_BRIGHTNESS)
-    }
+        let stretched = loaded.stretch(false, DEFAULT_BRIGHTNESS);
 
-    #[test]
-    fn output_stays_within_16_bit_range() {
-        // Range is guaranteed by the u16 type; assert the stretch actually
-        // spreads values out (not all clamped to one end).
-        let out = stretched_gradient(16, 16, false);
-        assert!(out.iter().any(|&v| v > 0));
-        assert!(out.iter().any(|&v| v < u16::MAX));
-    }
-
-    #[test]
-    fn high_spread_image_does_not_collapse_to_black() {
-        // Half the pixels black, half white: the spread is so large that
-        // `med - shadows` exceeds 1, where an unclamped midtone would drive the
-        // whole stretch to solid black. The clamp in `find_params` must keep
-        // both extremes present in the output.
-        let n = 1024usize;
-        let samples: Vec<u16> = (0..n)
-            .flat_map(|i| {
-                let v = if i % 2 == 0 { 0 } else { u16::MAX };
-                [v, v, v]
-            })
-            .collect();
-        let out = auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS);
-        assert!(out.iter().any(|&v| v > 0), "output collapsed to all black");
-        assert!(
-            out.iter().any(|&v| v < u16::MAX),
-            "output collapsed to all white"
-        );
+        assert_eq!(stretched.image_type, loaded.image_type);
+        assert_eq!(stretched.width, loaded.width);
+        assert_eq!(stretched.height, loaded.height);
+        match stretched.pixels {
+            PixelBuffer::F32(v) => {
+                assert_eq!(v.len(), loaded.width * loaded.height);
+                assert!(v.iter().all(|&x| (0.0..=1.0).contains(&x)));
+                assert!(v.iter().any(|&x| x > 0.0));
+                assert!(v.iter().any(|&x| x < 1.0));
+            }
+            PixelBuffer::U16(_) => panic!("expected a normalized f32 pixel buffer"),
+        }
     }
 
     #[test]
-    fn constant_image_does_not_panic_or_collapse() {
-        // A perfectly flat image has zero MAD, so `med == shadows`; the clamp
-        // keeps `mtf` away from its degenerate `m = 0` (solid white) case.
-        let n = 256usize;
-        let samples: Vec<u16> = (0..n).flat_map(|_| [20000u16, 20000, 20000]).collect();
-        let out = auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS);
-        assert!(
-            out.iter().any(|&v| v < u16::MAX),
-            "flat image went all white"
-        );
+    fn stretch_image_preserves_shape_and_type_on_real_debayered_rgb_data() {
+        // A debayered RGB image stays RGB and keeps its shape, with all three
+        // interleaved planes present.
+        let loaded = crate::fits_file::load_fits(&test_data("cfa_orion.fits")).unwrap();
+        let rgb = loaded.debayer().unwrap().unwrap();
+
+        let stretched = rgb.stretch(false, DEFAULT_BRIGHTNESS);
+
+        assert_eq!(stretched.image_type, ImageType::RGB);
+        assert_eq!(stretched.width, rgb.width);
+        assert_eq!(stretched.height, rgb.height);
+        match stretched.pixels {
+            PixelBuffer::F32(v) => assert_eq!(v.len(), rgb.width * rgb.height * 3),
+            PixelBuffer::U16(_) => panic!("expected a normalized f32 pixel buffer"),
+        }
     }
 
     #[test]
-    fn stretch_preserves_intra_channel_ordering() {
-        // A single ascending channel must stay non-decreasing after stretch:
-        // both the shadow rescale and the MTF are monotonic.
-        let n = 256usize;
-        let samples: Vec<u16> = (0..n)
-            .flat_map(|i| {
-                let v = (i as Sample / n as Sample * OUT_MAX) as u16;
-                [v, v, v]
-            })
-            .collect();
-        let out = auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS);
-        let reds: Vec<u16> = out.iter().step_by(3).copied().collect();
-        assert!(reds.windows(2).all(|w| w[1] >= w[0]));
-    }
-
-    #[test]
-    fn stretch_pulls_median_towards_target_background() {
-        // A faint image (low median, small spread) should have its median pulled
-        // up close to the target background of ~0.25 * 65535.
-        let n = 4096usize;
-        let samples: Vec<u16> = (0..n)
-            .flat_map(|i| {
-                // values clustered near the low end: 100..356
-                let v = 100 + (i % 256) as u16;
-                [v, v, v]
-            })
-            .collect();
-        let mut out: Vec<Sample> =
-            auto_stretch(&RgbBuffer::U16(samples), false, DEFAULT_BRIGHTNESS)
-                .iter()
-                .step_by(3)
-                .map(|&v| v as Sample)
-                .collect();
-        let med = median(&mut out);
-        let target = DEFAULT_BRIGHTNESS * OUT_MAX;
-        assert!(
-            (med - target).abs() < 0.05 * OUT_MAX,
-            "median {med} not near target {target}"
-        );
-    }
-
-    #[test]
-    fn higher_brightness_pulls_median_higher() {
-        // Same faint image stretched at two different --brightness targets: the
-        // brighter target must produce a visibly higher output median.
-        let n = 4096usize;
-        let samples: Vec<u16> = (0..n)
-            .flat_map(|i| {
-                let v = 100 + (i % 256) as u16;
-                [v, v, v]
-            })
-            .collect();
-        let buf = RgbBuffer::U16(samples);
-
-        let median_at = |brightness: f32| {
-            let mut out: Vec<Sample> = auto_stretch(&buf, false, brightness)
-                .iter()
-                .step_by(3)
-                .map(|&v| v as Sample)
-                .collect();
-            median(&mut out)
-        };
-
-        assert!(median_at(0.6) > median_at(0.25));
-    }
-
-    #[test]
-    fn linked_and_per_channel_differ_on_imbalanced_color() {
-        // Strong red, weak blue: per-channel neutralizes the balance while
-        // linked preserves it, so the two outputs must differ.
+    fn stretch_image_linked_and_per_channel_differ_on_imbalanced_color() {
+        // Same imbalanced-color scenario as `linked_and_per_channel_differ_on_imbalanced_color`,
+        // exercised through the pure `Image -> Image` entry point.
         let n = 32usize;
         let samples: Vec<u16> = (0..n)
             .flat_map(|i| {
@@ -441,148 +222,16 @@ mod tests {
                 [r, g, b]
             })
             .collect();
-        let buf = RgbBuffer::U16(samples);
-        let per_channel = auto_stretch(&buf, false, DEFAULT_BRIGHTNESS);
-        let linked = auto_stretch(&buf, true, DEFAULT_BRIGHTNESS);
-        assert_ne!(per_channel, linked);
-    }
-
-    #[test]
-    fn stretch_mosaic_produces_three_plane_fits() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 8, 6, Some("RGGB"));
-
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
-
-        let fits = FitsFile::from_file(&output).unwrap();
-        match &fits.primary().data {
-            HduData::Image(img) => assert_eq!(img.axes, vec![8, 6, 3]),
-            _ => panic!("expected image data"),
-        }
-    }
-
-    #[test]
-    fn stretch_float_mono_fits_is_not_black() {
-        // Drizzle-processed images are often stored as F32 with values in [0, 1].
-        // round_to_u16 would clip all values < 0.5 to 0, producing an all-black
-        // result. scale_physical_to_u16 must rescale to [0, 65535] first.
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("mono_f32.fits");
-        crate::test_support::write_mono_f32_fits(&input, 8, 8);
-
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
-
-        let fits = FitsFile::from_file(&output).unwrap();
-        let (_, img) = find_image_hdu(&fits, &output).unwrap();
-        assert!(
-            img.pixels.to_bytes().iter().any(|&b| b > 0),
-            "float mono FITS produced an all-black stretched output"
-        );
-    }
-
-    #[test]
-    fn stretch_float_rgb_cube_fits_is_not_black() {
-        // Same as above but for a 3-plane F32 RGB cube (the rgb_from_cube path).
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb_f32.fits");
-        crate::test_support::write_rgb_cube_f32_fits(&input, 8, 8);
-
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
-
-        let fits = FitsFile::from_file(&output).unwrap();
-        let (_, img) = find_image_hdu(&fits, &output).unwrap();
-        assert!(
-            img.pixels.to_bytes().iter().any(|&b| b > 0),
-            "float RGB cube FITS produced an all-black stretched output"
-        );
-    }
-
-    #[test]
-    fn stretch_errors_without_bayer_pattern() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, None);
-
-        let output = tmp.path().join("out.fits");
-        let opts = StretchOptions {
-            force_demosaic: true,
-            ..StretchOptions::default()
+        let image = Image {
+            image_type: ImageType::RGB,
+            header: Header::default(),
+            width: n,
+            height: 1,
+            pixels: PixelBuffer::U16(samples),
         };
-        let err = stretch_to_file(&input, &output, &opts).unwrap_err();
-        assert!(err.to_string().contains("Bayer pattern"));
-    }
 
-    #[test]
-    fn stretch_treats_1_channel_no_bayerpat_as_already_debayered_mono() {
-        // No BAYERPAT and no --pattern/--force-demosaic on a 2D image is assumed
-        // to already be a debayered monochrome image, not an undebayered mosaic.
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("mono.fits");
-        write_mosaic_fits(&input, 4, 4, None);
-
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(&input, &output, &StretchOptions::default()).unwrap();
-
-        let fits = FitsFile::from_file(&output).unwrap();
-        assert!(matches!(fits.primary().data, HduData::Image(_)));
-    }
-
-    #[test]
-    fn stretch_handles_tile_compressed_input() {
-        // A compressed .fz input must be decompressed and stretched into a
-        // 3-plane cube just like its uncompressed equivalent.
-        let tmp = TempDir::new().unwrap();
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(
-            &test_data("compressed.fits.fz"),
-            &output,
-            &StretchOptions::default(),
-        )
-        .unwrap();
-
-        let fits = FitsFile::from_file(&output).unwrap();
-        match &fits.primary().data {
-            HduData::Image(img) => assert_eq!(img.axes, vec![3008, 3008, 3]),
-            _ => panic!("expected image data"),
-        }
-    }
-
-    fn assert_stretch_matches_known_hash(hash_file: &str) {
-        let tmp = TempDir::new().unwrap();
-        let output = tmp.path().join("out.fits");
-        stretch_to_file(
-            &test_data("uncompressed.fit"),
-            &output,
-            &StretchOptions::default(),
-        )
-        .unwrap();
-
-        let expected = std::fs::read_to_string(test_data(hash_file))
-            .unwrap()
-            .trim()
-            .to_string();
-        let fits = FitsFile::from_file(&output).unwrap();
-        let (_, img) = find_image_hdu(&fits, &output).unwrap();
-        let actual = format!("{:x}", Sha256::digest(img.pixels.to_bytes()));
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn stretch_uncompressed_fit_matches_known_hash() {
-        assert_stretch_matches_known_hash("stretch/uncompressed.fits.sha256");
-    }
-
-    #[test]
-    fn stretch_already_debayered_cube_produces_pixels() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb.fits");
-        write_rgb_cube_fits(&input, 4, 3);
-
-        let stretched = load_and_stretch(&input, &StretchOptions::default()).unwrap();
-        assert_eq!(stretched.pixels.len(), 4 * 3 * 3);
+        let per_channel = image.stretch(false, DEFAULT_BRIGHTNESS);
+        let linked = image.stretch(true, DEFAULT_BRIGHTNESS);
+        assert_ne!(per_channel.pixels, linked.pixels);
     }
 }

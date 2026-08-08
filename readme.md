@@ -97,6 +97,12 @@ Note that the FitSmith GUI uses [Slint](https://slint.dev/) under the GPLv3 lice
 
 I needed a quick and dirty tool to compress and uncompress fits files. Researching libraries, understanding FITS format and writing it myself would take time and I needed it now. The result is this tool is mostly vibe-coded with Claude Code. I review the code to make sure I understand what it does and I make changes where neccessary, but still most of the authorship goes to those anonymous heroes who write the code, on which Anthropic trains their models.
 
-I understand the feelings a lot of people harbor towards AI-written code. I share a lot of these feelings, but, honestly, for a low-effort, low-impact and low-risk utility it kinda makes sense. I would spend at least a couple of weeks writing this or I could have what I need in two days.
+~~I understand the feelings a lot of people harbor towards AI-written code. I share a lot of these feelings, but, honestly, for a low-effort, low-impact and low-risk utility it kinda makes sense. I would spend at least a couple of weeks writing this or I could have what I need in two days.~~
 
-Let's face it. AI isn't going anywhere (most likely). It's a new tool for us to use and it is a powerful tool. As long as we use it responsibly and own the outcomes I am going to treat it the same way as I treat compiler rewriting my code to improve performance.
+~~Let's face it. AI isn't going anywhere (most likely). It's a new tool for us to use and it is a powerful tool. As long as we use it responsibly and own the outcomes I am going to treat it the same way as I treat compiler rewriting my code to improve performance.~~
+
+After using the code for some time, I've discovered couple of bugs and I realized that I have no idea how to fix it, because I don't know how the code works. I could probably force my way through it by prompting LLM to "make it work like Siril", but I decided that's not the right way. 
+
+I rewrote the core library by hand with LLM support for understanding and fixing bugs and major refactorings. After that I fixed the `fitz` CLI, as well by hand, using AI to validate my changes and sometimes generate unit tests.
+
+At this point the only part that's vibe-coded is `Fitsmith` and that's the next item on the de-slopification menu.

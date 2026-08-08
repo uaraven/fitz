@@ -20,11 +20,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
+use bayer::CFA;
 use clap::{Parser, Subcommand, ValueEnum};
-use libfitz::bayer::CFA;
 use libfitz::fitskit::CompressionType;
 use rayon::prelude::*;
 
+use crate::options::DebayerCore;
 use compress::compress_file;
 use copy_header::copy_header_file;
 use debayer::{OutputFormat, debayer_file, parse_output_format};
@@ -200,19 +201,17 @@ struct DebayerArgs {
     #[arg(short = 'y', long)]
     yes: bool,
 
-    /// Bits per pixel in the output image (TIFF only; FITS output keeps the
-    /// source image's pixel format)
+    /// Bits per pixel in the output image (TIFF and FITS only)
     #[arg(long, default_value = "16", value_parser = parse_bpp)]
     bpp: u32,
 
-    /// Bayer pattern of the sensor; if omitted, read from the FITS header
-    #[arg(long)]
-    pattern: Option<BayerPattern>,
+    /// Compress the output image. Applies to TIFF, FITS and PNG
+    #[arg(long, default_value = "false")]
+    compress: bool,
 
-    /// Always demosaic, even if the input looks like an already-debayered RGB image.
-    /// Use this for a raw mosaic that happens to have 3 channels for some other reason.
-    #[arg(long)]
-    force_demosaic: bool,
+    /// JPEG export quality 0..100
+    #[arg(long, default_value = "90")]
+    quality: u8,
 
     /// Output file format
     #[arg(short = 'f', long = "output-format", default_value = "fits", value_parser = parse_output_format)]
@@ -283,6 +282,13 @@ struct SplitChannelArgs {
     #[arg(long)]
     force_demosaic: bool,
 
+    /// Extract R, G and B straight from a raw (non-debayered) mosaic instead of
+    /// debayering first: each output is half the input's width and height, and
+    /// green is the average of the two green sensor sites. Errors if the input
+    /// is already debayered.
+    #[arg(long)]
+    cfa: bool,
+
     /// Prefix for the red channel file: {prefix}-{original-file-name}
     #[arg(long, conflicts_with = "r_dir")]
     r_prefix: Option<String>,
@@ -312,12 +318,10 @@ struct SplitChannelArgs {
 struct InfoArgs {
     /// Read the pixel data (decompressing first if needed) and report pixel
     /// statistics (min/max/mean/median and the count of zero-valued pixels).
-    /// For a debayered RGB cube these are the green channel's.
     #[arg(long)]
-    pixel: bool,
+    pixels: bool,
     /// Detect the frame's stars and report their count and median HFR, FWHM and
-    /// eccentricity. Independent of --pixel in both directions. For a debayered
-    /// RGB cube detection runs on the green channel.
+    /// eccentricity. Independent of --pixel in both directions. 
     #[arg(long)]
     stars: bool,
     /// Use a logarithmic vertical axis for the pixel histogram. Only useful
@@ -438,7 +442,7 @@ fn debayer_output_path(input: &Path, opts: &DebayerOptions) -> Result<PathBuf> {
         input,
         opts.output.as_deref(),
         opts.multi_file,
-        opts.core.format.extension(),
+        opts.core.output_format.extension(),
         "_debayer",
     )
 }
@@ -629,19 +633,19 @@ fn run_debayer(args: DebayerArgs, verbose: bool) -> ExitCode {
     let DebayerArgs {
         yes,
         bpp,
-        pattern,
-        force_demosaic,
+        compress,
+        quality,
         format,
         output,
         files,
     } = args;
 
     let opts = DebayerOptions {
-        core: libfitz::debayer::DebayerOptions {
-            bpp,
-            pattern: pattern.map(Into::into),
-            force_demosaic,
-            format,
+        core: DebayerCore {
+            bpp: bpp as i32,
+            output_format: format,
+            compress,
+            quality,
         },
         yes,
         verbose,
@@ -667,10 +671,14 @@ fn run_stretch(args: StretchArgs, verbose: bool) -> ExitCode {
         files,
     } = args;
 
+    if pattern.is_some() || force_demosaic {
+        terminal::print_warning(
+            "--pattern/--force-demosaic have no effect on stretch: the Bayer pattern is always read from the FITS header",
+        );
+    }
+
     let opts = StretchOptions {
-        core: libfitz::stretch::StretchOptions {
-            pattern: pattern.map(Into::into),
-            force_demosaic,
+        core: options::StretchCore {
             linked: linked_channel,
             brightness,
         },
@@ -693,6 +701,7 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
         format,
         pattern,
         force_demosaic,
+        cfa,
         r_prefix,
         r_dir,
         g_prefix,
@@ -702,14 +711,17 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
         files,
     } = args;
 
+    if pattern.is_some() || force_demosaic {
+        terminal::print_warning(
+            "--pattern/--force-demosaic have no effect on split: the Bayer pattern is always read from the FITS header",
+        );
+    }
+
     let opts = SplitChannelOptions {
-        core: libfitz::split_channel::SplitChannelOptions {
-            pattern: pattern.map(Into::into),
-            force_demosaic,
-        },
         yes,
         verbose,
         format,
+        cfa,
         r_prefix,
         r_dir,
         g_prefix,
@@ -723,7 +735,7 @@ fn run_split_channel(args: SplitChannelArgs, verbose: bool) -> ExitCode {
 
 fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
     let InfoArgs {
-        pixel,
+        pixels: pixel,
         stars,
         log,
         headers,
@@ -754,11 +766,15 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         no_debayer,
     } = args;
 
+    if pattern.is_some() || force_demosaic {
+        terminal::print_warning(
+            "--pattern/--force-demosaic have no effect on preview: the Bayer pattern is always read from the FITS header",
+        );
+    }
+
     let opts = PreviewOptions {
         verbose,
-        core: libfitz::stretch::StretchOptions {
-            pattern: pattern.map(Into::into),
-            force_demosaic,
+        core: options::StretchCore {
             linked: linked_channel,
             brightness,
         },
@@ -927,9 +943,9 @@ mod tests {
         multi_file: bool,
     ) -> DebayerOptions {
         DebayerOptions {
-            core: libfitz::debayer::DebayerOptions {
-                format,
-                ..libfitz::debayer::DebayerOptions::default()
+            core: DebayerCore {
+                output_format: format,
+                ..DebayerCore::default()
             },
             output: output.map(PathBuf::from),
             multi_file,

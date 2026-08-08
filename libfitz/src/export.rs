@@ -1,421 +1,204 @@
-//! Encode an in-memory RGB image to an export file format — FITS, TIFF, JPEG or
-//! PNG — with per-format options, and a one-call [`export_file`] that renders a
-//! FITS input through the debayer/stretch preview pipeline and writes it out.
-//!
-//! Reusable by any frontend: performs no path derivation, prompting, or
-//! progress reporting (a caller drives those). The pixel path mirrors the live
-//! preview, so an exported file matches what the viewer shows for the same
-//! debayer/stretch settings.
-
-use std::fs::File;
-use std::io::BufWriter;
-use std::path::Path;
-
-use anyhow::{Context, Result};
-use fitskit::{CompressionType, FitsFile, Header, PixelData};
+use crate::data::{Image, ImageType};
+use crate::fits_file::{SaveOptions, save_fits};
+use anyhow::anyhow;
+use fitskit::{Bitpix, CompressOptions};
 use image::codecs::jpeg::JpegEncoder;
-use image::codecs::png::PngEncoder;
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
-use rayon::prelude::*;
-use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
+use std::fs::File;
+use std::path::Path;
+use tiff::encoder::compression::DeflateLevel;
+use tiff::encoder::{Compression, TiffEncoder, colortype};
 
-use crate::compress::{CompressOptions, compress_fits};
-use crate::debayer::{OutputSamples, to_output_samples};
-use crate::fits_image::{
-    CFA_KEYWORDS, RgbBuffer, build_pixel_fits, deinterleave_to_planes, high_byte,
-};
-use crate::preview::{PreviewParams, render_export_rgb};
-
-/// FITS pixel storage requested for an exported image, mapping to a FITS
-/// `BITPIX`: `I8` → byte (8), `I16` → signed short (16, using the unsigned-16
-/// convention so 0..=65535 round-trips), `F32` → IEEE float (-32).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FitsBitpix {
-    I8,
-    I16,
-    F32,
-}
-
-/// Per-format options for a FITS export.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FitsExportOptions {
-    pub bitpix: FitsBitpix,
-    /// Tile-compress the output with this algorithm; `None` writes it plain.
-    pub compression: Option<CompressionType>,
-}
-
-/// Per-format options for a TIFF export.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TiffExportOptions {
-    /// Bits per sample: 8, 16 or 32.
+pub struct TiffOptions {
     pub bpp: u32,
-    /// Apply DEFLATE (zip) compression to the image data.
-    pub deflate: bool,
+    pub compress: bool,
 }
 
-/// Per-format options for a JPEG export.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct JpegExportOptions {
-    /// Encoder quality, 1..=100 (higher is better, larger).
-    pub quality: u8,
+pub struct FitsOptions {
+    pub bpp: i64,
+    pub compress: bool,
 }
 
-/// The output format an image is exported to, carrying that format's options.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExportFormat {
-    Fits(FitsExportOptions),
-    Tiff(TiffExportOptions),
-    Jpeg(JpegExportOptions),
-    /// PNG (8-bit RGB); no options.
+    Fits(FitsOptions),
+    Tiff(TiffOptions),
+    Jpeg(u8),
     Png,
 }
 
-impl ExportFormat {
-    /// The default file extension (without a leading dot) for this format.
-    pub fn extension(self) -> &'static str {
-        match self {
-            ExportFormat::Fits(_) => "fits",
-            ExportFormat::Tiff(_) => "tiff",
-            ExportFormat::Jpeg(_) => "jpg",
-            ExportFormat::Png => "png",
-        }
-    }
-}
-
-/// Render a FITS `input` through the debayer/stretch preview pipeline (per
-/// `params`) and write it to `output` in `format`. The one-call entry point a
-/// frontend uses per file; a failure names the offending input.
-pub fn export_file(
-    input: &Path,
-    output: &Path,
-    params: &PreviewParams,
-    format: &ExportFormat,
-) -> Result<()> {
-    let fits =
-        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
-    let (header, img) = crate::fits_image::find_image_hdu(&fits, input)?;
-    let (width, height, rgb) = render_export_rgb(header, img.as_ref(), params)?;
-    export_rgb(output, width, height, rgb, Some(header), format)
-}
-
-/// Encode an already-rendered interleaved RGB buffer to `output` in `format`.
-/// `src_header`, when given, seeds a FITS export's metadata (its CFA keywords
-/// are dropped, since the output is a debayered RGB cube); it is ignored by the
-/// TIFF/JPEG/PNG paths.
-pub fn export_rgb(
-    output: &Path,
-    width: usize,
-    height: usize,
-    rgb: RgbBuffer,
-    src_header: Option<&Header>,
-    format: &ExportFormat,
-) -> Result<()> {
-    match format {
-        ExportFormat::Fits(opts) => write_fits(output, width, height, rgb, src_header, opts),
-        ExportFormat::Tiff(opts) => {
-            let samples = to_output_samples(rgb, opts.bpp);
-            write_tiff(output, width, height, samples, opts.deflate)
-        }
-        ExportFormat::Jpeg(opts) => {
-            write_jpeg(output, width, height, &rgb_to_rgb8(rgb), opts.quality)
-        }
-        ExportFormat::Png => write_png(output, width, height, &rgb_to_rgb8(rgb)),
-    }
-}
-
-/// Narrow an interleaved RGB buffer to 8-bit RGB samples (the input JPEG/PNG
-/// consume), keeping each 16-bit sample's high byte.
-fn rgb_to_rgb8(rgb: RgbBuffer) -> Vec<u8> {
-    match to_output_samples(rgb, 8) {
-        OutputSamples::U8(v) => v,
-        _ => unreachable!("bpp 8 always yields 8-bit samples"),
-    }
-}
-
-/// Write the RGB buffer as a 3-plane FITS cube at the requested BITPIX, optionally
-/// tile-compressed. Values flow through the 16-bit interleaved form and are then
-/// deinterleaved into planes and cast to the target pixel type.
-fn write_fits(
-    output: &Path,
-    width: usize,
-    height: usize,
-    rgb: RgbBuffer,
-    src_header: Option<&Header>,
-    opts: &FitsExportOptions,
-) -> Result<()> {
-    let interleaved = match to_output_samples(rgb, 16) {
-        OutputSamples::U16(v) => v,
-        _ => unreachable!("bpp 16 always yields 16-bit samples"),
-    };
-    let planes = deinterleave_to_planes(&interleaved);
-
-    // Map the common 0..=65535 plane values to the requested storage type. I16
-    // uses the FITS unsigned-16 convention (BZERO 32768); the others store the
-    // value directly with no scaling.
-    let (pixels, bscale, bzero) = match opts.bitpix {
-        FitsBitpix::I8 => (
-            PixelData::U8(planes.par_iter().map(|&v| high_byte(v)).collect()),
-            1.0,
-            0.0,
-        ),
-        FitsBitpix::I16 => (
-            PixelData::I16(
-                planes
-                    .par_iter()
-                    .map(|&v| (v as i32 - 32768) as i16)
-                    .collect(),
+impl Image {
+    /// exports image to a file
+    /// `target` - the path where to save the file
+    /// `format` - determines the output format
+    pub fn export(&self, target: &Path, format: ExportFormat) -> anyhow::Result<()> {
+        match format {
+            ExportFormat::Fits(opts) => save_fits(
+                target,
+                self,
+                SaveOptions {
+                    bitpix: Bitpix::from_i64(opts.bpp)?,
+                    compress_options: if opts.compress {
+                        Some(CompressOptions::default())
+                    } else {
+                        None
+                    },
+                    history: None,
+                },
             ),
-            1.0,
-            32768.0,
-        ),
-        FitsBitpix::F32 => (
-            PixelData::F32(planes.par_iter().map(|&v| v as f32).collect()),
-            1.0,
-            0.0,
-        ),
-    };
-
-    let fits = build_pixel_fits(
-        vec![width, height, 3],
-        pixels,
-        bscale,
-        bzero,
-        src_header,
-        CFA_KEYWORDS,
-        Some("exported by fitz"),
-    );
-    let fits = match opts.compression {
-        Some(algorithm) => compress_fits(&fits, &CompressOptions { algorithm })?,
-        None => fits,
-    };
-    fits.to_file(output)
-        .with_context(|| format!("cannot write {}", output.display()))?;
-    Ok(())
-}
-
-/// Write interleaved RGB samples as an RGB TIFF at their bit depth, optionally
-/// DEFLATE-compressed.
-fn write_tiff(
-    output: &Path,
-    width: usize,
-    height: usize,
-    samples: OutputSamples,
-    deflate: bool,
-) -> Result<()> {
-    let file =
-        File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
-    let compression = if deflate {
-        Compression::Deflate(DeflateLevel::Balanced)
-    } else {
-        Compression::Uncompressed
-    };
-    let mut enc = TiffEncoder::new(file)
-        .with_context(|| format!("cannot create TIFF encoder for {}", output.display()))?
-        .with_compression(compression);
-
-    let (w, h) = (width as u32, height as u32);
-    match samples {
-        OutputSamples::U8(v) => enc.write_image::<colortype::RGB8>(w, h, &v),
-        OutputSamples::U16(v) => enc.write_image::<colortype::RGB16>(w, h, &v),
-        OutputSamples::U32(v) => enc.write_image::<colortype::RGB32>(w, h, &v),
+            ExportFormat::Tiff(opts) => export_as_tiff(target, self, opts),
+            ExportFormat::Jpeg(level) => export_as_jpeg(target, self, level),
+            ExportFormat::Png => export_as_png(target, self),
+        }
     }
-    .with_context(|| format!("cannot write {}", output.display()))?;
+}
+
+/// Save the image as JPEG
+fn export_as_jpeg(target: &Path, img: &Image, quality: u8) -> anyhow::Result<()> {
+    let mut file = File::create(target)?;
+    let enc = JpegEncoder::new_with_quality(&mut file, quality);
+    let (w, h) = (img.width as u32, img.height as u32);
+    let rgb = img.image_type == ImageType::RGB;
+
+    let _ = match rgb {
+        true => enc.write_image(&img.pixels.as_u8(), w, h, ExtendedColorType::Rgb8),
+        false => enc.write_image(&img.pixels.as_u8(), w, h, ExtendedColorType::L8),
+    }?;
+
     Ok(())
 }
 
-/// Write 8-bit interleaved RGB samples as a JPEG at the given quality.
-fn write_jpeg(output: &Path, width: usize, height: usize, rgb8: &[u8], quality: u8) -> Result<()> {
-    let file =
-        File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
-    JpegEncoder::new_with_quality(BufWriter::new(file), quality)
-        .write_image(rgb8, width as u32, height as u32, ExtendedColorType::Rgb8)
-        .with_context(|| format!("cannot write {}", output.display()))?;
+pub fn export_as_png(target: &Path, img: &Image) -> anyhow::Result<()> {
+    let mut file = File::create(target)?;
+    let enc =
+        PngEncoder::new_with_quality(&mut file, CompressionType::Default, FilterType::NoFilter);
+    let (w, h) = (img.width as u32, img.height as u32);
+    let rgb = img.image_type == ImageType::RGB;
+
+    let _ = match rgb {
+        true => enc.write_image(&img.pixels.as_u16_bytes(), w, h, ExtendedColorType::Rgb16),
+        false => enc.write_image(&img.pixels.as_u16_bytes(), w, h, ExtendedColorType::L16),
+    }?;
+
     Ok(())
 }
 
-/// Write 8-bit interleaved RGB samples as a PNG. Public so GUI frontends can
-/// encode screenshots/chart exports with the same encoder the image export
-/// uses.
-pub fn write_png(output: &Path, width: usize, height: usize, rgb8: &[u8]) -> Result<()> {
-    let file =
-        File::create(output).with_context(|| format!("cannot create {}", output.display()))?;
-    PngEncoder::new(BufWriter::new(file))
-        .write_image(rgb8, width as u32, height as u32, ExtendedColorType::Rgb8)
-        .with_context(|| format!("cannot write {}", output.display()))?;
+/// Save the image as a TIFF file.
+///
+/// `bpp` (8, 16 or 32) selects the sample width; an [`ImageType::RGB`] image is
+/// written as interleaved RGB, anything else as a single grayscale channel.
+/// Unlike [`save_fits`] this carries no metadata — TIFF has nowhere for the
+/// FITS header to go.
+pub fn export_as_tiff(target: &Path, img: &Image, opts: TiffOptions) -> anyhow::Result<()> {
+    let cannot =
+        |what: &str, e: &dyn std::fmt::Display| anyhow!("cannot {what} {}: {e}", target.display());
+
+    let file = File::create(target).map_err(|e| cannot("create", &e))?;
+    let mut enc = TiffEncoder::new(file).map_err(|e| cannot("encode", &e))?;
+    if opts.compress {
+        enc = enc.with_compression(Compression::Deflate(DeflateLevel::Balanced));
+    }
+    let (w, h) = (img.width as u32, img.height as u32);
+    let rgb = img.image_type == ImageType::RGB;
+
+    let result = match (rgb, opts.bpp) {
+        (true, 8) => enc.write_image::<colortype::RGB8>(w, h, &img.pixels.as_u8()),
+        (true, 16) => enc.write_image::<colortype::RGB16>(w, h, &img.pixels.as_u16()),
+        (true, 32) => enc.write_image::<colortype::RGB32>(w, h, &img.pixels.as_u32()),
+        (false, 8) => enc.write_image::<colortype::Gray8>(w, h, &img.pixels.as_u8()),
+        (false, 16) => enc.write_image::<colortype::Gray16>(w, h, &img.pixels.as_u16()),
+        (false, 32) => enc.write_image::<colortype::Gray32>(w, h, &img.pixels.as_u32()),
+        (_, other) => {
+            return Err(anyhow!(
+                "unsupported TIFF bit depth {other}, expected 8, 16 or 32"
+            ));
+        }
+    };
+    result.map_err(|e| cannot("write", &e))?;
+
     Ok(())
+}
+
+pub fn export_as_fits(target: &Path, img: &Image, opts: SaveOptions) -> anyhow::Result<()> {
+    save_fits(target, img, opts)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
-    use fitskit::{Bitpix, HduData};
+mod test {
+    use crate::export::{TiffOptions, export_as_jpeg, export_as_tiff};
+    use crate::fits_file::load_fits;
+    use crate::test_support::write_mosaic_fits;
     use tempfile::TempDir;
 
-    fn default_params() -> PreviewParams {
-        PreviewParams::default()
-    }
-
-    /// The BITPIX of the primary image in a written FITS file.
-    fn fits_bitpix(path: &Path) -> Bitpix {
-        let fits = FitsFile::from_file(path).unwrap();
-        match &fits.primary().data {
-            HduData::Image(img) => img.pixels.bitpix(),
-            _ => panic!("expected primary image data"),
-        }
-    }
-
     #[test]
-    fn export_fits_writes_three_plane_cube_at_requested_bitpix() {
+    fn save_jpeg_writes_rgb_and_grayscale() {
+        // The JPEG encoder only supports 8-bit color types, so `export_as_jpeg`
+        // must narrow the image's 16-bit samples down first rather than
+        // handing it `Rgb16`/`L16` directly.
         let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fit");
-        write_mosaic_fits(&input, 8, 6, Some("RGGB"));
-
-        for (bitpix, expected) in [
-            (FitsBitpix::I8, Bitpix::U8),
-            (FitsBitpix::I16, Bitpix::I16),
-            (FitsBitpix::F32, Bitpix::F32),
-        ] {
-            let output = tmp.path().join(format!("out-{bitpix:?}.fits"));
-            let format = ExportFormat::Fits(FitsExportOptions {
-                bitpix,
-                compression: None,
-            });
-            export_file(&input, &output, &default_params(), &format).unwrap();
-
-            assert_eq!(fits_bitpix(&output), expected);
-            let fits = FitsFile::from_file(&output).unwrap();
-            match &fits.primary().data {
-                HduData::Image(img) => assert_eq!(img.axes, vec![8, 6, 3]),
-                _ => panic!("expected image data"),
-            }
-            // The CFA keyword must be dropped so the RGB cube reads back cleanly.
-            assert!(fits.primary().header.find("BAYERPAT").is_none());
-        }
-    }
-
-    #[test]
-    fn export_fits_compressed_round_trips() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fit");
-        write_mosaic_fits(&input, 16, 12, Some("RGGB"));
-
-        let output = tmp.path().join("out.fits");
-        let format = ExportFormat::Fits(FitsExportOptions {
-            bitpix: FitsBitpix::I16,
-            compression: Some(CompressionType::Rice1),
-        });
-        export_file(&input, &output, &default_params(), &format).unwrap();
-
-        // The written file is a tile-compressed FITS: it has a compressed HDU,
-        // and decompressing it yields the 3-plane RGB cube.
-        let fits = FitsFile::from_file(&output).unwrap();
-        assert!(fits.hdus.iter().any(|h| h.as_compressed_image().is_some()));
-        let restored = crate::decompress::decompress(&output).unwrap();
-        match &restored.primary().data {
-            HduData::Image(img) => assert_eq!(img.axes, vec![16, 12, 3]),
-            _ => panic!("expected decompressed image data"),
-        }
-    }
-
-    #[test]
-    fn export_tiff_bpp_and_deflate_affect_size() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fit");
+        let input = tmp.path().join("mosaic.fits");
         write_mosaic_fits(&input, 16, 16, Some("RGGB"));
 
-        let write = |bpp: u32, deflate: bool, name: &str| {
-            let output = tmp.path().join(name);
-            let format = ExportFormat::Tiff(TiffExportOptions { bpp, deflate });
-            export_file(&input, &output, &default_params(), &format).unwrap();
+        let mono = load_fits(&input).unwrap();
+        let rgb = mono.debayer().unwrap().unwrap();
+
+        for (label, img) in [("mono", &mono), ("rgb", &rgb)] {
+            let output = tmp.path().join(format!("{label}.jpg"));
+            export_as_jpeg(&output, img, 90).unwrap();
             let data = std::fs::read(&output).unwrap();
+            assert!(data.starts_with(&[0xFF, 0xD8]), "{label}");
+        }
+    }
+
+    #[test]
+    fn save_tiff_writes_rgb_and_grayscale_at_every_bit_depth() {
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("mosaic.fits");
+        write_mosaic_fits(&input, 16, 16, Some("RGGB"));
+
+        let mono = load_fits(&input).unwrap();
+        let rgb = mono.debayer().unwrap().unwrap();
+
+        for (label, img, channels) in [("mono", &mono, 1usize), ("rgb", &rgb, 3)] {
+            let mut sizes = Vec::new();
+            for bpp in [8u32, 16, 32] {
+                let output = tmp.path().join(format!("{label}-{bpp}.tiff"));
+
+                let opts = TiffOptions {
+                    bpp,
+                    compress: false,
+                };
+                export_as_tiff(&output, img, opts).unwrap();
+
+                let data = std::fs::read(&output).unwrap();
+                assert!(
+                    data.starts_with(b"II") || data.starts_with(b"MM"),
+                    "{label}"
+                );
+                // At least the raw samples, plus header and tags.
+                let raw = 16 * 16 * channels * (bpp as usize / 8);
+                assert!(
+                    data.len() > raw,
+                    "{label} {bpp}bpp is smaller than its pixels"
+                );
+                sizes.push(data.len());
+            }
+            // Wider samples make a bigger file, in order.
             assert!(
-                data.starts_with(b"II") || data.starts_with(b"MM"),
-                "not a TIFF"
+                sizes[0] < sizes[1] && sizes[1] < sizes[2],
+                "{label} {sizes:?}"
             );
-            std::fs::metadata(&output).unwrap().len()
-        };
+        }
 
-        let len8 = write(8, false, "out8.tiff");
-        let len16 = write(16, false, "out16.tiff");
-        let len16z = write(16, true, "out16z.tiff");
-        // 8bpp is smaller than 16bpp; deflate shrinks the 16bpp output further.
-        assert!(len8 < len16);
-        assert!(len16z < len16);
-    }
-
-    #[test]
-    fn export_jpeg_and_png_write_recognizable_files() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb.fit");
-        write_rgb_cube_fits(&input, 12, 9);
-
-        let jpg = tmp.path().join("out.jpg");
-        export_file(
-            &input,
-            &jpg,
-            &default_params(),
-            &ExportFormat::Jpeg(JpegExportOptions { quality: 85 }),
+        let err = export_as_tiff(
+            &tmp.path().join("bad.tiff"),
+            &rgb,
+            TiffOptions {
+                bpp: 12,
+                compress: false,
+            },
         )
-        .unwrap();
-        let jdata = std::fs::read(&jpg).unwrap();
-        assert_eq!(&jdata[0..2], &[0xFF, 0xD8], "JPEG SOI marker");
-
-        let png = tmp.path().join("out.png");
-        export_file(&input, &png, &default_params(), &ExportFormat::Png).unwrap();
-        let pdata = std::fs::read(&png).unwrap();
-        assert_eq!(&pdata[0..8], b"\x89PNG\r\n\x1a\n", "PNG signature");
-    }
-
-    #[test]
-    fn export_jpeg_quality_changes_output_size() {
-        let tmp = TempDir::new().unwrap();
-        let low = tmp.path().join("low.jpg");
-        let high = tmp.path().join("high.jpg");
-        let input = test_data("uncompressed.fit");
-
-        export_file(
-            &input,
-            &low,
-            &default_params(),
-            &ExportFormat::Jpeg(JpegExportOptions { quality: 20 }),
-        )
-        .unwrap();
-        export_file(
-            &input,
-            &high,
-            &default_params(),
-            &ExportFormat::Jpeg(JpegExportOptions { quality: 95 }),
-        )
-        .unwrap();
-
-        let low_len = std::fs::metadata(&low).unwrap().len();
-        let high_len = std::fs::metadata(&high).unwrap().len();
-        assert!(high_len > low_len, "higher quality should be larger");
-    }
-
-    #[test]
-    fn extension_matches_format() {
-        assert_eq!(
-            ExportFormat::Fits(FitsExportOptions {
-                bitpix: FitsBitpix::I16,
-                compression: None
-            })
-            .extension(),
-            "fits"
-        );
-        assert_eq!(
-            ExportFormat::Tiff(TiffExportOptions {
-                bpp: 16,
-                deflate: false
-            })
-            .extension(),
-            "tiff"
-        );
-        assert_eq!(
-            ExportFormat::Jpeg(JpegExportOptions { quality: 90 }).extension(),
-            "jpg"
-        );
-        assert_eq!(ExportFormat::Png.extension(), "png");
+        .unwrap_err();
+        assert!(err.to_string().contains("unsupported TIFF bit depth"));
     }
 }

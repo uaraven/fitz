@@ -1,20 +1,15 @@
-//! Debayer a FITS mosaic image (or reuse an already-debayered RGB cube) and
-//! split it into three independent per-channel pixel buffers.
+//! Split an image into three independent per-channel [`Image`]s, debayering a
+//! raw mosaic first.
 
-use std::path::Path;
 use std::str::FromStr;
 
-use anyhow::{Context, Result, bail};
-use fitskit::{FitsFile, Header};
-use rayon::prelude::*;
-
-use crate::fits_image::{
-    RgbBuffer, demosaic_to_rgb, find_image_hdu, get_bayerpat, is_rgb_cube_shape, plane_values,
-    resolve_cfa,
-};
+use crate::data::{Image, ImageType, PixelBuffer};
+use crate::debayer::{blue_sites, cfa_pixels, green_sites, red_sites};
+use anyhow::{Result, bail};
+use fitskit::{Bitpix, Header};
 
 /// Pixel sample type used when writing each split-out channel to FITS.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChannelFormat {
     I8,
     I16,
@@ -38,331 +33,218 @@ impl FromStr for ChannelFormat {
     }
 }
 
-/// Domain options controlling how an image is split into channels.
-#[derive(Default)]
-pub struct SplitChannelOptions {
-    /// Bayer pattern override; takes precedence over the FITS headers.
-    pub pattern: Option<bayer::CFA>,
-    /// Always demosaic, even if the input looks like an already-debayered
-    /// RGB image.
-    pub force_demosaic: bool,
-}
-
-/// The three per-channel physical pixel buffers, plus the shared geometry and
-/// source header a caller needs to write them out.
-pub struct SplitChannels {
-    pub width: usize,
-    pub height: usize,
-    pub header: Header,
-    pub r: Vec<f64>,
-    pub g: Vec<f64>,
-    pub b: Vec<f64>,
-}
-
-/// Debayer (or reinterleave) `input` and split it into three independent
-/// per-channel physical pixel buffers. Performs no path derivation or writing
-/// — callers decide the output format/paths.
-pub fn split_channels(input: &Path, opts: &SplitChannelOptions) -> Result<SplitChannels> {
-    let fits =
-        FitsFile::from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
-
-    let (header, img) = find_image_hdu(&fits, input)?;
-    let img = img.as_ref();
-
-    let try_demosaic = opts.force_demosaic || get_bayerpat(header).is_some();
-
-    let (width, height, r, g, b) = if try_demosaic {
-        if img.axes.len() != 2 {
-            bail!("expected a 2D mosaic image, found {} axes", img.axes.len());
+impl From<ChannelFormat> for Bitpix {
+    fn from(format: ChannelFormat) -> Self {
+        match format {
+            ChannelFormat::I8 => Bitpix::U8,
+            ChannelFormat::I16 => Bitpix::I16,
+            ChannelFormat::I32 => Bitpix::I32,
+            ChannelFormat::F32 => Bitpix::F32,
+            ChannelFormat::F64 => Bitpix::F64,
         }
-
-        let cfa = resolve_cfa(header, opts.pattern)
-            .with_context(|| "cannot determine Bayer pattern".to_string())?;
-
-        let (width, height, rgb) =
-            demosaic_to_rgb(header, img, cfa).with_context(|| "debayering failed".to_string())?;
-
-        let (r, g, b) = deinterleave(rgb);
-        (width, height, r, g, b)
-    } else {
-        if !is_rgb_cube_shape(img) {
-            bail!("no BAYERPAT header and image is not a 3-plane RGB cube (NAXIS3=3)");
-        }
-
-        let width = img.axes[0];
-        let height = img.axes[1];
-        // Scale each plane straight from the raw samples rather than
-        // materializing the whole frame as `f64` first and copying slices out
-        // of it, which would double the peak allocation.
-        let r = plane_values(header, img, 0);
-        let g = plane_values(header, img, 1);
-        let b = plane_values(header, img, 2);
-        (width, height, r, g, b)
-    };
-
-    Ok(SplitChannels {
-        width,
-        height,
-        header: header.clone(),
-        r,
-        g,
-        b,
-    })
-}
-
-fn deinterleave(rgb: RgbBuffer) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    match rgb {
-        RgbBuffer::U8(v) => deinterleave_channels(&v),
-        RgbBuffer::U16(v) => deinterleave_channels(&v),
     }
 }
 
-fn deinterleave_channels<T: Copy + Into<f64> + Send + Sync>(
-    v: &[T],
-) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    let n = v.len() / 3;
-    let r = (0..n).into_par_iter().map(|i| v[i * 3].into()).collect();
-    let g = (0..n)
-        .into_par_iter()
-        .map(|i| v[i * 3 + 1].into())
-        .collect();
-    let b = (0..n)
-        .into_par_iter()
-        .map(|i| v[i * 3 + 2].into())
-        .collect();
-    (r, g, b)
-}
+impl Image {
+    /// Split this image into its red, green and blue channels, each a
+    /// standalone grayscale [`Image`] carrying the source header.
+    ///
+    /// A raw mosaic is demosaiced first; an already-debayered RGB cube is split
+    /// as-is. A monochrome frame has no colour channels to separate, so it is an
+    /// error rather than three copies of itself.
+    pub fn split_channels(&self) -> Result<[Image; 3]> {
+        let debayered;
+        let rgb = match self.image_type {
+            ImageType::RGB => self,
+            ImageType::CFA(_) => {
+                debayered = self
+                    .debayer()
+                    .expect("a CFA image always debayers into RGB")?;
+                &debayered
+            }
+            ImageType::Grayscale => {
+                bail!("no BAYERPAT header and image is not a 3-plane RGB cube (NAXIS3=3)")
+            }
+        };
 
-/// Encode a single channel's physical pixel values into `PixelData` of the
-/// requested [`ChannelFormat`], returning the pixels and the `BZERO` needed to
-/// round-trip them (nonzero only for the unsigned-integer conventions).
-pub fn encode_channel(values: &[f64], format: ChannelFormat) -> (fitskit::PixelData, f64) {
-    use fitskit::PixelData;
-    match format {
-        ChannelFormat::I8 => (
-            PixelData::U8(
-                values
-                    .par_iter()
-                    .map(|&v| v.round().clamp(0.0, 255.0) as u8)
-                    .collect(),
-            ),
-            0.0,
-        ),
-        ChannelFormat::I16 => (
-            PixelData::I16(
-                values
-                    .par_iter()
-                    .map(|&v| (v.round().clamp(0.0, 65535.0) - 32768.0) as i16)
-                    .collect(),
-            ),
-            32768.0,
-        ),
-        ChannelFormat::I32 => (
-            PixelData::I32(
-                values
-                    .par_iter()
-                    .map(|&v| (v.round().clamp(0.0, 4294967295.0) - 2147483648.0) as i32)
-                    .collect(),
-            ),
-            2147483648.0,
-        ),
-        ChannelFormat::F32 => (
-            PixelData::F32(values.par_iter().map(|&v| v as f32).collect()),
-            0.0,
-        ),
-        ChannelFormat::F64 => (PixelData::F64(values.to_vec()), 0.0),
+        let plane = |c| {
+            rgb.plane(c)
+                .expect("an RGB image always has three colour planes")
+        };
+        Ok([plane(0), plane(1), plane(2)])
+    }
+
+    /// Splits CFA bayer image into 3 channels: R, G, and B *without* debayering
+    /// Resulting images are 1/2 width and height of original and contain only pixels of
+    /// relevant colour
+    /// The green channel is averaged from G1 and G2.
+    pub fn split_cfa(&self) -> Result<[Image; 3]> {
+        if let ImageType::CFA(pattern) = self.image_type {
+            let (_, _, reds) = cfa_pixels(self, &red_sites(pattern));
+            let (_, _, blues) = cfa_pixels(self, &blue_sites(pattern));
+            let (_, _, greens) = cfa_pixels(self, &green_sites(pattern));
+            let mut red_img = Image::new(
+                ImageType::Grayscale,
+                Header::new(),
+                self.width / 2,
+                self.height / 2,
+                PixelBuffer::U16(reds),
+            );
+            red_img.merge_headers_from(self);
+            let mut green_img = Image::new(
+                ImageType::Grayscale,
+                Header::new(),
+                self.width / 2,
+                self.height / 2,
+                PixelBuffer::U16(greens),
+            );
+            green_img.merge_headers_from(self);
+            let mut blue_img = Image::new(
+                ImageType::Grayscale,
+                Header::new(),
+                self.width / 2,
+                self.height / 2,
+                PixelBuffer::U16(blues),
+            );
+            blue_img.merge_headers_from(self);
+            Ok([red_img, green_img, blue_img])
+        } else {
+            bail!("Debayered images are not supported")
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fits_image::CFA_KEYWORDS;
-    use crate::test_support::{
-        copy_to_temp, test_data, write_mosaic_fits, write_mosaic_fits_with_metadata,
-        write_rgb_cube_fits,
-    };
-    use fitskit::HduData;
-    use sha2::{Digest, Sha256};
+    use crate::data::PixelBuffer;
+    use crate::fits_file::load_fits;
+    use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
+    use bayer::CFA;
     use tempfile::TempDir;
 
-    fn write_channel_fits(
-        output: &Path,
-        width: usize,
-        height: usize,
-        values: &[f64],
-        format: ChannelFormat,
-        src_header: &Header,
-        channel: &str,
-    ) {
-        let (pixels, bzero) = encode_channel(values, format);
-        let history = format!("split channel {channel} by fitz tests");
-        crate::fits_image::write_pixel_fits(
-            output,
-            vec![width, height],
-            pixels,
-            1.0,
-            bzero,
-            Some(src_header),
-            CFA_KEYWORDS,
-            Some(&history),
-        )
-        .unwrap();
+    #[test]
+    fn split_rgb_cube_recovers_each_plane() {
+        // `write_rgb_cube_fits` lays down planar values 0..n, n..2n, 2n..3n, so
+        // each split channel must come back as exactly its own run — the check
+        // that the planar/interleaved conversion is right end to end.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("rgb.fits");
+        write_rgb_cube_fits(&path, 4, 3);
+        let n = 4 * 3;
+
+        let channels = load_fits(&path).unwrap().split_channels().unwrap();
+
+        for (c, channel) in channels.iter().enumerate() {
+            assert_eq!(channel.image_type, ImageType::Grayscale);
+            assert_eq!((channel.width, channel.height), (4, 3));
+            let PixelBuffer::U16(values) = &channel.pixels else {
+                panic!("an I16 source splits into u16 channels");
+            };
+            let expected: Vec<u16> = (0..n).map(|i| (c * n + i) as u16).collect();
+            assert_eq!(values, &expected, "channel {c}");
+        }
     }
 
-    fn split_to_files(input: &Path, dir: &Path, format: ChannelFormat) {
-        let s = split_channels(input, &SplitChannelOptions::default()).unwrap();
-        let filename = input.file_name().unwrap();
-        for (channel, values) in [("R", &s.r), ("G", &s.g), ("B", &s.b)] {
-            let output = dir.join(format!("{channel}-{}", filename.to_str().unwrap()));
-            write_channel_fits(
-                &output, s.width, s.height, values, format, &s.header, channel,
+    #[test]
+    fn split_mosaic_debayers_first() {
+        let loaded = load_fits(&test_data("cfa_orion.fits")).unwrap();
+        let channels = loaded.split_channels().unwrap();
+
+        // Each channel is the full frame, and they are genuinely different
+        // colours rather than three copies of the mosaic.
+        for channel in &channels {
+            assert_eq!(
+                (channel.width, channel.height),
+                (loaded.width, loaded.height)
             );
+            assert_eq!(channel.pixels.len(), loaded.width * loaded.height);
         }
+        assert_ne!(channels[0].pixels, channels[2].pixels);
+
+        // The green channel of the debayered cube, reached the other way round.
+        let green = loaded.debayer().unwrap().unwrap().plane(1).unwrap();
+        assert_eq!(channels[1].pixels, green.pixels);
     }
 
     #[test]
-    fn split_channel_preserves_metadata_and_drops_bayerpat() {
+    fn split_rejects_a_monochrome_frame() {
         let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits_with_metadata(&input, 8, 6, Some("RGGB"));
+        let path = tmp.path().join("mono.fits");
+        write_mosaic_fits(&path, 4, 4, None);
 
-        split_to_files(&input, tmp.path(), ChannelFormat::I16);
-
-        for (channel, file) in [
-            ("R", "R-raw.fits"),
-            ("G", "G-raw.fits"),
-            ("B", "B-raw.fits"),
-        ] {
-            let header = FitsFile::from_file(tmp.path().join(file))
-                .unwrap()
-                .primary()
-                .header
-                .clone();
-            assert_eq!(header.get_string("OBJECT"), Some("M31"), "{channel}");
-            assert_eq!(header.get_float("CRVAL1"), Some(10.68), "{channel}");
-            assert!(header.find("BAYERPAT").is_none(), "{channel}");
-        }
-    }
-
-    #[test]
-    fn split_channel_fz_output_does_not_leak_container_keywords() {
-        let tmp = TempDir::new().unwrap();
-        let input = copy_to_temp("compressed.fits.fz", &tmp);
-
-        split_to_files(&input, tmp.path(), ChannelFormat::I16);
-
-        let header = FitsFile::from_file(tmp.path().join("R-compressed.fits.fz"))
-            .unwrap()
-            .primary()
-            .header
-            .clone();
-        for kw in [
-            "TFORM1", "TFIELDS", "ZIMAGE", "ZCMPTYPE", "ZNAXIS1", "XTENSION", "EXTNAME", "BAYERPAT",
-        ] {
-            assert!(header.find(kw).is_none(), "{kw} leaked into split output");
-        }
-    }
-
-    #[test]
-    fn split_channel_skips_debayer_for_existing_rgb_cube() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb.fits");
-        write_rgb_cube_fits(&input, 4, 3);
-
-        let s = split_channels(&input, &SplitChannelOptions::default()).unwrap();
-        assert_eq!(s.r, (0..12).map(|x| x as f64).collect::<Vec<_>>());
-    }
-
-    #[test]
-    fn split_channel_force_demosaic_rejects_3_plane_cube_instead_of_guessing() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb.fits");
-        write_rgb_cube_fits(&input, 4, 3);
-
-        let opts = SplitChannelOptions {
-            force_demosaic: true,
-            pattern: Some(bayer::CFA::RGGB),
-        };
-        let err = match split_channels(&input, &opts) {
-            Err(e) => e,
-            Ok(_) => panic!("expected an error"),
-        };
-        assert!(err.to_string().contains("2D mosaic image"));
-    }
-
-    #[test]
-    fn split_channel_errors_without_bayerpat_or_rgb_cube() {
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("raw.fits");
-        write_mosaic_fits(&input, 4, 4, None);
-
-        let err = match split_channels(&input, &SplitChannelOptions::default()) {
-            Err(e) => e,
-            Ok(_) => panic!("expected an error"),
-        };
+        let err = load_fits(&path).unwrap().split_channels().unwrap_err();
         assert!(err.to_string().contains("3-plane RGB cube"));
     }
 
     #[test]
-    fn split_channel_handles_tile_compressed_input() {
-        // A compressed .fz input must be decompressed before debayering and
-        // splitting into the three per-channel files.
+    fn split_cfa_extracts_half_size_channels_without_debayering() {
+        // write_mosaic_fits lays sequential values 0..16 in row-major order
+        // over a 4x4 RGGB mosaic:
+        //   0  1  2  3
+        //   4  5  6  7
+        //   8  9 10 11
+        //  12 13 14 15
+        // RGGB sites within each 2x2 cell are R=(0,0), G=(1,0)+(0,1), B=(1,1),
+        // so each output plane is computed by hand below.
         let tmp = TempDir::new().unwrap();
-        let input = copy_to_temp("compressed.fits.fz", &tmp);
+        let path = tmp.path().join("mosaic.fits");
+        write_mosaic_fits(&path, 4, 4, Some("RGGB"));
 
-        let s = split_channels(&input, &SplitChannelOptions::default()).unwrap();
-        assert_eq!(s.width, 3008);
-        assert_eq!(s.height, 3008);
-    }
+        let img = load_fits(&path).unwrap();
+        assert_eq!(img.image_type, ImageType::CFA(CFA::RGGB));
 
-    fn assert_split_channel_matches_known_hashes(format: ChannelFormat, suffix: &str) {
-        let tmp = TempDir::new().unwrap();
-        let input = test_data("uncompressed.fit");
+        let [red, green, blue] = img.split_cfa().unwrap();
 
-        let s = split_channels(&input, &SplitChannelOptions::default()).unwrap();
-        for (channel, values) in [("r", &s.r), ("g", &s.g), ("b", &s.b)] {
-            let output = tmp.path().join(format!("{channel}.fits"));
-            write_channel_fits(
-                &output, s.width, s.height, values, format, &s.header, channel,
-            );
-
-            let hash_file = format!("split/uncompressed-{suffix}-{channel}.sha256");
-            let expected = std::fs::read_to_string(test_data(&hash_file))
-                .unwrap()
-                .trim()
-                .to_string();
-
-            let fits = FitsFile::from_file(&output).unwrap();
-            let (_, img) = find_image_hdu(&fits, &output).unwrap();
-            let actual = format!("{:x}", Sha256::digest(img.pixels.to_bytes()));
-            assert_eq!(actual, expected);
+        for channel in [&red, &green, &blue] {
+            assert_eq!(channel.image_type, ImageType::Grayscale);
+            assert_eq!((channel.width, channel.height), (2, 2));
         }
+
+        let values = |channel: &Image| match &channel.pixels {
+            PixelBuffer::U16(v) => v.clone(),
+            _ => panic!("split_cfa always produces u16 channels"),
+        };
+        assert_eq!(values(&red), vec![0, 2, 8, 10]);
+        assert_eq!(values(&green), vec![2, 4, 10, 12]);
+        assert_eq!(values(&blue), vec![5, 7, 13, 15]);
     }
 
     #[test]
-    fn split_channel_uncompressed_fit_i16_matches_known_hash() {
-        assert_split_channel_matches_known_hashes(ChannelFormat::I16, "i16");
-    }
-
-    #[test]
-    fn split_channel_reports_rgb_cube_shape() {
+    fn split_cfa_averages_green_without_overflow() {
+        // Both green sites of the one 2x2 cell are saturated (65535); the
+        // averaged green output must be 65535, not a wrapped-around value from
+        // summing in u16 before dividing.
         let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb.fits");
-        write_rgb_cube_fits(&input, 4, 3);
-        let fits = FitsFile::from_file(&input).unwrap();
-        let (_, img) = find_image_hdu(&fits, &input).unwrap();
-        assert!(is_rgb_cube_shape(img.as_ref()));
-    }
+        let path = tmp.path().join("saturated.fits");
+        write_mosaic_fits(&path, 2, 2, Some("RGGB"));
+        {
+            // write_mosaic_fits only synthesizes small sequential values, so
+            // overwrite the green sites directly via the unsigned-16
+            // convention (I16 sample + BZERO 32768) to get true 65535 pixels.
+            let mut fits = fitskit::FitsFile::from_file(&path).unwrap();
+            let hdu = fits.primary_mut();
+            hdu.header.set(
+                crate::keywords::BZERO,
+                fitskit::HeaderValue::Float(32768.0),
+                None,
+            );
+            let fitskit::HduData::Image(image_data) = &mut hdu.data else {
+                panic!("write_mosaic_fits always writes image data");
+            };
+            let fitskit::PixelData::I16(pixels) = &mut image_data.pixels else {
+                panic!("write_mosaic_fits always writes I16 data");
+            };
+            pixels[1] = i16::MAX; // (1, 0): 32767 + 32768 = 65535
+            pixels[2] = i16::MAX; // (0, 1): 32767 + 32768 = 65535
+            fits.to_file(&path).unwrap();
+        }
 
-    #[test]
-    fn split_channel_matches_hduimage() {
-        // Sanity: HduData::Image is reachable from fitskit for callers building
-        // their own assertions against split output.
-        let tmp = TempDir::new().unwrap();
-        let input = tmp.path().join("rgb.fits");
-        write_rgb_cube_fits(&input, 4, 3);
-        let fits = FitsFile::from_file(&input).unwrap();
-        assert!(matches!(fits.primary().data, HduData::Image(_)));
+        let img = load_fits(&path).unwrap();
+        let [_, green, _] = img.split_cfa().unwrap();
+        let PixelBuffer::U16(values) = &green.pixels else {
+            panic!("split_cfa always produces u16 channels");
+        };
+        assert_eq!(values, &vec![65535]);
     }
 }

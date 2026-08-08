@@ -1,34 +1,72 @@
 //! The `info` command: print a human-readable summary of a FITS image —
 //! resolution, bit depth, channel count and sky coordinates. With `--pixel`
 //! it additionally reads the (possibly tile-compressed) pixel data and reports
-//! basic pixel statistics. For an already-debayered RGB cube those statistics
-//! (and `--stars` metrics) are measured on the frame's green channel.
+//! basic pixel statistics, one column per colour channel for an
+//! already-debayered RGB cube. `--stars` metrics are always measured on a
+//! single detection plane — the frame's green channel for an RGB cube.
 
 use std::fmt::Write as _;
 use std::path::Path;
 
-use anyhow::Result;
-use libfitz::info::{InfoRequest, header_info_with, trim_float};
-
 use crate::io_prompt::print_step;
 use crate::options::InfoOptions;
 use crate::terminal::terminal_dimensions;
+use anyhow::Result;
+use libfitz::data::{Image, ImageType, PixelBuffer};
+use libfitz::fitskit::Header;
+use libfitz::stars::{StarDetectOptions, StarStats};
+use libfitz::stats::{ImageStats, Stats};
 
 /// Height of the rendered histogram in terminal character rows.
 const HISTOGRAM_ROWS: usize = 10;
 
+/// Width each channel's value is right-aligned into in a [`print_table`] row,
+/// so a table's columns line up across every row printed for it regardless of
+/// how many digits any one row's values happen to have.
+const STATS_COLUMN_WIDTH: usize = 10;
+
+/// Write one row of an aligned table: `caption` in the label column (padded
+/// to [`FIELD_LABEL_WIDTH`] like the header summary above), then each of
+/// `columns` right-aligned into [`STATS_COLUMN_WIDTH`] and separated by `|`,
+/// so every column lines up across every row of the same table regardless of
+/// how many digits any one row's values happen to have. The shared layout
+/// behind [`print_table`], [`print_table_header`] and [`print_star_stats`].
+fn print_row(out: &mut String, caption: &str, columns: &[String]) {
+    let value = columns
+        .iter()
+        .map(|c| format!("{c:>STATS_COLUMN_WIDTH$}"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let _ = writeln!(out, "  {:>1$}{value}", caption, FIELD_LABEL_WIDTH);
+}
+
+/// Print one row of a per-channel statistics table: `caption` in the label
+/// column, then one value per channel in `stats` — one for a single-channel
+/// frame, three (R, G, B) for an RGB cube. `extractor` pulls the value to
+/// display out of each channel's [`Stats`].
+fn print_table(
+    out: &mut String,
+    caption: &str,
+    stats: &[Stats],
+    extractor: impl Fn(&Stats) -> String,
+) {
+    let columns: Vec<String> = stats.iter().map(extractor).collect();
+    print_row(out, &format!("{caption}:"), &columns);
+}
+
+/// Print the column header for a [`print_table`]/[`print_star_stats`] report:
+/// `caption` in the label column, then each of `columns` — e.g. `R`, `G`, `B`
+/// for a per-channel table — so they sit directly over the value columns the
+/// following rows print.
+fn print_table_header(out: &mut String, caption: &str, columns: &[&str]) {
+    let columns: Vec<String> = columns.iter().map(|c| c.to_string()).collect();
+    print_row(out, caption, &columns);
+}
+
 pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     print_step(opts.verbose, "reading");
 
-    // One read answers every flag: a caller asking for both must not open and
-    // decompress the frame twice.
-    let info = header_info_with(
-        input,
-        InfoRequest {
-            pixel_stats: opts.pixel,
-            stars: opts.stars,
-        },
-    )?;
+    let image = libfitz::fits_file::load_fits(input)?;
 
     // `--headers` is a distinct mode: dump the image HDU's raw header cards
     // instead of the formatted summary. For a tile-compressed input this is the
@@ -37,7 +75,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     if opts.headers {
         let mut out = String::new();
         let _ = writeln!(out, "{}", input.display());
-        push_raw_headers(&mut out, &info.header);
+        push_raw_headers(&mut out, &image.header);
         print!("{out}");
         return Ok(());
     }
@@ -50,7 +88,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     let _ = writeln!(out, "{}", input.display());
     // The curated metadata fields come from `libfitz` so the CLI report and
     // the GUI info panel stay in sync; the CLI just pads the labels into a column.
-    for field in info.summary() {
+    for field in info_summary(&image) {
         let _ = writeln!(
             out,
             "  {:<1$}{value}",
@@ -62,142 +100,106 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
 
     // Pixel statistics are only computed on request (`--pixel`), since they
     // require reading and decompressing the full pixel array. For an
-    // already-debayered RGB cube they are measured on the green channel (noted
-    // below) rather than blending the R/G/B planes into a meaningless figure.
+    // already-debayered RGB cube `Image::stats()` reports one column per
+    // colour channel rather than blending the R/G/B planes into a
+    // meaningless figure.
     if opts.pixel {
-        match &info.pixel_stats {
-            // Unreachable while `--pixel` is set (stats are always computed on
-            // request), but a graceful fallback beats an empty section.
-            None => {
-                let _ = writeln!(out, "  Pixels:      pixel statistics unavailable");
-            }
-            Some(stats) => {
-                // An RGB cube's statistics are the green channel's; say so up
-                // front so the numbers below aren't read as a whole-frame figure.
-                if info.channels == 3 {
-                    let _ = writeln!(out, "  Channel:     green (of RGB cube)");
-                }
-                // Split across lines by meaning rather than crowding everything
-                // onto `Pixels:`; each label pads into the same column as the
-                // metadata fields above.
-                let _ = writeln!(
-                    out,
-                    "  Pixels:      min={} max={} mean={} median={} zeros={}",
-                    trim_float(stats.min),
-                    trim_float(stats.max),
-                    trim_float(stats.mean),
-                    trim_float(stats.median),
-                    stats.zeros,
-                );
-                let _ = writeln!(
-                    out,
-                    "  Noise:       sigma={} mad={}",
-                    trim_float(stats.sigma),
-                    trim_float(stats.mad),
-                );
-                let _ = writeln!(out, "  Background:  mode={}", trim_float(stats.mode));
-                // The fraction comes from the stats' own sample count, so it
-                // stays right for any future per-plane statistics.
-                let percent = if stats.count > 0 {
-                    stats.saturated as f64 / stats.count as f64 * 100.0
-                } else {
-                    0.0
-                };
-                let _ = writeln!(
-                    out,
-                    "  Saturated:   {} of {} ({}%)",
-                    stats.saturated,
-                    stats.count,
-                    trim_float((percent * 1000.0).round() / 1000.0),
-                );
-                // The histogram is the last thing in the report: a title aligned
-                // with the other fields, then the bar chart centered horizontally.
-                // The width is chosen so each column maps to a whole number of
-                // buckets: the largest of 16/32/64/128/256 whose drawn box (`width
-                // + 2` for the `|` borders) fits the terminal.
-                let (cols, _) = terminal_dimensions();
-                let _ = writeln!(out, "  Histogram:");
-                let width = histogram_width(cols as usize);
-                // The drawn box adds a `|` on each side, so center the full
-                // `width + 2` box within the terminal.
-                let boxed = width + 2;
-                let left_pad = (cols as usize).saturating_sub(boxed) / 2;
-                push_histogram(&mut out, &stats.histogram, width, left_pad, opts.log);
-            }
-        }
+        let stats = image.stats();
+        print_stats(&mut out, &stats, opts.log);
     }
 
     // Star metrics are their own request (`--stars`), independent of `--pixel`:
     // detection builds its threshold from the detection plane's own background,
     // never from the frame's PixelStats, so neither flag implies the other.
     if opts.stars {
-        push_stars(&mut out, &info);
+        let star_stats = image
+            .detection_plane()?
+            .detect_stars(&StarDetectOptions::default());
+        print_star_stats(&mut out, &star_stats);
     }
 
     print!("{out}");
     Ok(())
 }
 
-/// Append the `--stars` report: the four metrics, and — when detection ran on a
-/// plane that isn't the frame — the note saying so.
-fn push_stars(out: &mut String, info: &libfitz::info::HeaderInfo) {
-    let Some(report) = &info.stars else {
-        // An unsupported shape, not a broken file: making this a per-file error
-        // would print `fitz: <path>: <err>` and fail the whole batch's exit code.
-        // Mirrors the `--pixel` notice above.
-        let _ = writeln!(
-            out,
-            "  Stars:       star metrics are unavailable for this image shape"
-        );
-        return;
-    };
-
-    let stats = &report.stats;
-    match (stats.hfr, stats.fwhm, stats.eccentricity) {
-        (Some(hfr), Some(fwhm), Some(ecc)) => {
-            let _ = writeln!(
-                out,
-                "  Stars:       count={} hfr={} fwhm={} eccentricity={}",
-                stats.count,
-                trim_float(round_to(hfr, 2)),
-                trim_float(round_to(fwhm, 2)),
-                trim_float(round_to(ecc, 2)),
-            );
-        }
-        // An outcome, not an error — and a cloud indicator in its own right, so
-        // it must be reported rather than silently printing a bare count.
-        _ => {
-            let _ = writeln!(out, "  Stars:       none detected");
-        }
+fn print_stats(out: &mut String, img_stats: &ImageStats, log_scale: bool) {
+    let stats = &img_stats.channels;
+    if stats.len() == 3 {
+        print_table_header(out, "Channels", &["R", "G", "B"]);
     }
+    print_table(out, "Min", &stats, |s: &Stats| s.min.to_string());
+    print_table(out, "Max", &stats, |s: &Stats| s.max.to_string());
+    print_table(out, "Mean", &stats, |s: &Stats| {
+        round_to(s.mean as f64, 2).to_string()
+    });
+    print_table(out, "Median", &stats, |s: &Stats| {
+        round_to(s.median as f64, 2).to_string()
+    });
+    print_table(out, "Mode", &stats, |s: &Stats| {
+        round_to(s.mode as f64, 2).to_string()
+    });
+    print_table(out, "Avg Dev", &stats, |s: &Stats| {
+        round_to(s.avg_dev as f64, 2).to_string()
+    });
+    print_table(out, "MAD", &stats, |s: &Stats| {
+        round_to(s.mad as f64, 2).to_string()
+    });
+    print_table(out, "σ", &stats, |s: &Stats| {
+        round_to(s.sigma as f64, 2).to_string()
+    });
+    print_table(out, "Bit-depth (est)", &stats, |s: &Stats| {
+        s.estimated_bit_depth.to_string()
+    });
+    print_table(out, "Zeros", &stats, |s: &Stats| s.zero_count.to_string());
+    print_table(out, "Saturated", &stats, |s: &Stats| {
+        s.saturated_count.to_string()
+    });
 
-    if let Some(note) = star_plane_note(info) {
-        let _ = writeln!(out, "  {:<1$}{note}", "", FIELD_LABEL_WIDTH);
-    }
+    // The histogram is the last thing in the report: a title aligned
+    // with the other fields, then the bar chart centered horizontally.
+    // The width is chosen so each column maps to a whole number of
+    // buckets: the largest of 16/32/64/128/256 whose drawn box (`width
+    // + 2` for the `|` borders) fits the terminal.
+    let (cols, _) = terminal_dimensions();
+    let _ = writeln!(out, "  Histogram:");
+    let width = histogram_width(cols as usize);
+    // The drawn box adds a `|` on each side, so center the full
+    // `width + 2` box within the terminal.
+    let boxed = width + 2;
+    let left_pad = (cols as usize).saturating_sub(boxed) / 2;
+    print_histogram(out, &img_stats.histogram, width, left_pad, log_scale);
 }
 
-/// The note naming the plane the star metrics were measured on, or `None` when
-/// that plane *is* the frame and there is nothing to explain.
-///
-/// This is where the half-resolution caveat meets the person who would otherwise
-/// file "fitz reports half of NINA's HFR" as a bug. A readme note is easy to
-/// miss; the line under the number is not. The rule is a comparison against the
-/// reported plane size, never a re-derivation of `detection_plane`'s halving.
-///
-/// Two shapes measure on a plane that isn't the whole frame: a CFA mosaic on its
-/// half-resolution green super-pixel plane, and an already-debayered RGB cube on
-/// its full-resolution green channel. The mosaic gives itself away by a plane
-/// size below the frame's; the cube matches the frame's size, so it is
-/// identified by its 3-channel shape instead.
-fn star_plane_note(info: &libfitz::info::HeaderInfo) -> Option<String> {
-    let report = info.stars.as_ref()?;
-    if report.plane_width != info.width || report.plane_height != info.height {
-        return Some(format!(
-            "measured on the green super-pixel plane, {} x {}",
-            report.plane_width, report.plane_height
-        ));
+/// Print the `--stars` report: a header naming each metric, then one data row
+/// of their values — the same aligned-table layout [`print_stats`] uses for
+/// its per-channel rows, transposed. Detection runs once per frame rather
+/// than once per channel, so here the metrics (`Count`, `HFR`, `FWHM`,
+/// `Eccentricity`) are the columns and there is only ever one row.
+fn print_star_stats(out: &mut String, stats: &StarStats) {
+    // An outcome, not an error — and a cloud indicator in its own right, so it
+    // must be reported rather than silently printing a table of dashes.
+    if stats.hfr.is_none() && stats.fwhm.is_none() && stats.eccentricity.is_none() {
+        let _ = writeln!(out, "  Stars:       none detected");
+        return;
     }
-    (info.channels == 3).then(|| "measured on the green channel of the RGB cube".to_string())
+
+    let _ = writeln!(out, "Stars");
+    let _ = writeln!(out, "        Count: {}", stats.count);
+    let _ = writeln!(
+        out,
+        "          HFR: {}",
+        round_to(stats.hfr.unwrap_or_else(|| 0.0), 2)
+    );
+    let _ = writeln!(
+        out,
+        "         FWHM: {}",
+        round_to(stats.fwhm.unwrap_or_else(|| 0.0), 2)
+    );
+    let _ = writeln!(
+        out,
+        " Eccentricity: {}",
+        round_to(stats.eccentricity.unwrap_or_else(|| 0.0), 2)
+    );
 }
 
 /// Round to `places` decimal places. Star shapes are measurements good to a
@@ -205,6 +207,213 @@ fn star_plane_note(info: &libfitz::info::HeaderInfo) -> Option<String> {
 fn round_to(v: f64, places: i32) -> f64 {
     let scale = 10f64.powi(places);
     (v * scale).round() / scale
+}
+
+/// One labeled field in [`info_summary`]'s report — a display label and its
+/// already-formatted value (e.g. `"Resolution"` / `"3008 x 3008"`).
+struct SummaryField {
+    label: &'static str,
+    value: String,
+}
+
+/// A curated, ordered list of the most useful header fields as label/value
+/// pairs, replacing the removed `libfitz::info::HeaderInfo::summary()`.
+/// Resolution, bit depth and channels are always present; every other field
+/// appears only when the header carries it (and is non-blank). Pixel
+/// statistics are deliberately excluded — they're printed in their own
+/// section below.
+fn info_summary(image: &Image) -> Vec<SummaryField> {
+    let header = &image.header;
+    let mut fields = Vec::new();
+
+    push(
+        &mut fields,
+        "Resolution",
+        format!("{} x {}", image.width, image.height),
+    );
+    push(&mut fields, "Bit depth", bit_depth_label(image));
+    push(
+        &mut fields,
+        "Channels",
+        format!("{} ({})", image.channels(), channel_label(image)),
+    );
+    push_str(&mut fields, "Bayer", header.get_string("BAYERPAT"));
+    push_str(&mut fields, "Object", header.get_string("OBJECT"));
+    push_coordinate(
+        &mut fields,
+        Axis::Ra,
+        header.get_float("OBJCTRA"),
+        header.get_string("OBJCTRA"),
+    );
+    push_coordinate(
+        &mut fields,
+        Axis::Dec,
+        header.get_float("OBJCTDEC"),
+        header.get_string("OBJCTDEC"),
+    );
+    if let Some(rot) = header.get_float("OBJCTROT") {
+        push(&mut fields, "Rotation", format!("{}°", trim(rot)));
+    }
+    if let Some(exptime) = header.get_float("EXPTIME") {
+        push(&mut fields, "Exposure", format!("{} s", trim(exptime)));
+    }
+    if let Some(gain) = header.get_float("GAIN") {
+        push(&mut fields, "Gain", trim(gain));
+    }
+    if let Some(offset) = header.get_float("OFFSET") {
+        push(&mut fields, "Offset", trim(offset));
+    }
+    if let Some((xbin, ybin)) = header.get_int("XBINNING").zip(header.get_int("YBINNING")) {
+        push(&mut fields, "Binning", format!("{xbin}x{ybin}"));
+    }
+    push_str(&mut fields, "Filter", header.get_string("FILTER"));
+    push_str(&mut fields, "Instrument", header.get_string("INSTRUME"));
+    if let Some(telescope) = telescope_label(header) {
+        push(&mut fields, "Telescope", telescope);
+    }
+    push_str(&mut fields, "Date-obs", header.get_string("DATE-OBS"));
+
+    fields
+}
+
+/// Append a field with an already-formatted value.
+fn push(fields: &mut Vec<SummaryField>, label: &'static str, value: String) {
+    fields.push(SummaryField { label, value });
+}
+
+/// Append a string field only when present and non-blank once trimmed.
+fn push_str(fields: &mut Vec<SummaryField>, label: &'static str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|s| !s.is_empty()) {
+        push(fields, label, value.to_string());
+    }
+}
+
+/// Describe the pixel storage format from the decoded buffer's own type,
+/// which is correct for a tile-compressed source too — unlike the header's
+/// own `BITPIX`, which for a compressed HDU describes its binary table, not
+/// the image.
+fn bit_depth_label(image: &Image) -> String {
+    match &image.pixels {
+        PixelBuffer::U16(_) => "16-bit unsigned integer".to_string(),
+        PixelBuffer::F32(_) => "32-bit float".to_string(),
+    }
+}
+
+/// Describe the channel layout. The Bayer pattern itself is reported on its
+/// own `Bayer` field, so the raw-mosaic case just notes that it is a mosaic.
+fn channel_label(image: &Image) -> &'static str {
+    match image.image_type {
+        ImageType::RGB => "debayered RGB",
+        ImageType::CFA(_) => "mosaic",
+        ImageType::Grayscale => "monochrome (debayered)",
+    }
+}
+
+/// Describe the imaging telescope: its name (`TELESCOP`) optionally followed by
+/// its optical figure derived from focal length (`FOCALLEN`, mm) and focal ratio
+/// (`FOCRATIO`), e.g. `My Scope (203mm F/4.5)`. Returns `None` when no telescope
+/// keyword carries usable information.
+fn telescope_label(header: &Header) -> Option<String> {
+    let name = header
+        .get_string("TELESCOP")
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let mut optics = String::new();
+    if let Some(focal) = header.get_float("FOCALLEN") {
+        optics.push_str(&format!("{}mm", trim(focal)));
+    }
+    if let Some(ratio) = header.get_float("FOCRATIO") {
+        if !optics.is_empty() {
+            optics.push(' ');
+        }
+        optics.push_str(&format!("F/{}", trim(ratio)));
+    }
+
+    match (name, optics.is_empty()) {
+        (Some(name), false) => Some(format!("{name} ({optics})")),
+        (Some(name), true) => Some(name.to_string()),
+        (None, false) => Some(optics),
+        (None, true) => None,
+    }
+}
+
+/// Which sky axis a coordinate is, selecting its sexagesimal convention: right
+/// ascension is expressed in hours (`h m s`, 360° = 24h), declination in signed
+/// degrees (`° ' "`).
+#[derive(Clone, Copy)]
+enum Axis {
+    Ra,
+    Dec,
+}
+
+/// Append a sky coordinate. When the decimal-degree value is present it is
+/// rendered in sexagesimal form (hours for RA, degrees for DEC) with the decimal
+/// value in parentheses; otherwise the raw sexagesimal header string is shown
+/// verbatim. Absent on both counts, nothing is appended.
+fn push_coordinate(
+    fields: &mut Vec<SummaryField>,
+    axis: Axis,
+    deg: Option<f64>,
+    sexagesimal: Option<&str>,
+) {
+    let label = match axis {
+        Axis::Ra => "RA",
+        Axis::Dec => "DEC",
+    };
+    let sexagesimal = sexagesimal.map(str::trim).filter(|s| !s.is_empty());
+
+    let value = match (deg, sexagesimal) {
+        (Some(d), _) => Some(format_coordinate(axis, d)),
+        (None, Some(s)) => Some(s.to_string()),
+        (None, None) => None,
+    };
+    if let Some(value) = value {
+        push(fields, label, value);
+    }
+}
+
+/// Format a decimal-degree coordinate in sexagesimal form with the decimal value
+/// echoed in parentheses, e.g. `20h 30m 00.00s (20.5h)` for RA or
+/// `-12° 30' 00.00" (-12.5°)` for DEC.
+fn format_coordinate(axis: Axis, deg: f64) -> String {
+    match axis {
+        Axis::Ra => {
+            // 360 degrees of RA span 24 hours, so hours = degrees / 15.
+            let hours = deg / 15.0;
+            let (h, m, s) = to_sexagesimal(hours.abs());
+            let sign = if hours < 0.0 { "-" } else { "" };
+            format!("{sign}{h}h {m:02}m {s:05.2}s ({}h)", trim(hours))
+        }
+        Axis::Dec => {
+            let (d, m, s) = to_sexagesimal(deg.abs());
+            let sign = if deg < 0.0 { "-" } else { "" };
+            format!("{sign}{d}° {m:02}' {s:05.2}\" ({}°)", trim(deg))
+        }
+    }
+}
+
+/// Split a non-negative decimal value into whole units, minutes and seconds.
+/// Rounding is done on the total seconds first so any carry propagates and the
+/// returned minutes/seconds stay in `[0, 60)`.
+fn to_sexagesimal(value: f64) -> (u64, u64, f64) {
+    let total_seconds = (value * 3600.0 * 100.0).round() / 100.0;
+    let whole = (total_seconds / 3600.0).trunc();
+    let rem = total_seconds - whole * 3600.0;
+    let minutes = (rem / 60.0).trunc();
+    let seconds = rem - minutes * 60.0;
+    (whole as u64, minutes as u64, seconds)
+}
+
+/// Format a float without a trailing `.0` for whole numbers, keeping a compact
+/// representation otherwise.
+fn trim(v: f64) -> String {
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        format!("{}", v as i64)
+    } else {
+        let s = format!("{v:.6}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
 }
 
 /// Append the header's raw FITS cards to `out`, one card per line with trailing
@@ -224,7 +433,7 @@ fn push_raw_headers(out: &mut String, header: &libfitz::fitskit::Header) {
 
 /// Column width (including the trailing colon) reserved for a field's label, so
 /// values across different fields line up (e.g. `"  Resolution:  1024 x 768"`).
-const FIELD_LABEL_WIDTH: usize = 13;
+const FIELD_LABEL_WIDTH: usize = 16;
 
 /// Pick the drawn histogram width for a terminal `cols` wide.
 ///
@@ -244,7 +453,7 @@ fn histogram_width(cols: usize) -> usize {
 /// indented by `left_pad` spaces so the box is centered under the report.
 /// Delegates the chart shape to [`render_histogram`] and uses [`HISTOGRAM_ROWS`]
 /// for the height.
-fn push_histogram(out: &mut String, hist: &[u64], width: usize, left_pad: usize, log: bool) {
+fn print_histogram(out: &mut String, hist: &[u64], width: usize, left_pad: usize, log: bool) {
     let chart = render_histogram(hist, width, HISTOGRAM_ROWS, log);
     let pad = " ".repeat(left_pad);
     let border = format!("{pad}+{}+\n", "-".repeat(width));
@@ -330,48 +539,45 @@ fn render_histogram(hist: &[u64], width: usize, rows: usize, log: bool) -> Strin
 mod tests {
     use super::*;
     use crate::test_support::test_data;
-    use libfitz::info::header_info_with;
+    use bayer::CFA;
+    use libfitz::fitskit::HeaderValue;
+    use libfitz::stars::StarStats;
 
-    /// `info --stars` on a bundled frame.
-    fn star_info(filename: &str) -> libfitz::info::HeaderInfo {
-        header_info_with(
-            &test_data(filename),
-            InfoRequest {
-                stars: true,
-                ..Default::default()
-            },
+    /// Build a minimal grayscale [`Image`] with an otherwise-empty header, for
+    /// tests that only care about the header-driven fields of [`info_summary`].
+    fn image_with_header(header: Header) -> Image {
+        Image::new(
+            ImageType::Grayscale,
+            header,
+            4,
+            2,
+            PixelBuffer::U16(vec![0; 8]),
         )
-        .unwrap()
     }
 
-    #[test]
-    fn star_plane_note_appears_only_when_the_plane_is_not_the_frame() {
-        // A CFA mosaic detects on its half-resolution green super-pixel plane,
-        // so its HFR needs the caveat that reads about half of NINA's number.
-        let mosaic = star_info("uncompressed.fit");
-        assert_eq!(mosaic.bayerpat.as_deref(), Some("GRBG"));
-        assert_eq!(
-            star_plane_note(&mosaic).as_deref(),
-            Some("measured on the green super-pixel plane, 1504 x 1504")
-        );
-
-        // A mono frame detects on itself: nothing to explain, so no note.
-        let mut mono = star_info("uncompressed.fit");
-        let report = mono.stars.as_mut().unwrap();
-        (report.plane_width, report.plane_height) = (mono.width, mono.height);
-        assert_eq!(star_plane_note(&mono), None);
-
-        // Nothing measured at all: nothing to caption.
-        mono.stars = None;
-        assert_eq!(star_plane_note(&mono), None);
+    fn stats_fixture(min: u16, max: u16, mean: f32) -> Stats {
+        Stats {
+            min,
+            max,
+            mean,
+            median: mean,
+            mode: mean as u16,
+            avg_dev: 1.0,
+            mad: 1.0,
+            sigma: 1.0,
+            estimated_bit_depth: 16,
+            zero_count: 0,
+            saturated_count: 0,
+            ..Stats::default()
+        }
     }
 
     #[test]
     fn round_to_keeps_two_places() {
-        // Star shapes are good to a couple of digits; trim_float's six would be
+        // Star shapes are good to a couple of digits; `trim`'s six would be
         // reporting noise.
         assert_eq!(round_to(2.41379, 2), 2.41);
-        assert_eq!(trim_float(round_to(3.0, 2)), "3");
+        assert_eq!(trim(round_to(3.0, 2)), "3");
     }
 
     #[test]
@@ -446,7 +652,7 @@ mod tests {
         let width = 6;
         let pad = 4;
         let mut out = String::new();
-        push_histogram(&mut out, &[1, 2, 3], width, pad, false);
+        print_histogram(&mut out, &[1, 2, 3], width, pad, false);
         let lines: Vec<&str> = out.lines().collect();
 
         // HISTOGRAM_ROWS chart rows plus the top and bottom borders.
@@ -538,15 +744,292 @@ mod tests {
     }
 
     #[test]
-    fn star_plane_note_flags_the_green_channel_of_an_rgb_cube() {
-        // A debayered cube detects on its full-resolution green channel: the
-        // plane matches the frame size, so it's identified by the 3-channel
-        // shape and captioned accordingly rather than left uncaptioned.
-        let info = star_info("uncompressed_debayer.fits");
-        assert_eq!(info.channels, 3);
-        assert_eq!(
-            star_plane_note(&info).as_deref(),
-            Some("measured on the green channel of the RGB cube")
+    fn stars_are_detected_on_the_detection_plane_not_raw_pixels() {
+        // `Image::detect_stars` is documented as requiring
+        // `Image::detection_plane()` first: on this debayered RGB cube,
+        // detecting directly on the raw interleaved samples finds nothing at
+        // all (the interleaving reads as noise), while the green-channel
+        // detection plane finds the frame's actual stars. `info --stars`
+        // (`info_file` above) must go through the plane, not the raw image.
+        let image = libfitz::fits_file::load_fits(&test_data("uncompressed_debayer.fits")).unwrap();
+
+        let raw = image.detect_stars(&StarDetectOptions::default());
+        assert_eq!(raw.count, 0);
+
+        let via_plane = image
+            .detection_plane()
+            .unwrap()
+            .detect_stars(&StarDetectOptions::default());
+        assert!(via_plane.count > 0);
+        assert!(via_plane.hfr.is_some());
+    }
+
+    #[test]
+    fn info_summary_always_reports_resolution_bit_depth_and_channels() {
+        // With an otherwise-empty header, only the three always-present fields
+        // show up — every other field is conditional on a header keyword.
+        let image = image_with_header(Header::new());
+        let fields = info_summary(&image);
+        let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
+        assert_eq!(labels, vec!["Resolution", "Bit depth", "Channels"]);
+        assert_eq!(fields[0].value, "4 x 2");
+        assert_eq!(fields[1].value, "16-bit unsigned integer");
+        assert_eq!(fields[2].value, "1 (monochrome (debayered))");
+    }
+
+    #[test]
+    fn info_summary_includes_present_header_fields() {
+        let mut header = Header::new();
+        header.set("OBJECT", HeaderValue::String("M31".to_string()), None);
+        header.set("BAYERPAT", HeaderValue::String("RGGB".to_string()), None);
+        header.set("OBJCTROT", HeaderValue::Float(90.0), None);
+        header.set("EXPTIME", HeaderValue::Float(30.0), None);
+        header.set("GAIN", HeaderValue::Float(100.0), None);
+        header.set("OFFSET", HeaderValue::Float(10.0), None);
+        header.set("XBINNING", HeaderValue::Integer(2), None);
+        header.set("YBINNING", HeaderValue::Integer(2), None);
+        header.set("FILTER", HeaderValue::String("L".to_string()), None);
+        header.set("INSTRUME", HeaderValue::String("ZWO".to_string()), None);
+        header.set(
+            "DATE-OBS",
+            HeaderValue::String("2026-06-22".to_string()),
+            None,
         );
+
+        let image = image_with_header(header);
+        let fields = info_summary(&image);
+        let find = |label: &str| {
+            fields
+                .iter()
+                .find(|f| f.label == label)
+                .map(|f| f.value.as_str())
+        };
+
+        assert_eq!(find("Object"), Some("M31"));
+        assert_eq!(find("Bayer"), Some("RGGB"));
+        assert_eq!(find("Rotation"), Some("90°"));
+        assert_eq!(find("Exposure"), Some("30 s"));
+        assert_eq!(find("Gain"), Some("100"));
+        assert_eq!(find("Offset"), Some("10"));
+        assert_eq!(find("Binning"), Some("2x2"));
+        assert_eq!(find("Filter"), Some("L"));
+        assert_eq!(find("Instrument"), Some("ZWO"));
+        assert_eq!(find("Date-obs"), Some("2026-06-22"));
+    }
+
+    #[test]
+    fn info_summary_omits_blank_string_fields() {
+        // A present-but-whitespace-only keyword must not produce an empty row.
+        let mut header = Header::new();
+        header.set("OBJECT", HeaderValue::String("   ".to_string()), None);
+        let image = image_with_header(header);
+        let fields = info_summary(&image);
+        assert!(fields.iter().all(|f| f.label != "Object"));
+    }
+
+    #[test]
+    fn bit_depth_label_reports_buffer_type() {
+        let u16_image = image_with_header(Header::new());
+        assert_eq!(bit_depth_label(&u16_image), "16-bit unsigned integer");
+
+        let f32_image = Image::new(
+            ImageType::Grayscale,
+            Header::new(),
+            1,
+            1,
+            PixelBuffer::F32(vec![0.0]),
+        );
+        assert_eq!(bit_depth_label(&f32_image), "32-bit float");
+    }
+
+    #[test]
+    fn channel_label_matches_image_type() {
+        let make = |t: ImageType| Image::new(t, Header::new(), 1, 1, PixelBuffer::U16(vec![0]));
+        assert_eq!(channel_label(&make(ImageType::RGB)), "debayered RGB");
+        assert_eq!(channel_label(&make(ImageType::CFA(CFA::RGGB))), "mosaic");
+        assert_eq!(
+            channel_label(&make(ImageType::Grayscale)),
+            "monochrome (debayered)"
+        );
+    }
+
+    #[test]
+    fn telescope_label_combines_name_and_optics() {
+        let mut header = Header::new();
+        header.set(
+            "TELESCOP",
+            HeaderValue::String("My Scope".to_string()),
+            None,
+        );
+        header.set("FOCALLEN", HeaderValue::Float(203.0), None);
+        header.set("FOCRATIO", HeaderValue::Float(4.5), None);
+        assert_eq!(
+            telescope_label(&header),
+            Some("My Scope (203mm F/4.5)".to_string())
+        );
+    }
+
+    #[test]
+    fn telescope_label_falls_back_to_name_or_optics_alone() {
+        let mut name_only = Header::new();
+        name_only.set(
+            "TELESCOP",
+            HeaderValue::String("My Scope".to_string()),
+            None,
+        );
+        assert_eq!(telescope_label(&name_only), Some("My Scope".to_string()));
+
+        let mut optics_only = Header::new();
+        optics_only.set("FOCALLEN", HeaderValue::Float(203.0), None);
+        assert_eq!(telescope_label(&optics_only), Some("203mm".to_string()));
+
+        assert_eq!(telescope_label(&Header::new()), None);
+    }
+
+    #[test]
+    fn push_coordinate_prefers_decimal_over_sexagesimal_string() {
+        let mut fields = Vec::new();
+        // RA 307.5° = 20.5h -> 20h 30m 00.00s.
+        push_coordinate(
+            &mut fields,
+            Axis::Ra,
+            Some(307.5),
+            Some("ignored raw string"),
+        );
+        assert_eq!(fields[0].label, "RA");
+        assert_eq!(fields[0].value, "20h 30m 00.00s (20.5h)");
+    }
+
+    #[test]
+    fn push_coordinate_falls_back_to_raw_string_without_decimal() {
+        let mut fields = Vec::new();
+        push_coordinate(&mut fields, Axis::Dec, None, Some(" -12 30 00 "));
+        assert_eq!(fields[0].value, "-12 30 00");
+    }
+
+    #[test]
+    fn push_coordinate_omits_field_when_absent() {
+        let mut fields = Vec::new();
+        push_coordinate(&mut fields, Axis::Ra, None, None);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn format_coordinate_renders_ra_and_dec() {
+        assert_eq!(format_coordinate(Axis::Ra, 307.5), "20h 30m 00.00s (20.5h)");
+        assert_eq!(
+            format_coordinate(Axis::Dec, -12.5),
+            "-12° 30' 00.00\" (-12.5°)"
+        );
+    }
+
+    #[test]
+    fn to_sexagesimal_splits_and_carries_rounding() {
+        assert_eq!(to_sexagesimal(20.5), (20, 30, 0.0));
+        // 59.9999 seconds rounds up to 60.00 and carries into the minute.
+        let (h, m, s) = to_sexagesimal(1.0 + 59.9999 / 3600.0);
+        assert_eq!((h, m), (1, 1));
+        assert!(s.abs() < 1e-9);
+    }
+
+    #[test]
+    fn trim_drops_trailing_zeros() {
+        assert_eq!(trim(3.0), "3");
+        assert_eq!(trim(3.5), "3.5");
+        assert_eq!(trim(3.125), "3.125");
+        assert_eq!(trim(-4.0), "-4");
+    }
+
+    #[test]
+    fn push_raw_headers_renders_trimmed_cards() {
+        let mut header = Header::new();
+        header.set("OBJECT", HeaderValue::String("M31".to_string()), None);
+        let mut out = String::new();
+        push_raw_headers(&mut out, &header);
+        assert!(out.contains("OBJECT"));
+        assert!(out.contains("M31"));
+        // Cards are trimmed, so no line carries trailing padding.
+        assert!(out.lines().all(|l| l == l.trim_end()));
+    }
+
+    #[test]
+    fn print_stats_reports_single_channel_without_header_row() {
+        let img_stats = ImageStats {
+            channels: vec![stats_fixture(0, 65535, 100.0)],
+            histogram: [0u64; 256],
+        };
+        let mut out = String::new();
+        print_stats(&mut out, &img_stats, false);
+        assert!(!out.contains("Channels"));
+        assert!(out.contains("Min"));
+        assert!(out.contains("Max"));
+        assert!(out.contains("65535"));
+    }
+
+    #[test]
+    fn print_stats_reports_rgb_channel_header() {
+        let img_stats = ImageStats {
+            channels: vec![
+                stats_fixture(0, 100, 10.0),
+                stats_fixture(0, 200, 20.0),
+                stats_fixture(0, 300, 30.0),
+            ],
+            histogram: [0u64; 256],
+        };
+        let mut out = String::new();
+        print_stats(&mut out, &img_stats, false);
+        assert!(out.contains("Channels"));
+        // The R/G/B header row and every stats row have three value columns.
+        let min_line = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("Min:"))
+            .unwrap();
+        assert_eq!(min_line.matches('|').count(), 2);
+    }
+
+    #[test]
+    fn print_star_stats_reports_none_detected() {
+        let stats = StarStats {
+            count: 0,
+            hfr: None,
+            fwhm: None,
+            eccentricity: None,
+        };
+        let mut out = String::new();
+        print_star_stats(&mut out, &stats);
+        assert!(out.contains("none detected"));
+    }
+
+    #[test]
+    fn print_star_stats_reports_measured_values() {
+        let stats = StarStats {
+            count: 12,
+            hfr: Some(2.4137),
+            fwhm: Some(3.1),
+            eccentricity: Some(0.2),
+        };
+        let mut out = String::new();
+        print_star_stats(&mut out, &stats);
+        assert!(out.contains("Count:"));
+        assert!(out.contains('2'));
+        // Each metric line pairs its label with the rounded value.
+        let has_line =
+            |label: &str, value: &str| out.lines().any(|l| l.contains(label) && l.contains(value));
+        assert!(has_line("Count:", "12"));
+        assert!(has_line("HFR:", "2.41"));
+        assert!(has_line("FWHM:", "3.1"));
+        assert!(has_line("Eccentricity:", "0.2"));
+    }
+
+    #[test]
+    fn print_row_aligns_columns_by_width() {
+        let mut out = String::new();
+        print_row(&mut out, "Label:", &["1".to_string(), "22".to_string()]);
+        let line = out.lines().next().unwrap();
+        // Each column is right-aligned into STATS_COLUMN_WIDTH and `|`-separated.
+        let value_part = line.split_once(':').unwrap().1;
+        let columns: Vec<&str> = value_part.split('|').collect();
+        assert_eq!(columns.len(), 2);
+        assert!(columns.iter().all(|c| c.len() == STATS_COLUMN_WIDTH + 1));
     }
 }

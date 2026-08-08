@@ -4,9 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use fitskit::{FitsFile, Header, HeaderValue, ImageData, PixelData};
-use tempfile::TempDir;
 
-use crate::fits_image::{BAYERPAT, BZERO, round_to_u16};
+use crate::data::round_to_u16;
+use crate::keywords::{BAYERPAT, BZERO};
 
 /// Absolute path to a file under the workspace's `test-data/` directory.
 pub(crate) fn test_data(filename: &str) -> PathBuf {
@@ -22,12 +22,6 @@ pub(crate) fn output_header(path: &Path) -> Header {
     FitsFile::from_file(path).unwrap().primary().header.clone()
 }
 
-/// Copy a bundled test-data file into `tmp`, returning the destination path.
-pub(crate) fn copy_to_temp(filename: &str, tmp: &TempDir) -> PathBuf {
-    let dst = tmp.path().join(filename);
-    std::fs::copy(test_data(filename), &dst).unwrap();
-    dst
-}
 
 /// Write a 2D single-plane I16 mosaic, optionally tagged with a BAYERPAT.
 pub(crate) fn write_mosaic_fits(path: &Path, width: usize, height: usize, pattern: Option<&str>) {
@@ -83,9 +77,8 @@ pub(crate) fn write_mosaic_fits_with_metadata(
 /// detection threshold, so a seeded RNG would let a star-detection test flake on
 /// its seed.
 ///
-/// Carries a DATE-OBS so an analytics batch will key it onto the time axis
-/// rather than skipping it; a test wanting several frames in an order overrides
-/// [`FileMetrics::time`](crate::analytics::FileMetrics) itself.
+/// Carries a DATE-OBS so a caller keying frames onto a time axis has one to
+/// read.
 pub(crate) fn write_star_field_fits(
     path: &Path,
     width: usize,
@@ -93,11 +86,30 @@ pub(crate) fn write_star_field_fits(
     background: f64,
     stars: &[(f64, f64, f64, f64, f64)],
 ) {
+    write_noisy_star_field_fits(path, width, height, background, 0.0, stars);
+}
+
+/// [`write_star_field_fits`] with `noise_sigma` ADU of Gaussian read noise on
+/// top of the ripple, for tests that need the *shape* measurements to face a
+/// realistic per-pixel SNR rather than an essentially noiseless profile.
+///
+/// The noise is drawn from a fixed-seed PCG-style generator keyed only by pixel
+/// position, so it is as reproducible as the ripple — same reason: the
+/// background's MAD sets the detection threshold, and a per-run seed would let
+/// these tests flake.
+pub(crate) fn write_noisy_star_field_fits(
+    path: &Path,
+    width: usize,
+    height: usize,
+    background: f64,
+    noise_sigma: f64,
+    stars: &[(f64, f64, f64, f64, f64)],
+) {
     let mut pixels = Vec::with_capacity(width * height);
     for y in 0..height {
         for x in 0..width {
             let ripple = ((x * 7 + y * 13) % 5) as f64;
-            let mut v = background + ripple;
+            let mut v = background + ripple + noise_sigma * gaussian_at(x, y);
             for &(sx, sy, sigma_x, sigma_y, peak) in stars {
                 let dx = (x as f64 - sx) / sigma_x;
                 let dy = (y as f64 - sy) / sigma_y;
@@ -120,6 +132,23 @@ pub(crate) fn write_star_field_fits(
     fits.to_file(path).unwrap();
 }
 
+/// A standard-normal deviate for pixel `(x, y)`: hash the position, then
+/// Box-Muller two of its bits into a Gaussian. Pure function of the position,
+/// so the field is identical on every run and every platform.
+fn gaussian_at(x: usize, y: usize) -> f64 {
+    let hash = |mut n: u64| {
+        n = n
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        n ^= n >> 33;
+        n = n.wrapping_mul(0xff51afd7ed558ccd);
+        (n >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let key = (y as u64) << 32 | x as u64;
+    let (u, v) = (hash(key).max(1e-12), hash(key ^ 0x9e37_79b9_7f4a_7c15));
+    (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+}
+
 /// Write a 3-plane (R, G, B) I16 RGB cube with sequential pixel values.
 pub(crate) fn write_rgb_cube_fits(path: &Path, width: usize, height: usize) {
     let n = width * height;
@@ -134,18 +163,9 @@ pub(crate) fn write_rgb_cube_fits(path: &Path, width: usize, height: usize) {
     fits.to_file(path).unwrap();
 }
 
-/// Write a 2D single-plane F32 monochrome FITS with values scaled to [0, 1].
-/// Simulates drizzle-processed output, which typically uses float pixels in a
-/// small range rather than the [0, 65535] range that `round_to_u16` assumes.
-pub(crate) fn write_mono_f32_fits(path: &Path, width: usize, height: usize) {
-    let n = width * height;
-    let pixels: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
-    let img = ImageData::new(vec![width, height], PixelData::F32(pixels));
-    let fits = FitsFile::with_primary_image(img);
-    fits.to_file(path).unwrap();
-}
-
 /// Write a 3-plane F32 RGB cube with values scaled to [0, 1] per channel.
+/// Simulates drizzle-processed output, which typically uses float pixels in a
+/// small range rather than the [0, 65535] range integer frames use.
 pub(crate) fn write_rgb_cube_f32_fits(path: &Path, width: usize, height: usize) {
     let n = width * height;
     let mut pixels = Vec::with_capacity(n * 3);
