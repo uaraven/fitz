@@ -1554,7 +1554,6 @@ dependencies = [
  "supports-color",
  "tempfile",
  "terminal_size",
- "tiff",
 ]
 
 [[package]]
