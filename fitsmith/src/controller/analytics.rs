@@ -4,11 +4,7 @@
 //!
 //! Two menu entries, one dialog. They differ in four things — the title, which
 //! metrics the dropdown lists, whether the batch detects stars, and the export
-//! file-name prefix — and share everything else: the chart, the zoom slider, the
-//! progress overlay, the cancel path, both exports, the resizable card. So the
-//! family travels as state ([`AppState::analytics_family`]) rather than as a
-//! copy of the widget tree, and each entry point is a thin call into
-//! [`open_chart_dialog`].
+//! file-name prefix — and share everything else.
 //!
 //! Every metric of the open family is computed in one file read each, so
 //! switching the dropdown re-plots from the cache with no re-read. Zoom needs no

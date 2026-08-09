@@ -60,13 +60,13 @@ impl Metric {
     /// The dropdown label for this metric.
     pub fn label(self) -> &'static str {
         match self {
-            Metric::Min => "Min ADU",
-            Metric::Max => "Max ADU",
-            Metric::Mean => "Mean ADU",
-            Metric::Median => "Median ADU",
-            Metric::Sigma => "Noise sigma",
-            Metric::Mad => "MAD ADU",
-            Metric::Mode => "Mode ADU",
+            Metric::Min => "Min",
+            Metric::Max => "Max",
+            Metric::Mean => "Mean",
+            Metric::Median => "Median",
+            Metric::Sigma => "StdDev",
+            Metric::Mad => "MAD",
+            Metric::Mode => "Mode",
             Metric::ZeroCount => "Zero count",
             Metric::SaturatedCount => "Saturated count",
             Metric::StarCount => "Star count",
