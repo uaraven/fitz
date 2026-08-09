@@ -2,24 +2,26 @@
 //! with no state or threading. Data in, Slint properties out; the controller
 //! owns *when* to call these, this owns *how* the data maps to the UI.
 
-use libfitz::info::SummaryField;
+use libfitz::stars::StarStats;
+use libfitz::stats::{ImageStats, Stats};
+use libfitz::summary::SummaryField;
 use slint::{Image, ModelRc, VecModel};
 
-use crate::doc::{LoadedDoc, StatSummary};
+use crate::doc::FileMeta;
 use crate::image::preview_to_image;
 use crate::{AppWindow, HeaderRow, StatItem};
 
 /// Show a loaded document: its image (plus natural size for fit/zoom), the
 /// header table, and the pixel statistics + histogram.
-pub fn show_doc(app: &AppWindow, doc: &LoadedDoc) {
-    app.set_preview_image(preview_to_image(&doc.preview));
-    app.set_image_width(doc.preview.width as f32);
-    app.set_image_height(doc.preview.height as f32);
-    app.set_header_rows(header_rows(doc));
-    app.set_info(info_items(&doc.info));
-    app.set_stats(stat_items(&doc.stats));
-    app.set_star_stats(star_items(&doc.stats));
-    app.set_histogram(histogram(&doc.stats));
+pub fn show_doc(app: &AppWindow, meta: &FileMeta, preview: &image::RgbaImage) {
+    app.set_preview_image(preview_to_image(preview));
+    app.set_image_width(preview.width() as f32);
+    app.set_image_height(preview.height() as f32);
+    app.set_header_rows(header_rows(meta));
+    app.set_info(info_items(&meta.info));
+    app.set_stats(stat_items(&meta.stats));
+    app.set_star_stats(star_items(&meta.stars));
+    app.set_histogram(histogram(&meta.stats));
 }
 
 /// Reset every data-driven view to empty (no document, or a failed load).
@@ -36,8 +38,8 @@ pub fn clear(app: &AppWindow) {
 
 /// One table row per header card, so the full header is shown (as
 /// `fitz info --headers` prints it).
-fn header_rows(doc: &LoadedDoc) -> ModelRc<HeaderRow> {
-    let rows: Vec<HeaderRow> = doc
+fn header_rows(meta: &FileMeta) -> ModelRc<HeaderRow> {
+    let rows: Vec<HeaderRow> = meta
         .headers
         .iter()
         .map(|c| HeaderRow {
@@ -55,48 +57,58 @@ fn info_items(fields: &[SummaryField]) -> ModelRc<StatItem> {
     let items: Vec<StatItem> = fields
         .iter()
         .map(|f| StatItem {
-            label: f.label.as_str().into(),
+            label: f.label.into(),
             value: f.value.as_str().into(),
         })
         .collect();
     ModelRc::new(VecModel::from(items))
 }
 
-/// The labeled statistics for the panel, or empty when there are no stats. For
-/// an already-debayered RGB cube the numbers are its green channel's, so each
-/// ADU label carries a `(G)` suffix ([`StatSummary::channel`]) — otherwise a
-/// frame's numbers would read as if measured across all channels.
-fn stat_items(stats: &Option<StatSummary>) -> ModelRc<StatItem> {
-    let items = match stats {
-        Some(s) => {
-            // The channel suffix disambiguates an RGB cube's per-channel numbers;
-            // for a single-channel frame it's absent and the label is unchanged.
-            let adu = |name: &str| match s.channel {
-                Some(ch) => format!("{name} ADU ({ch})"),
-                None => format!("{name} ADU"),
-            };
-            vec![
-                stat(&adu("Min"), format_stat(s.min)),
-                stat(&adu("Max"), format_stat(s.max)),
-                stat(&adu("Mean"), format_stat(s.mean)),
-                stat(&adu("Median"), format_stat(s.median)),
-                stat(&adu("Sigma"), format_stat(s.sigma)),
-                stat(&adu("MAD"), format_stat(s.mad)),
-                stat("Zeros", s.zeros.to_string()),
-            ]
-        }
-        None => Vec::new(),
+/// The labeled pixel statistics for the panel, one row per measurement. A
+/// single-channel source (grayscale/CFA) shows one number; an already-
+/// debayered RGB source shows all three channels on the same row, mirroring
+/// `fitz info`'s per-channel table.
+fn stat_items(stats: &ImageStats) -> ModelRc<StatItem> {
+    let row = |label: &str, extract: fn(&Stats) -> f64| {
+        stat(label, join_channels(&stats.channels, extract))
     };
+    let items = vec![
+        row("Min ADU", |s| s.min as f64),
+        row("Max ADU", |s| s.max as f64),
+        row("Mean ADU", |s| s.mean as f64),
+        row("Median ADU", |s| s.median as f64),
+        row("Sigma ADU", |s| s.sigma as f64),
+        row("MAD ADU", |s| s.mad as f64),
+        row("Zeros", |s| s.zero_count as f64),
+    ];
     ModelRc::new(VecModel::from(items))
 }
 
+/// Format one measurement across every channel: a bare number for a single
+/// channel, or `"R <v>  G <v>  B <v>"` for three.
+fn join_channels(channels: &[Stats], extract: fn(&Stats) -> f64) -> String {
+    const LABELS: [&str; 3] = ["R", "G", "B"];
+    if channels.len() == 3 {
+        LABELS
+            .iter()
+            .zip(channels)
+            .map(|(label, s)| format!("{label} {}", format_stat(extract(s))))
+            .collect::<Vec<_>>()
+            .join("  ")
+    } else {
+        channels
+            .first()
+            .map(|s| format_stat(extract(s)))
+            .unwrap_or_default()
+    }
+}
+
 /// The star metrics for the panel's second column: always the star count, plus
-/// the shape medians when detection found any stars. Empty when the frame has no
-/// star metrics (an already-debayered RGB cube, or a shape detection can't run
-/// on) — the panel then hides the column.
-fn star_items(stats: &Option<StatSummary>) -> ModelRc<StatItem> {
+/// the shape medians when detection found any stars. Empty when the frame has
+/// no star metrics at all (detection couldn't build a plane for it).
+fn star_items(stars: &Option<StarStats>) -> ModelRc<StatItem> {
     let mut items = Vec::new();
-    if let Some(stars) = stats.as_ref().and_then(|s| s.stars.as_ref()) {
+    if let Some(stars) = stars {
         items.push(stat("Stars", stars.count.to_string()));
         if let Some(hfr) = stars.hfr {
             items.push(stat("HFR", format_star(hfr)));
@@ -111,13 +123,9 @@ fn star_items(stats: &Option<StatSummary>) -> ModelRc<StatItem> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// The normalized histogram bar heights, or empty when there are no stats.
-fn histogram(stats: &Option<StatSummary>) -> ModelRc<f32> {
-    let heights = stats
-        .as_ref()
-        .map(|s| s.histogram.clone())
-        .unwrap_or_default();
-    ModelRc::new(VecModel::from(heights))
+/// The normalized histogram bar heights.
+fn histogram(stats: &ImageStats) -> ModelRc<f32> {
+    ModelRc::new(VecModel::from(normalize_histogram(&stats.histogram)))
 }
 
 fn stat(label: &str, value: String) -> StatItem {
@@ -145,10 +153,24 @@ fn format_star(v: f64) -> String {
     format!("{v:.2}")
 }
 
+/// Normalize raw histogram counts to bar heights in `[0, 1]`. A logarithmic
+/// scale keeps the long tail of an astronomical frame visible instead of a
+/// single spike swamping every other bucket. An empty image yields all zeros.
+fn normalize_histogram(counts: &[u64]) -> Vec<f32> {
+    let max = counts.iter().copied().max().unwrap_or(0);
+    if max == 0 {
+        return vec![0.0; counts.len()];
+    }
+    let denom = ((max + 1) as f64).ln();
+    counts
+        .iter()
+        .map(|&c| (((c + 1) as f64).ln() / denom) as f32)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::StarSummary;
     use slint::Model;
 
     /// Flatten a `StatItem` model back into `"label: value"` strings for
@@ -160,26 +182,34 @@ mod tests {
             .collect()
     }
 
-    fn summary() -> StatSummary {
-        StatSummary {
-            min: 0.0,
-            max: 65535.0,
-            mean: 1234.5,
-            median: 1000.0,
-            sigma: 12.75,
-            mad: 8.0,
-            zeros: 7,
-            histogram: Vec::new(),
-            stars: None,
-            channel: None,
+    fn mono_stats(
+        min: u16,
+        max: u16,
+        mean: f32,
+        median: f32,
+        sigma: f32,
+        mad: f32,
+        zeros: u32,
+    ) -> ImageStats {
+        ImageStats {
+            channels: vec![Stats {
+                min,
+                max,
+                mean,
+                median,
+                sigma,
+                mad,
+                zero_count: zeros,
+                ..Stats::default()
+            }],
+            histogram: [0u64; 256],
         }
     }
 
     #[test]
-    fn pixel_stats_carry_adu_labels() {
-        // The renamed labels: Max ADU etc., and whole numbers print without a
-        // decimal point while fractional means keep three places.
-        let items = stat_items(&Some(summary()));
+    fn pixel_stats_report_a_single_channel() {
+        let stats = mono_stats(0, 65535, 1234.5, 1000.0, 12.75, 8.0, 7);
+        let items = stat_items(&stats);
         assert_eq!(
             rows(&items),
             [
@@ -195,76 +225,84 @@ mod tests {
     }
 
     #[test]
-    fn rgb_cube_stats_label_the_green_channel() {
-        // An RGB cube's numbers are its green channel's, so each ADU label gains
-        // a `(G)` suffix; the channel-free Zeros row is untouched.
-        let stats = StatSummary {
-            channel: Some("G"),
-            ..summary()
+    fn pixel_stats_report_all_three_channels_for_rgb() {
+        let stats = ImageStats {
+            channels: vec![
+                Stats {
+                    min: 10,
+                    max: 100,
+                    mean: 50.0,
+                    ..Stats::default()
+                },
+                Stats {
+                    min: 20,
+                    max: 200,
+                    mean: 60.0,
+                    ..Stats::default()
+                },
+                Stats {
+                    min: 30,
+                    max: 300,
+                    mean: 70.0,
+                    ..Stats::default()
+                },
+            ],
+            histogram: [0u64; 256],
         };
-        let labels: Vec<String> = stat_items(&Some(stats))
-            .iter()
-            .map(|s| s.label.to_string())
-            .collect();
-        assert_eq!(
-            labels,
-            [
-                "Min ADU (G)",
-                "Max ADU (G)",
-                "Mean ADU (G)",
-                "Median ADU (G)",
-                "Sigma ADU (G)",
-                "MAD ADU (G)",
-                "Zeros",
-            ]
-        );
-    }
-
-    #[test]
-    fn no_pixel_stats_is_an_empty_column() {
-        assert!(rows(&stat_items(&None)).is_empty());
+        let items = stat_items(&stats);
+        let min_row = rows(&items)
+            .into_iter()
+            .find(|r| r.starts_with("Min ADU"))
+            .unwrap();
+        assert_eq!(min_row, "Min ADU: R 10  G 20  B 30");
     }
 
     #[test]
     fn star_column_lists_count_and_present_shapes() {
-        // A frame with detected stars: count plus the three shapes, each rounded
-        // to two places.
-        let stats = StatSummary {
-            stars: Some(StarSummary {
-                count: 42,
-                hfr: Some(2.418),
-                fwhm: Some(3.001),
-                eccentricity: Some(0.5),
-            }),
-            ..summary()
-        };
+        let stats = Some(StarStats {
+            count: 42,
+            hfr: Some(2.418),
+            fwhm: Some(3.001),
+            eccentricity: Some(0.5),
+        });
         assert_eq!(
-            rows(&star_items(&Some(stats))),
+            rows(&star_items(&stats)),
             ["Stars: 42", "HFR: 2.42", "FWHM: 3.00", "Eccentricity: 0.50"]
         );
     }
 
     #[test]
     fn starless_frame_shows_only_the_count() {
-        // Detection ran but found nothing: the count (zero) is a real
-        // measurement, but there are no shapes to report.
-        let stats = StatSummary {
-            stars: Some(StarSummary {
-                count: 0,
-                hfr: None,
-                fwhm: None,
-                eccentricity: None,
-            }),
-            ..summary()
-        };
-        assert_eq!(rows(&star_items(&Some(stats))), ["Stars: 0"]);
+        let stats = Some(StarStats {
+            count: 0,
+            hfr: None,
+            fwhm: None,
+            eccentricity: None,
+        });
+        assert_eq!(rows(&star_items(&stats)), ["Stars: 0"]);
     }
 
     #[test]
     fn no_star_metrics_is_an_empty_column() {
-        // No StarSummary at all (an RGB cube, or a shape detection can't run on):
-        // the panel hides the column.
-        assert!(rows(&star_items(&Some(summary()))).is_empty());
         assert!(rows(&star_items(&None)).is_empty());
+    }
+
+    #[test]
+    fn histogram_normalizes_peak_to_one() {
+        let mut counts = [0u64; 256];
+        counts[0] = 1;
+        counts[1] = 1000; // the peak bucket
+        let norm = normalize_histogram(&counts);
+        assert_eq!(norm.len(), 256);
+        assert!((norm[1] - 1.0).abs() < 1e-6);
+        assert!(norm.iter().all(|&h| (0.0..=1.0).contains(&h)));
+        assert_eq!(norm[2], 0.0);
+        assert!(norm[0] > 0.0 && norm[0] < norm[1]);
+    }
+
+    #[test]
+    fn empty_histogram_is_all_zero() {
+        let norm = normalize_histogram(&[0u64; 256]);
+        assert!(norm.iter().all(|&h| h == 0.0));
     }
 }

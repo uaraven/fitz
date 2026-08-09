@@ -35,6 +35,10 @@ slint = "1"
 rfd = "0.15"
 anyhow = "1"
 sysinfo = "0.39.6"
+# Only needed to name `image::RgbaImage`, the type `render_preview` and the
+# cached preview buffer are built from — no encoders required here, libfitz
+# already owns those.
+image = { version = "0.25", default-features = false }
 
 # macOS only: used to turn off automatic window tabbing so AppKit stops
 # injecting "Show Tab Bar"/"Show All Tabs" into our View menu. Already in the

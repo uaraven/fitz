@@ -10,16 +10,19 @@ use std::path::Path;
 use tiff::encoder::compression::DeflateLevel;
 use tiff::encoder::{Compression, TiffEncoder, colortype};
 
+#[derive(Clone, Copy)]
 pub struct TiffOptions {
     pub bpp: u32,
     pub compress: bool,
 }
 
+#[derive(Clone, Copy)]
 pub struct FitsOptions {
     pub bpp: i64,
     pub compress: bool,
 }
 
+#[derive(Clone, Copy)]
 pub enum ExportFormat {
     Fits(FitsOptions),
     Tiff(TiffOptions),

@@ -1,11 +1,10 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use libfitz::fitskit::CompressionType;
-use libfitz::raw_fits::CompressionSettings;
 use crate::io_prompt::{ensure_can_write, print_progress, print_step};
 use crate::options::Options;
+use anyhow::{Context, Result};
+use libfitz::raw_fits::compression_settings_for;
 
 pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> {
     ensure_can_write(output, opts.yes)?;
@@ -14,12 +13,7 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
     print_step(opts.verbose, "reading");
     let img = libfitz::raw_fits::load_raw(input)?;
     print_step(opts.verbose, "compressing");
-    let compression = match opts.algorithm {
-        CompressionType::Rice1 => CompressionSettings::Rice1,
-        CompressionType::Gzip1 => CompressionSettings::Gzip1,
-        CompressionType::Gzip2 => CompressionSettings::Gzip2,
-        _ => CompressionSettings::NoCompression,
-    };
+    let compression = compression_settings_for(opts.algorithm);
     print_step(opts.verbose, "writing");
     libfitz::raw_fits::save_raw(&img, output, compression)?;
 
@@ -34,7 +28,7 @@ pub fn compress_file(input: &Path, output: &Path, opts: &Options) -> Result<()> 
 mod tests {
     use super::*;
     use libfitz::fits_file::load_fits;
-    use libfitz::fitskit::{FitsFile, HeaderValue, ImageData, PixelData};
+    use libfitz::fitskit::{CompressionType, FitsFile, HeaderValue, ImageData, PixelData};
     use tempfile::TempDir;
 
     fn opts(algorithm: CompressionType, keep: bool, output: Option<&Path>, yes: bool) -> Options {
@@ -69,7 +63,12 @@ mod tests {
         write_mosaic_fits(&input, 16, 16, Some("RGGB"));
         let output = tmp.path().join("mosaic.fits.fz");
 
-        compress_file(&input, &output, &opts(CompressionType::Rice1, true, None, true)).unwrap();
+        compress_file(
+            &input,
+            &output,
+            &opts(CompressionType::Rice1, true, None, true),
+        )
+        .unwrap();
 
         // Rice1 is lossless for integer data, so the pixels and Bayer pattern
         // must survive the round trip exactly.
@@ -133,7 +132,12 @@ mod tests {
         write_mosaic_fits(&input, 8, 8, None);
         let output = tmp.path().join("mosaic.fits.fz");
 
-        compress_file(&input, &output, &opts(CompressionType::Rice1, false, None, true)).unwrap();
+        compress_file(
+            &input,
+            &output,
+            &opts(CompressionType::Rice1, false, None, true),
+        )
+        .unwrap();
 
         assert!(!input.exists());
         assert!(output.exists());
@@ -146,7 +150,12 @@ mod tests {
         write_mosaic_fits(&input, 8, 8, None);
         let output = tmp.path().join("mosaic.fits.fz");
 
-        compress_file(&input, &output, &opts(CompressionType::Rice1, true, None, true)).unwrap();
+        compress_file(
+            &input,
+            &output,
+            &opts(CompressionType::Rice1, true, None, true),
+        )
+        .unwrap();
 
         assert!(input.exists());
     }
@@ -180,8 +189,12 @@ mod tests {
 
         // Non-interactive test process: stdin isn't a terminal, so the
         // overwrite prompt refuses outright instead of blocking on input.
-        let err = compress_file(&input, &output, &opts(CompressionType::Rice1, true, None, false))
-            .unwrap_err();
+        let err = compress_file(
+            &input,
+            &output,
+            &opts(CompressionType::Rice1, true, None, false),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("already exists"));
         assert_eq!(fs::read(&output).unwrap(), b"pre-existing");
         assert!(input.exists());
@@ -195,7 +208,12 @@ mod tests {
         let output = tmp.path().join("mosaic.fits.fz");
         fs::write(&output, b"pre-existing").unwrap();
 
-        compress_file(&input, &output, &opts(CompressionType::Rice1, true, None, true)).unwrap();
+        compress_file(
+            &input,
+            &output,
+            &opts(CompressionType::Rice1, true, None, true),
+        )
+        .unwrap();
 
         assert_ne!(fs::read(&output).unwrap(), b"pre-existing");
         load_fits(&output).unwrap();

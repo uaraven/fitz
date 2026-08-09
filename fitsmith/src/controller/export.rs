@@ -5,27 +5,25 @@
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
-use libfitz::export::{
-    ExportFormat, FitsBitpix, FitsExportOptions, JpegExportOptions, TiffExportOptions,
-};
-use libfitz::preview::PreviewParams;
+use libfitz::export::{ExportFormat, FitsOptions, TiffOptions};
 use slint::{ComponentHandle, Weak};
 
 use crate::AppWindow;
 use crate::files::{display_name, export_output_path};
 
+use super::viewer::apply_pipeline;
 use super::{
-    algorithm_for_index, batch_is_current, begin_file_batch, operation_targets, params,
-    raise_batch_cancel, require_existing_dir, set_row_status,
+    batch_is_current, begin_file_batch, operation_targets, raise_batch_cancel,
+    require_existing_dir, set_row_status, view_toggles,
 };
 
-/// Map a FITS bit-depth dialog index (the ComboBox order) to a [`FitsBitpix`].
+/// Map a FITS bit-depth dialog index (the ComboBox order) to a `BITPIX`.
 /// Falls back to 16-bit integer for any out-of-range index.
-fn fits_bitpix_for_index(index: i32) -> FitsBitpix {
+fn fits_bpp_for_index(index: i32) -> i64 {
     match index {
-        0 => FitsBitpix::I8,
-        2 => FitsBitpix::F32,
-        _ => FitsBitpix::I16,
+        0 => 8,
+        2 => -32, // FITS float BITPIX
+        _ => 16,
     }
 }
 
@@ -39,24 +37,30 @@ fn tiff_bpp_for_index(index: i32) -> u32 {
     }
 }
 
+/// The file extension for `format`, feeding [`export_output_path`].
+fn export_extension(format: &ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Fits(_) => "fits",
+        ExportFormat::Tiff(_) => "tiff",
+        ExportFormat::Jpeg(_) => "jpg",
+        ExportFormat::Png => "png",
+    }
+}
+
 /// Assemble the [`ExportFormat`] (with its per-format options) from the export
 /// dialog's current settings.
 fn export_format(app: &AppWindow) -> ExportFormat {
     match app.get_export_format() {
-        1 => ExportFormat::Tiff(TiffExportOptions {
+        1 => ExportFormat::Tiff(TiffOptions {
             bpp: tiff_bpp_for_index(app.get_export_tiff_bpp()),
-            deflate: app.get_export_tiff_deflate(),
+            compress: app.get_export_tiff_deflate(),
         }),
-        2 => ExportFormat::Jpeg(JpegExportOptions {
-            quality: app.get_export_jpeg_quality().clamp(1, 100) as u8,
-        }),
+        2 => ExportFormat::Jpeg(app.get_export_jpeg_quality().clamp(1, 100) as u8),
         3 => ExportFormat::Png,
         // 0 and any unexpected index: FITS.
-        _ => ExportFormat::Fits(FitsExportOptions {
-            bitpix: fits_bitpix_for_index(app.get_export_fits_bitpix()),
-            compression: app
-                .get_export_fits_compress()
-                .then(|| algorithm_for_index(app.get_export_fits_algorithm())),
+        _ => ExportFormat::Fits(FitsOptions {
+            bpp: fits_bpp_for_index(app.get_export_fits_bitpix()),
+            compress: app.get_export_fits_compress(),
         }),
     }
 }
@@ -76,7 +80,6 @@ fn reset_export_fields(app: &AppWindow) {
     app.set_export_format(0);
     app.set_export_fits_bitpix(1); // 16-bit integer
     app.set_export_fits_compress(false);
-    app.set_export_fits_algorithm(0);
     app.set_export_tiff_bpp(1); // 16 bits per pixel
     app.set_export_tiff_deflate(false);
     app.set_export_jpeg_quality(90);
@@ -112,7 +115,8 @@ pub fn run_export(app: &AppWindow) {
     }
     // The current view settings (debayer/stretch) are exported, so the file
     // matches what the viewer shows.
-    spawn_export(app.as_weak(), targets, dir, format, params(app));
+    let (debayer, stretch) = view_toggles(app);
+    spawn_export(app.as_weak(), targets, dir, format, debayer, stretch);
 }
 
 /// Cancel the running export batch from its progress overlay: take the overlay
@@ -125,6 +129,20 @@ pub fn cancel_export(app: &AppWindow) {
     app.set_status_text("Canceling export…".into());
 }
 
+/// Export one file: load it, apply the current debayer/stretch settings, and
+/// encode it to `format` at `output`.
+fn export_one(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    format: ExportFormat,
+    debayer: bool,
+    stretch: bool,
+) -> anyhow::Result<()> {
+    let image = libfitz::fits_file::load_fits(input)?;
+    let image = apply_pipeline(image, debayer, stretch, &|_| {})?;
+    image.export(output, format)
+}
+
 /// Run an export batch on a worker thread, rendering each file through the
 /// preview pipeline and encoding it to the chosen format in `dir`. Drives the
 /// cancellable modal progress overlay; a failed file is badged with its error
@@ -134,9 +152,10 @@ fn spawn_export(
     targets: Vec<PathBuf>,
     dir: PathBuf,
     format: ExportFormat,
-    params: PreviewParams,
+    debayer: bool,
+    stretch: bool,
 ) {
-    let ext = format.extension();
+    let ext = export_extension(&format);
     let (generation, cancel) = begin_file_batch();
     let _ = weak.upgrade_in_event_loop(|app| {
         app.set_export_in_progress(true);
@@ -167,7 +186,7 @@ fn spawn_export(
             });
 
             let output = export_output_path(input, &dir, ext);
-            match libfitz::export::export_file(input, &output, &params, &format) {
+            match export_one(input, &output, format, debayer, stretch) {
                 Ok(()) => ok += 1,
                 Err(e) => {
                     failed += 1;
@@ -204,16 +223,36 @@ mod tests {
 
     #[test]
     fn export_index_mappings_have_expected_defaults_and_fallbacks() {
-        assert_eq!(fits_bitpix_for_index(0), FitsBitpix::I8);
-        assert_eq!(fits_bitpix_for_index(1), FitsBitpix::I16);
-        assert_eq!(fits_bitpix_for_index(2), FitsBitpix::F32);
+        assert_eq!(fits_bpp_for_index(0), 8);
+        assert_eq!(fits_bpp_for_index(1), 16);
+        assert_eq!(fits_bpp_for_index(2), -32);
         // Out-of-range falls back to 16-bit integer.
-        assert_eq!(fits_bitpix_for_index(7), FitsBitpix::I16);
+        assert_eq!(fits_bpp_for_index(7), 16);
 
         assert_eq!(tiff_bpp_for_index(0), 8);
         assert_eq!(tiff_bpp_for_index(1), 16);
         assert_eq!(tiff_bpp_for_index(2), 32);
         // Out-of-range falls back to 16.
         assert_eq!(tiff_bpp_for_index(7), 16);
+    }
+
+    #[test]
+    fn export_extension_matches_the_format() {
+        assert_eq!(
+            export_extension(&ExportFormat::Fits(FitsOptions {
+                bpp: 16,
+                compress: false
+            })),
+            "fits"
+        );
+        assert_eq!(
+            export_extension(&ExportFormat::Tiff(TiffOptions {
+                bpp: 16,
+                compress: false
+            })),
+            "tiff"
+        );
+        assert_eq!(export_extension(&ExportFormat::Jpeg(90)), "jpg");
+        assert_eq!(export_extension(&ExportFormat::Png), "png");
     }
 }

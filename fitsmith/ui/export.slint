@@ -26,11 +26,10 @@ export component ExportDialog inherits DialogCard {
     in-out property <string> output-dir;
     // 0 = FITS, 1 = TIFF, 2 = JPEG, 3 = PNG (matches the ComboBox order).
     in-out property <int> format-index;
-    // FITS: bit depth (0 = 8-bit int, 1 = 16-bit int, 2 = 32-bit float),
-    // optional tile compression and its algorithm (0 = RICE_1, 1/2 = GZIP_1/2).
+    // FITS: bit depth (0 = 8-bit int, 1 = 16-bit int, 2 = 32-bit float) and
+    // optional tile compression (Rice, libfitz's default algorithm).
     in-out property <int> fits-bitpix-index;
     in-out property <bool> fits-compress;
-    in-out property <int> fits-algorithm-index;
     // TIFF: bits per pixel (0 = 8, 1 = 16, 2 = 32) and optional DEFLATE.
     in-out property <int> tiff-bpp-index;
     in-out property <bool> tiff-deflate;
@@ -103,15 +102,6 @@ export component ExportDialog inherits DialogCard {
         if root.format-index == 0: CheckBox {
             text: "Compression";
             checked <=> root.fits-compress;
-        }
-        if root.format-index == 0: LabeledRow {
-            label: "Algorithm:";
-            ComboBox {
-                model: ["RICE_1", "GZIP_1", "GZIP_2"];
-                current-index <=> root.fits-algorithm-index;
-                enabled: root.fits-compress;
-                horizontal-stretch: 1;
-            }
         }
         // TIFF.
         if root.format-index == 1: LabeledRow {

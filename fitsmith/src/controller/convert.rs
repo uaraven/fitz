@@ -223,29 +223,26 @@ fn spawn_operation(
 }
 
 /// Compress or decompress one file: derive its output path, do the work via
-/// `libfitz`, write the result, and (in replace mode) delete the source.
-/// Returns the path of the file that was written. Runs on a worker thread.
+/// `libfitz::raw_fits`, and (in replace mode) delete the source. Returns the
+/// path of the file that was written. Runs on a worker thread.
 fn process_one(
     op: Operation,
     input: &Path,
     output_dir: Option<&Path>,
     keep: bool,
 ) -> Result<PathBuf> {
-    let (output, out_fits) = match op {
-        Operation::Compress(algorithm) => {
-            let opts = libfitz::compress::CompressOptions { algorithm };
-            (
-                compressed_output_path(input, output_dir),
-                libfitz::compress::compress(input, &opts)?,
-            )
-        }
+    let img = libfitz::raw_fits::load_raw(input)?;
+    let (output, compression) = match op {
+        Operation::Compress(algorithm) => (
+            compressed_output_path(input, output_dir),
+            libfitz::raw_fits::compression_settings_for(algorithm),
+        ),
         Operation::Decompress => (
             decompressed_output_path(input, output_dir),
-            libfitz::decompress::decompress(input)?,
+            libfitz::raw_fits::CompressionSettings::NoCompression,
         ),
     };
-    out_fits
-        .to_file(&output)
+    libfitz::raw_fits::save_raw(&img, &output, compression)
         .with_context(|| format!("cannot write {}", output.display()))?;
     // Replace mode removes the source, but never a file we just wrote onto.
     if !keep && output != input {
@@ -267,7 +264,7 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
         }
         // The rewritten file lives under a new path, so the stamp check can
         // never reach the old entry — drop it here instead.
-        st.cache.remove(&old.to_path_buf());
+        super::forget_path(&mut st, old);
         st.analytics_cache.remove(old);
     });
     update_memory(app);

@@ -36,10 +36,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
-use libfitz::analytics::{
+use slint::{ComponentHandle, ModelRc, VecModel, Weak};
+
+use super::metrics::{
     self, AnalyzeOptions, FileAnalysis, FileMetrics, Metric, MetricFamily, Series, SkipReason,
 };
-use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
 use crate::AppWindow;
 use crate::chart::plot;
@@ -291,7 +292,7 @@ fn analyze_batch(
             return None;
         }
         progress(i, path);
-        match analytics::analyze_file(path, &opts) {
+        match metrics::analyze_file(path, &opts) {
             Ok(outcome) => analyzed(path, outcome),
             Err(e) => {
                 failures += 1;
@@ -433,18 +434,38 @@ pub fn close_analytics(app: &AppWindow) {
 }
 
 /// Build the series for the currently selected metric from the cached metrics
-/// and push its normalized geometry into the chart's properties.
+/// and push its normalized geometry into the chart's properties — three fixed
+/// channel slots (R/G/B), only the first populated for a single-channel
+/// series (see `chart::Plot`/`chart.slint` for why).
 fn replot(app: &AppWindow) {
     let series = current_series(app);
     let plot = plot(&series);
 
+    // Every channel plots the same set of files (see `build_series`), so the
+    // first channel's point count is the number of files actually plotted.
+    let plotted_count = plot.lines.first().map_or(0, |l| l.points.len());
     app.set_analytics_metric_label(series.metric.label().into());
-    app.set_analytics_plotted_count(series.points.len() as i32);
+    app.set_analytics_plotted_count(plotted_count as i32);
     app.set_analytics_unavailable_note(unavailable_note(&series).into());
-    app.set_analytics_points(ModelRc::new(VecModel::from(plot.points)));
+
+    let mut lines = plot.lines.into_iter();
+    let (r, g, b) = (
+        lines.next().unwrap_or_default(),
+        lines.next().unwrap_or_default(),
+        lines.next().unwrap_or_default(),
+    );
+    app.set_analytics_points_r(ModelRc::new(VecModel::from(r.points)));
+    app.set_analytics_line_r(r.line.into());
+    app.set_analytics_label_r(r.label.unwrap_or_default().into());
+    app.set_analytics_points_g(ModelRc::new(VecModel::from(g.points)));
+    app.set_analytics_line_g(g.line.into());
+    app.set_analytics_label_g(g.label.unwrap_or_default().into());
+    app.set_analytics_points_b(ModelRc::new(VecModel::from(b.points)));
+    app.set_analytics_line_b(b.line.into());
+    app.set_analytics_label_b(b.label.unwrap_or_default().into());
+
     app.set_analytics_x_ticks(ModelRc::new(VecModel::from(plot.x_ticks)));
     app.set_analytics_y_ticks(ModelRc::new(VecModel::from(plot.y_ticks)));
-    app.set_analytics_line_commands(plot.line.into());
 }
 
 /// How to word the frames that analyzed fine but have no value for the plotted
@@ -462,7 +483,7 @@ fn unavailable_note(series: &Series) -> String {
 /// The series currently on the chart, rebuilt from the cached metrics.
 fn current_series(app: &AppWindow) -> Series {
     let metric = metric_for_index(current_family(), app.get_analytics_metric());
-    STATE.with(|s| analytics::build_series(&s.borrow().analytics, metric))
+    STATE.with(|s| metrics::build_series(&s.borrow().analytics, metric))
 }
 
 /// A default export file name for the plotted metric, e.g. `analytics-mean-adu.svg`
@@ -530,11 +551,37 @@ fn export_csv(app: &AppWindow) -> Result<Option<PathBuf>> {
     let Some(path) = prompt_export_path(series.metric, "CSV file", "csv") else {
         return Ok(None);
     };
-    let write = || -> io::Result<()> {
-        analytics::write_csv(&series, BufWriter::new(File::create(&path)?))
-    };
+    let write = || -> io::Result<()> { write_csv(&series, BufWriter::new(File::create(&path)?)) };
     write().with_context(|| format!("cannot write {}", path.display()))?;
     Ok(Some(path))
+}
+
+/// Write `series` as CSV: `time,value` for a single-channel series (a star
+/// metric, or a mono/CFA pixel source), `time,R,G,B` for a per-channel one.
+/// Every channel of a `Series` carries the same files in the same order (see
+/// `metrics::build_series`), so the channels can be zipped row by row.
+fn write_csv(series: &Series, mut w: impl Write) -> io::Result<()> {
+    match series.channels.as_slice() {
+        [] => Ok(()),
+        [channel] => {
+            writeln!(w, "time,value")?;
+            for p in &channel.points {
+                writeln!(w, "{},{}", p.time_str, p.value)?;
+            }
+            Ok(())
+        }
+        channels => {
+            writeln!(w, "time,R,G,B")?;
+            for i in 0..channels[0].points.len() {
+                let values: Vec<String> = channels
+                    .iter()
+                    .map(|c| c.points[i].value.to_string())
+                    .collect();
+                writeln!(w, "{},{}", channels[0].points[i].time_str, values.join(","))?;
+            }
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -683,14 +730,13 @@ mod tests {
 
         let stars = t.metrics[0].stars.as_ref().expect("stars measured");
         assert!(stars.count > 0);
-        assert!(Metric::Hfr.value(&t.metrics[0]).is_some());
+        assert!(stars.hfr.is_some());
 
         // Same file, pixel family: no detection, and so no star metric has an
         // answer. This is the test that Analytics did not silently start paying
         // for star detection.
         let t = tally(&targets, MetricFamily::Pixel, &cancel).unwrap();
         assert!(t.metrics[0].stars.is_none());
-        assert_eq!(Metric::Hfr.value(&t.metrics[0]), None);
     }
 
     /// Write a minimal frame with no acquisition time — the input `analyze_file`
@@ -870,7 +916,7 @@ mod tests {
         let note = |metric, unavailable| {
             unavailable_note(&Series {
                 metric,
-                points: Vec::new(),
+                channels: Vec::new(),
                 unavailable,
             })
         };
@@ -887,8 +933,8 @@ mod tests {
             "analytics-mean-adu.svg"
         );
         assert_eq!(
-            export_file_name(Metric::MaxPixelCount, "csv"),
-            "analytics-max-adu-count.csv"
+            export_file_name(Metric::SaturatedCount, "csv"),
+            "analytics-saturated-count.csv"
         );
         // The slugifier replaces every non-ASCII-alphanumeric char with '-', so
         // a "Noise σ" label would slug to a bare "analytics-noise-.svg". The
@@ -911,5 +957,60 @@ mod tests {
             export_file_name(Metric::StarCount, "svg"),
             "star-star-count.svg"
         );
+    }
+
+    #[test]
+    fn write_csv_uses_a_single_value_column_for_one_channel() {
+        let point = |t: f64, v: f64| crate::controller::metrics::SamplePoint {
+            time: t,
+            time_str: format!("t{t}"),
+            value: v,
+            path: PathBuf::from("f.fits"),
+        };
+        let series = Series {
+            metric: Metric::Mean,
+            unavailable: 0,
+            channels: vec![crate::controller::metrics::ChannelSeries {
+                label: None,
+                points: vec![point(1.0, 10.0), point(2.0, 20.0)],
+            }],
+        };
+        let mut out = Vec::new();
+        write_csv(&series, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "time,value\nt1,10\nt2,20\n"
+        );
+    }
+
+    #[test]
+    fn write_csv_uses_rgb_columns_for_a_per_channel_series() {
+        let point = |t: f64, v: f64| crate::controller::metrics::SamplePoint {
+            time: t,
+            time_str: format!("t{t}"),
+            value: v,
+            path: PathBuf::from("f.fits"),
+        };
+        let series = Series {
+            metric: Metric::Mean,
+            unavailable: 0,
+            channels: vec![
+                crate::controller::metrics::ChannelSeries {
+                    label: Some("R"),
+                    points: vec![point(1.0, 10.0)],
+                },
+                crate::controller::metrics::ChannelSeries {
+                    label: Some("G"),
+                    points: vec![point(1.0, 20.0)],
+                },
+                crate::controller::metrics::ChannelSeries {
+                    label: Some("B"),
+                    points: vec![point(1.0, 30.0)],
+                },
+            ],
+        };
+        let mut out = Vec::new();
+        write_csv(&series, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "time,R,G,B\nt1,10,20,30\n");
     }
 }

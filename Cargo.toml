@@ -1,9 +1,6 @@
 [workspace]
 resolver = "2"
-# `fitsmith` is parked while libfitz migrates to the `Image` API (fits_file /
-# data / stats). It still builds against the removed `fits_image`/`info`
-# modules, so it stays out of the workspace until it is ported.
-members = ["libfitz", "fitz-cli"]
+members = ["libfitz", "fitz-cli", "fitsmith"]
 
 [profile.release]
 opt-level = 'z'       # Optimize for binary size (use 's' if 'z' hurts performance too much)

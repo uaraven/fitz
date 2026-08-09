@@ -92,7 +92,6 @@ export component AppWindow inherits Window {
     in-out property <int> export-format: 0;
     in-out property <int> export-fits-bitpix: 1;
     in-out property <bool> export-fits-compress: false;
-    in-out property <int> export-fits-algorithm: 0;
     in-out property <int> export-tiff-bpp: 1;
     in-out property <bool> export-tiff-deflate: false;
     in-out property <int> export-jpeg-quality: 90;
@@ -118,8 +117,8 @@ export component AppWindow inherits Window {
     in-out property <length> analytics-card-width: 760px;
     in-out property <length> analytics-card-height: 540px;
     // Index into `analytics-metric-model`, which the controller fills from
-    // `libfitz::analytics::Metric::of_family()` — so the dropdown order and
-    // the plotted metric can't drift apart.
+    // the local `Metric::of_family()` — so the dropdown order and the
+    // plotted metric can't drift apart.
     in property <[string]> analytics-metric-model;
     in-out property <int> analytics-metric;
     in-out property <float> analytics-zoom: 1.0;
@@ -128,8 +127,19 @@ export component AppWindow inherits Window {
     in property <int> analytics-skipped-no-date;
     // Frames with no value for the plotted metric, worded by the controller.
     in property <string> analytics-unavailable-note;
-    in property <[ChartPoint]> analytics-points;
-    in property <string> analytics-line-commands;
+    // Three fixed channel slots (R/G/B) rather than a list of lines — Slint
+    // can't repeat a Path with `for`. A single-channel series (a star metric,
+    // or a mono/CFA pixel source) populates only the R slot and leaves
+    // `analytics-label-g`/`analytics-label-b` empty.
+    in property <[ChartPoint]> analytics-points-r;
+    in property <string> analytics-line-r;
+    in property <string> analytics-label-r;
+    in property <[ChartPoint]> analytics-points-g;
+    in property <string> analytics-line-g;
+    in property <string> analytics-label-g;
+    in property <[ChartPoint]> analytics-points-b;
+    in property <string> analytics-line-b;
+    in property <string> analytics-label-b;
     in property <[ChartTick]> analytics-x-ticks;
     in property <[ChartTick]> analytics-y-ticks;
     // The batch that feeds the dialog: these drive the cancellable progress
@@ -609,7 +619,6 @@ export component AppWindow inherits Window {
         format-index <=> root.export-format;
         fits-bitpix-index <=> root.export-fits-bitpix;
         fits-compress <=> root.export-fits-compress;
-        fits-algorithm-index <=> root.export-fits-algorithm;
         tiff-bpp-index <=> root.export-tiff-bpp;
         tiff-deflate <=> root.export-tiff-deflate;
         jpeg-quality <=> root.export-jpeg-quality;
@@ -676,10 +685,17 @@ export component AppWindow inherits Window {
         card-width <=> root.analytics-card-width;
         card-height <=> root.analytics-card-height;
         metric-model: root.analytics-metric-model;
-        points: root.analytics-points;
+        points-r: root.analytics-points-r;
+        line-r: root.analytics-line-r;
+        label-r: root.analytics-label-r;
+        points-g: root.analytics-points-g;
+        line-g: root.analytics-line-g;
+        label-g: root.analytics-label-g;
+        points-b: root.analytics-points-b;
+        line-b: root.analytics-line-b;
+        label-b: root.analytics-label-b;
         x-ticks: root.analytics-x-ticks;
         y-ticks: root.analytics-y-ticks;
-        line-commands: root.analytics-line-commands;
         metric-label: root.analytics-metric-label;
         plotted-count: root.analytics-plotted-count;
         skipped-no-date: root.analytics-skipped-no-date;
