@@ -1,9 +1,9 @@
-//! Geometry and cropping for the aberration inspector: from a rendered RGBA8
+//! Geometry and cropping for the aberration inspector: from a rendered RGB8
 //! image, carve the nine fixed regions (four corners, four edge midpoints, the
 //! center) a corner-to-corner focus/aberration check compares at a glance.
 //!
 //! Pure image math with no FITS or GUI dependency — it operates on the
-//! interleaved RGBA8 buffer the preview pipeline already produces
+//! interleaved RGB8 buffer the preview pipeline already produces
 //! ([`crate::preview::PreviewImage`]), so a GUI frontend crops the resident
 //! preview with no re-read, and the geometry (the off-by-one-prone part) is
 //! unit-testable with synthetic dimensions.
@@ -15,12 +15,12 @@ const TILE_FRACTION: f64 = 0.10;
 /// nine-up on screen at 1:1.
 const TILE_MAX: usize = 256;
 
-/// A square crop taken from a rendered RGBA8 image.
+/// A square crop taken from a rendered RGB8 image.
 pub struct Tile {
     /// Side length in pixels.
     pub size: usize,
-    /// Interleaved (R, G, B, A) bytes, `size * size * 4` long.
-    pub rgba8: Vec<u8>,
+    /// Interleaved (R, G, B) bytes, `size * size * 3` long.
+    pub rgb8: Vec<u8>,
 }
 
 /// The side length of each aberration tile for a `width × height` frame:
@@ -54,20 +54,20 @@ pub fn aberration_regions(width: usize, height: usize, sz: usize) -> [(usize, us
     regions
 }
 
-/// Copy one `sz × sz` tile out of an interleaved RGBA8 buffer whose rows are
+/// Copy one `sz × sz` tile out of an interleaved RGB8 buffer whose rows are
 /// `width` pixels wide. The rect `(x, y)`..`(x + sz, y + sz)` must lie within
 /// the `width × height` image (as [`aberration_regions`] guarantees); rows are
 /// copied honoring the source stride.
-pub fn crop_rgba8(src: &[u8], width: usize, height: usize, x: usize, y: usize, sz: usize) -> Tile {
+pub fn crop_rgb8(src: &[u8], width: usize, height: usize, x: usize, y: usize, sz: usize) -> Tile {
     debug_assert_eq!(src.len(), width * height * 3);
     debug_assert!(x + sz <= width && y + sz <= height);
-    let mut rgba8 = vec![0u8; sz * sz * 3];
+    let mut rgb8 = vec![0u8; sz * sz * 3];
     for row in 0..sz {
         let src_start = ((y + row) * width + x) * 3;
         let dst_start = row * sz * 3;
-        rgba8[dst_start..dst_start + sz * 3].copy_from_slice(&src[src_start..src_start + sz * 3]);
+        rgb8[dst_start..dst_start + sz * 3].copy_from_slice(&src[src_start..src_start + sz * 3]);
     }
-    Tile { size: sz, rgba8 }
+    Tile { size: sz, rgb8 }
 }
 
 #[cfg(test)]
@@ -135,39 +135,35 @@ mod tests {
 
     #[test]
     fn crop_extracts_the_right_sub_rectangle() {
-        // 4×4 RGBA8 image whose red channel encodes the pixel index (row*4+col);
-        // green/blue/alpha are constant markers.
+        // 4×4 RGB8 image whose red channel encodes the pixel index (row*4+col);
+        // green/blue are constant markers.
         let width = 4;
         let height = 4;
-        let mut src = Vec::with_capacity(width * height * 4);
+        let mut src = Vec::with_capacity(width * height * 3);
         for i in 0..(width * height) as u8 {
-            src.extend_from_slice(&[i, 100, 200, 255]);
+            src.extend_from_slice(&[i, 100, 200]);
         }
 
         // A 2×2 crop at (1, 1) covers indices 5,6 (row 1) and 9,10 (row 2).
-        let tile = crop_rgba8(&src, width, height, 1, 1, 2);
+        let tile = crop_rgb8(&src, width, height, 1, 1, 2);
         assert_eq!(tile.size, 2);
-        assert_eq!(tile.rgba8.len(), 2 * 2 * 4);
-        let reds: Vec<u8> = tile.rgba8.chunks_exact(4).map(|p| p[0]).collect();
+        assert_eq!(tile.rgb8.len(), 2 * 2 * 3);
+        let reds: Vec<u8> = tile.rgb8.chunks_exact(3).map(|p| p[0]).collect();
         assert_eq!(reds, [5, 6, 9, 10]);
         // The constant channels survive the copy.
-        assert!(
-            tile.rgba8
-                .chunks_exact(4)
-                .all(|p| p[1..] == [100, 200, 255])
-        );
+        assert!(tile.rgb8.chunks_exact(3).all(|p| p[1..] == [100, 200]));
     }
 
     #[test]
     fn crop_of_a_corner_tile_reads_the_frame_edge() {
         let width = 4;
         let height = 4;
-        let mut src = Vec::with_capacity(width * height * 4);
+        let mut src = Vec::with_capacity(width * height * 3);
         for i in 0..(width * height) as u8 {
-            src.extend_from_slice(&[i, 0, 0, 255]);
+            src.extend_from_slice(&[i, 0, 0]);
         }
         // Bottom-right 1×1 tile is the last pixel, index 15.
-        let tile = crop_rgba8(&src, width, height, 3, 3, 1);
-        assert_eq!(tile.rgba8, [15, 0, 0, 255]);
+        let tile = crop_rgb8(&src, width, height, 3, 3, 1);
+        assert_eq!(tile.rgb8, [15, 0, 0]);
     }
 }

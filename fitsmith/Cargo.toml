@@ -35,7 +35,7 @@ slint = "1"
 rfd = "0.15"
 anyhow = "1"
 sysinfo = "0.39.6"
-# Only needed to name `image::RgbaImage`, the type `render_preview` and the
+# Only needed to name `image::RgbImage`, the type `render_preview` and the
 # cached preview buffer are built from — no encoders required here, libfitz
 # already owns those.
 image = { version = "0.25", default-features = false }

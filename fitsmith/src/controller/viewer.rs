@@ -169,8 +169,8 @@ pub(super) fn load_and_render(
     let meta = need_meta.then(|| FileMeta::build(&image));
     let processed = apply_pipeline(image, debayer, stretch, report)?;
     report("Rendering");
-    let rgba = libfitz::preview::render_preview(&processed)?.to_rgb8();
-    Ok((meta, rgba))
+    let rgb = libfitz::preview::render_preview(&processed)?.to_rgb8();
+    Ok((meta, rgb))
 }
 
 /// Apply the debayer/stretch toggles to a freshly loaded image, reporting
@@ -216,9 +216,9 @@ fn finish_load(
     req: u64,
 ) {
     match outcome {
-        Ok((meta, rgba)) => {
-            let cost = rgba.as_raw().len();
-            let rgba = Rc::new(rgba);
+        Ok((meta, rgb)) => {
+            let cost = rgb.as_raw().len();
+            let rgb = Rc::new(rgb);
             let meta = STATE.with(|s| {
                 let mut st = s.borrow_mut();
                 let meta = match meta {
@@ -241,14 +241,14 @@ fn finish_load(
                         debayer,
                         stretch,
                     },
-                    rgba.clone(),
+                    rgb.clone(),
                     cost,
                 );
                 meta
             });
             update_memory(app);
             if is_current(req) {
-                display_doc(app, &path, &meta, &rgba);
+                display_doc(app, &path, &meta, &rgb);
             }
         }
         Err(e) => {

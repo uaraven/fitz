@@ -4,7 +4,7 @@
 //! aberration at a glance.
 //!
 //! The crops come straight from the selected frame's resident preview — the same
-//! debayered/stretched, full-resolution RGBA8 buffer already on screen — so the
+//! debayered/stretched, full-resolution RGB8 buffer already on screen — so the
 //! common case needs no file re-read: it just crops the cached preview. Only if
 //! that frame has been evicted from the LRU cache (essentially never, since it
 //! is the current selection) does it fall back to the viewer's off-thread load.
@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use libfitz::inspect::{aberration_regions, aberration_tile_size, crop_rgba8};
+use libfitz::inspect::{aberration_regions, aberration_tile_size, crop_rgb8};
 use slint::{ComponentHandle, Image, ModelRc, VecModel};
 
 use crate::AppWindow;
@@ -76,9 +76,9 @@ fn finish_open(
 ) {
     app.set_busy(false);
     match outcome {
-        Ok((meta, rgba)) => {
-            let cost = rgba.as_raw().len();
-            let rgb = Rc::new(rgba);
+        Ok((meta, preview)) => {
+            let cost = preview.as_raw().len();
+            let rgb = Rc::new(preview);
             STATE.with(|s| {
                 let mut st = s.borrow_mut();
                 if let Some(m) = meta {
@@ -118,7 +118,7 @@ fn aberration_tiles(preview: &image::RgbImage, sz: usize) -> Vec<Image> {
     let (w, h) = (preview.width() as usize, preview.height() as usize);
     aberration_regions(w, h, sz)
         .iter()
-        .map(|&(x, y)| tile_to_image(&crop_rgba8(preview.as_raw(), w, h, x, y, sz)))
+        .map(|&(x, y)| tile_to_image(&crop_rgb8(preview.as_raw(), w, h, x, y, sz)))
         .collect()
 }
 
