@@ -12,7 +12,7 @@
 //! Pure "data in → string out", like the rest of [`crate::chart`]: no window, no
 //! files, unit-testable on its own.
 
-use crate::chart::Plot;
+use crate::chart::{ChartLine, Plot};
 
 /// The exported canvas, in SVG user units. A 2.5:1 plot is wide enough for a
 /// night's worth of subs without the marks colliding; being vector, the actual
@@ -44,9 +44,22 @@ const PAGE_BG: &str = "#ffffff";
 const PLOT_BG: &str = "#fdfdfd";
 const AXIS_COLOR: &str = "#999999";
 const GRID_COLOR: &str = "#e4e4e4";
-const LINE_COLOR: &str = "#0a5ea8";
-const MARK_COLOR: &str = "#0a5ea8";
+/// A single, unlabeled line (a star metric or a mono/CFA pixel source) draws
+/// in this neutral blue rather than red/green/blue, since it isn't one of
+/// three channels.
+const SINGLE_LINE_COLOR: &str = "#0a5ea8";
 const LABEL_COLOR: &str = "#555555";
+
+/// The stroke/mark color for channel `index` of a `count`-channel plot: the
+/// neutral single-line color for `count == 1`, R/G/B hex for three.
+fn channel_color(count: usize, index: usize) -> &'static str {
+    match (count, index) {
+        (3, 0) => "#e05252",
+        (3, 1) => "#2ea043",
+        (3, 2) => "#3b82f6",
+        _ => SINGLE_LINE_COLOR,
+    }
+}
 
 /// Escape the five XML metacharacters so a label can't break the document. Tick
 /// labels are numbers and clock times, but a metric label is free text.
@@ -89,7 +102,8 @@ fn plot_y(pos: f32) -> f32 {
 /// plot still yields a valid document — axes, frame and a "No data to plot"
 /// note, matching what the chart shows.
 pub fn svg(plot: &Plot, metric_label: &str) -> String {
-    let mut s = String::with_capacity(1024 + plot.points.len() * 96);
+    let point_count: usize = plot.lines.iter().map(|l| l.points.len()).sum();
+    let mut s = String::with_capacity(1024 + point_count * 96);
     s.push_str(&format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{WIDTH}\" height=\"{HEIGHT}\" \
          viewBox=\"0 0 {WIDTH} {HEIGHT}\" font-family=\"sans-serif\">\n"
@@ -167,7 +181,7 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
         row(date_y + LINE_H, &tick.label);
     }
 
-    if plot.points.is_empty() {
+    if point_count == 0 {
         s.push_str(&format!(
             "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{FONT_SIZE}\" text-anchor=\"middle\" \
              fill=\"{LABEL_COLOR}\">No data to plot</text>\n",
@@ -178,14 +192,27 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
         return s;
     }
 
-    // The series line. Built from the points rather than from `plot.line`: that
-    // string is normalized for Slint's stretch-to-fit viewbox, which would scale
-    // the stroke unevenly here.
+    // One polyline plus its marks per channel, colored by
+    // `channel_color` — the neutral single-line color for one channel,
+    // R/G/B for three.
+    let count = plot.lines.len();
+    for (i, line) in plot.lines.iter().enumerate() {
+        draw_line(&mut s, line, channel_color(count, i));
+    }
+
+    s.push_str("</svg>\n");
+    s
+}
+
+/// Draw one channel's polyline and point marks in `color`. Built from the
+/// points rather than from `line.line`: that string is normalized for
+/// Slint's stretch-to-fit viewbox, which would scale the stroke unevenly here.
+fn draw_line(s: &mut String, line: &ChartLine, color: &str) {
     s.push_str(&format!(
-        "<polyline fill=\"none\" stroke=\"{LINE_COLOR}\" stroke-width=\"2\" \
+        "<polyline fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" \
          stroke-linecap=\"round\" stroke-linejoin=\"round\" points=\""
     ));
-    for (i, p) in plot.points.iter().enumerate() {
+    for (i, p) in line.points.iter().enumerate() {
         if i > 0 {
             s.push(' ');
         }
@@ -195,45 +222,52 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
 
     // Point marks. No tooltips — an SVG has no hover — so each mark carries its
     // reading as a <title>, which viewers surface as a tooltip anyway.
-    for p in &plot.points {
+    for p in &line.points {
+        let reading = match line.label {
+            Some(label) => format!(
+                "{label} {} — {}",
+                escape(&p.time_label),
+                escape(&p.value_label)
+            ),
+            None => format!("{} — {}", escape(&p.time_label), escape(&p.value_label)),
+        };
         s.push_str(&format!(
-            "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"4.5\" fill=\"{MARK_COLOR}\">\
-             <title>{} — {}</title></circle>\n",
+            "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"4.5\" fill=\"{color}\">\
+             <title>{reading}</title></circle>\n",
             plot_x(p.x),
             plot_y(p.y),
-            escape(&p.time_label),
-            escape(&p.value_label)
         ));
     }
-
-    s.push_str("</svg>\n");
-    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::chart::plot;
-    use libfitz::analytics::{Metric, SamplePoint, Series};
+    use crate::controller::metrics::{ChannelSeries, Metric, SamplePoint, Series};
     use std::path::PathBuf;
 
     /// A three-frame session an hour apart, with a rising metric. Times are
     /// labeled in UTC, so the labels these tests pin are the same wherever they
     /// run.
     fn sample_plot() -> Plot {
-        let lo = libfitz::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let points = [(lo, 100.0), (lo + 3600.0, 150.0), (lo + 7200.0, 200.0)]
+            .into_iter()
+            .map(|(time, value)| SamplePoint {
+                time,
+                time_str: String::new(),
+                value,
+                path: PathBuf::from("f.fits"),
+            })
+            .collect();
         let series = Series {
             metric: Metric::Mean,
             unavailable: 0,
-            points: [(lo, 100.0), (lo + 3600.0, 150.0), (lo + 7200.0, 200.0)]
-                .into_iter()
-                .map(|(time, value)| SamplePoint {
-                    time,
-                    time_str: String::new(),
-                    value,
-                    path: PathBuf::from("f.fits"),
-                })
-                .collect(),
+            channels: vec![ChannelSeries {
+                label: None,
+                points,
+            }],
         };
         plot(&series)
     }
@@ -327,6 +361,50 @@ mod tests {
                 tick.label
             );
         }
+    }
+
+    #[test]
+    fn svg_draws_three_colored_polylines_for_a_per_channel_plot() {
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let point = |v: f64| SamplePoint {
+            time: lo,
+            time_str: String::new(),
+            value: v,
+            path: PathBuf::from("f.fits"),
+        };
+        let series = Series {
+            metric: Metric::Mean,
+            unavailable: 0,
+            channels: vec![
+                ChannelSeries {
+                    label: Some("R"),
+                    points: vec![point(10.0)],
+                },
+                ChannelSeries {
+                    label: Some("G"),
+                    points: vec![point(20.0)],
+                },
+                ChannelSeries {
+                    label: Some("B"),
+                    points: vec![point(30.0)],
+                },
+            ],
+        };
+        let doc = svg(&plot(&series), "Mean (ADU)");
+
+        assert_eq!(doc.matches("<polyline").count(), 3);
+        assert_eq!(doc.matches("<circle").count(), 3);
+        for color in [
+            channel_color(3, 0),
+            channel_color(3, 1),
+            channel_color(3, 2),
+        ] {
+            assert!(doc.contains(color), "missing {color} in {doc}");
+        }
+        // Each mark's tooltip carries its channel label.
+        assert!(doc.contains("<title>R "));
+        assert!(doc.contains("<title>G "));
+        assert!(doc.contains("<title>B "));
     }
 
     #[test]

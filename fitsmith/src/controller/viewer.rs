@@ -3,24 +3,24 @@
 //!
 //! Blink is load-aware: it never advances before the current frame is on
 //! screen. Manually selecting a file while blinking simply continues the loop
-//! from that file. Because the cache holds *rendered* documents, re-selecting or
-//! blinking back to a file re-displays it straight from memory.
+//! from that file. A rendered preview is cached per `(path, debayer, stretch)`
+//! (see [`super::PreviewKey`]), so re-selecting or blinking back to a
+//! previously-seen combination re-displays it straight from memory; a new
+//! combination is a plain reload.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Result;
-use libfitz::fits_image::find_image_hdu;
-use libfitz::fitskit::FitsFile;
-use libfitz::preview::{PreviewParams, PreviewStage, render_preview_with_progress};
+use libfitz::data::Image;
 use slint::{ComponentHandle, TimerMode, Weak};
 
-use crate::doc::LoadedDoc;
+use crate::doc::FileMeta;
 use crate::files::{display_name, next_index};
 use crate::{AppWindow, view};
 
-use super::{STATE, params, set_row_status, update_memory};
+use super::{PreviewKey, STATE, set_row_status, update_memory, view_toggles};
 
 /// How long a blink frame stays on screen *after it has finished loading*
 /// before advancing to the next. The load is always awaited first, so blink
@@ -32,6 +32,7 @@ const BLINK_DWELL: Duration = Duration::from_millis(400);
 /// Any pending blink advance is cancelled here; the newly shown frame schedules
 /// the next one, so blink continues from whatever the user just selected.
 pub fn select_file(app: &AppWindow, index: i32) {
+    let (debayer, stretch) = view_toggles(app);
     let action = STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.blink_timer.stop();
@@ -40,16 +41,22 @@ pub fn select_file(app: &AppWindow, index: i32) {
         st.selected = Some(index);
         st.generation += 1;
         let req = st.generation;
-        let cached = st.cache.get(&path).cloned();
-        Some((index, path, cached, req))
+        let key = PreviewKey {
+            path: path.clone(),
+            debayer,
+            stretch,
+        };
+        let cached_preview = st.previews.get(&key).cloned();
+        let cached_meta = st.meta.get(&path).cloned();
+        Some((index, path, cached_preview, cached_meta, req))
     });
-    let Some((index, path, cached, req)) = action else {
+    let Some((index, path, cached_preview, cached_meta, req)) = action else {
         return;
     };
 
     app.set_selected_index(index as i32);
-    if let Some(doc) = cached {
-        display_doc(app, &path, &doc);
+    if let (Some(preview), Some(meta)) = (&cached_preview, &cached_meta) {
+        display_doc(app, &path, meta, preview);
         return;
     }
     app.set_busy(true);
@@ -61,7 +68,14 @@ pub fn select_file(app: &AppWindow, index: i32) {
         "Loading"
     };
     app.set_status_text(format!("{action}: {}", display_name(&path)).into());
-    spawn_load(app.as_weak(), path, params(app), req);
+    spawn_load(
+        app.as_weak(),
+        path,
+        debayer,
+        stretch,
+        cached_meta.is_none(),
+        req,
+    );
 }
 
 /// Move the selection by `delta` rows (arrow / page / space keys), clamped to
@@ -95,15 +109,12 @@ pub fn navigate_edge(app: &AppWindow, last: bool) {
     }
 }
 
-/// Handle a debayer/stretch toggle change: the cached previews were rendered
-/// with the old settings, so drop them all and re-render the current selection.
+/// Handle a debayer/stretch toggle change: re-run the load-or-display path for
+/// the current selection under the new toggle state. A previously-seen
+/// combination redisplays instantly from the preview cache; an unseen one is
+/// a plain reload — there is nothing to invalidate.
 pub fn rerender(app: &AppWindow) {
-    let selected = STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        st.cache.clear();
-        st.selected
-    });
-    update_memory(app);
+    let selected = STATE.with(|s| s.borrow().selected);
     if let Some(index) = selected {
         select_file(app, index as i32);
     }
@@ -112,7 +123,14 @@ pub fn rerender(app: &AppWindow) {
 /// Read a file, decode it, and render its preview on a worker thread, reporting
 /// each pipeline stage to the right-hand status field and marshaling the final
 /// result back to the UI thread.
-fn spawn_load(weak: Weak<AppWindow>, path: PathBuf, p: PreviewParams, req: u64) {
+fn spawn_load(
+    weak: Weak<AppWindow>,
+    path: PathBuf,
+    debayer: bool,
+    stretch: bool,
+    need_meta: bool,
+    req: u64,
+) {
     std::thread::spawn(move || {
         // Push the current pipeline step to the UI thread, but only while this
         // request is still the latest one (a superseded load stays quiet).
@@ -127,33 +145,58 @@ fn spawn_load(weak: Weak<AppWindow>, path: PathBuf, p: PreviewParams, req: u64) 
                 });
             }
         };
-        let outcome = load_and_render(&path, &p, &report);
-        let _ = weak.upgrade_in_event_loop(move |app| finish_load(&app, path, outcome, req));
+        let outcome = load_and_render(&path, debayer, stretch, need_meta, &report);
+        let _ = weak.upgrade_in_event_loop(move |app| {
+            finish_load(&app, path, debayer, stretch, outcome, req)
+        });
     });
 }
 
-/// Read a FITS file, render its preview, and derive its header cards and pixel
-/// stats — the whole display-ready document — calling `report` with the name of
-/// each stage as it starts. Runs on a worker.
+/// Read a FITS file and render its preview under `debayer`/`stretch`, calling
+/// `report` with the name of each stage as it starts. `FileMeta` (headers,
+/// stats, star metrics) is only computed when `need_meta` is set — the
+/// resident cache already has it otherwise, and it doesn't depend on the
+/// preview toggles anyway. Runs on a worker.
 pub(super) fn load_and_render(
     path: &Path,
-    p: &PreviewParams,
+    debayer: bool,
+    stretch: bool,
+    need_meta: bool,
     report: &dyn Fn(&'static str),
-) -> Result<LoadedDoc> {
+) -> Result<(Option<FileMeta>, image::RgbImage)> {
     report("Reading");
-    let fits = FitsFile::from_file(path)?;
-    let (header, img) = find_image_hdu(&fits, path)?;
-    let preview =
-        render_preview_with_progress(header, &img, p, |stage| report(stage_label(stage)))?;
-    Ok(LoadedDoc::build(header, &img, preview))
+    let image = libfitz::fits_file::load_fits(path)?;
+    let meta = need_meta.then(|| FileMeta::build(&image));
+    let processed = apply_pipeline(image, debayer, stretch, report)?;
+    report("Rendering");
+    let rgb = libfitz::preview::render_preview(&processed)?.to_rgb8();
+    Ok((meta, rgb))
 }
 
-/// The right-hand status label for a render stage.
-fn stage_label(stage: PreviewStage) -> &'static str {
-    match stage {
-        PreviewStage::Debayering => "Debayering",
-        PreviewStage::Stretching => "Stretching",
+/// Apply the debayer/stretch toggles to a freshly loaded image, reporting
+/// each stage that actually runs. Shared by the load path above and the
+/// export batch, so an exported file matches what's on screen. Takes `image`
+/// by value (rather than cloning it) since `Image` doesn't implement `Clone`.
+pub(super) fn apply_pipeline(
+    image: Image,
+    debayer: bool,
+    stretch: bool,
+    report: &dyn Fn(&'static str),
+) -> Result<Image> {
+    let debayered = debayer.then(|| image.debayer()).flatten();
+    let mut img = match debayered {
+        Some(result) => {
+            report("Debayering");
+            result?
+        }
+        // Toggle off, or nothing to demosaic (already RGB/grayscale).
+        None => image,
+    };
+    if stretch {
+        report("Stretching");
+        img = img.stretch(false, libfitz::stretch::DEFAULT_BRIGHTNESS);
     }
+    Ok(img)
 }
 
 /// Whether `req` is still the latest request; stale results are dropped so the
@@ -162,17 +205,50 @@ fn is_current(req: u64) -> bool {
     STATE.with(|s| s.borrow().generation == req)
 }
 
-/// Cache a freshly loaded document (always, so the work isn't wasted) and
-/// display it only if the selection hasn't moved on.
-fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<LoadedDoc>, req: u64) {
+/// Cache a freshly loaded preview (and its metadata, if this load computed
+/// one) and display it only if the selection hasn't moved on.
+fn finish_load(
+    app: &AppWindow,
+    path: PathBuf,
+    debayer: bool,
+    stretch: bool,
+    outcome: Result<(Option<FileMeta>, image::RgbImage)>,
+    req: u64,
+) {
     match outcome {
-        Ok(doc) => {
-            let doc = Rc::new(doc);
-            let cost = doc.preview.rgba8.len();
-            STATE.with(|s| s.borrow_mut().cache.put(path.clone(), doc.clone(), cost));
+        Ok((meta, rgb)) => {
+            let cost = rgb.as_raw().len();
+            let rgb = Rc::new(rgb);
+            let meta = STATE.with(|s| {
+                let mut st = s.borrow_mut();
+                let meta = match meta {
+                    Some(m) => {
+                        let m = Rc::new(m);
+                        st.meta.insert(path.clone(), m.clone());
+                        m
+                    }
+                    // `need_meta` was false, meaning the caller already found
+                    // this path resident.
+                    None => st
+                        .meta
+                        .get(&path)
+                        .cloned()
+                        .expect("meta must be resident when not recomputed"),
+                };
+                st.previews.put(
+                    PreviewKey {
+                        path: path.clone(),
+                        debayer,
+                        stretch,
+                    },
+                    rgb.clone(),
+                    cost,
+                );
+                meta
+            });
             update_memory(app);
             if is_current(req) {
-                display_doc(app, &path, &doc);
+                display_doc(app, &path, &meta, &rgb);
             }
         }
         Err(e) => {
@@ -190,15 +266,15 @@ fn finish_load(app: &AppWindow, path: PathBuf, outcome: Result<LoadedDoc>, req: 
 
 /// Show a loaded document on screen — image, header table and stats panel — and,
 /// if blink is running, arm the next advance.
-fn display_doc(app: &AppWindow, path: &Path, doc: &LoadedDoc) {
-    view::show_doc(app, doc);
+fn display_doc(app: &AppWindow, path: &Path, meta: &FileMeta, preview: &image::RgbImage) {
+    view::show_doc(app, meta, preview);
     app.set_busy(false);
     app.set_status_text(
         format!(
             "{}   {}×{}",
             display_name(path),
-            doc.preview.width,
-            doc.preview.height
+            preview.width(),
+            preview.height()
         )
         .into(),
     );

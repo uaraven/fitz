@@ -23,6 +23,7 @@ pub mod fits_file;
 mod keywords;
 pub mod raw_fits;
 pub mod stats;
+pub mod summary;
 
 #[cfg(test)]
 pub(crate) mod test_support;

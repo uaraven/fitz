@@ -1,23 +1,34 @@
-//! Turning an analytics [`Series`] into the geometry `chart.slint` draws: points
-//! and axis ticks in screen-normalized 0..1, plus the SVG path for the series
-//! line. Pure "data in → Slint props out", mirroring [`crate::view`] — the
-//! controller owns the files and threading, this owns the arithmetic, and all of
-//! it is unit-testable without a window.
+//! Turning an analytics [`Series`] into the geometry `chart.slint` draws: one
+//! line per channel (1 for a star metric or a single-channel pixel source, 3
+//! for a per-channel pixel metric on an already-debayered RGB source), each
+//! with its points and SVG path in screen-normalized 0..1, sharing one pair of
+//! axis ticks so every channel reads off the same scale. Pure "data in →
+//! Slint props out", mirroring [`crate::view`] — the controller owns the files
+//! and threading, this owns the arithmetic, and all of it is unit-testable
+//! without a window.
 
-use libfitz::analytics::Series;
-
+use crate::controller::metrics::Series;
 use crate::view::format_stat;
 use crate::{ChartPoint, ChartTick};
 
-/// A series rendered into the chart's coordinate space: points and ticks in
-/// screen-normalized 0..1 (X from the left, Y from the top), plus the SVG path
-/// for the series line in that same space.
+/// One plotted line: its channel label (`None` for a star metric or a
+/// single-channel pixel source, `Some("R"/"G"/"B")` otherwise), its points in
+/// screen-normalized 0..1, and the SVG path for the line in that same space.
+#[derive(Default, PartialEq, Debug)]
+pub struct ChartLine {
+    pub label: Option<&'static str>,
+    pub points: Vec<ChartPoint>,
+    pub line: String,
+}
+
+/// A series rendered into the chart's coordinate space: one [`ChartLine`] per
+/// channel, plus the axis ticks — in screen-normalized 0..1 (X from the left,
+/// Y from the top) — every line shares.
 #[derive(Default, PartialEq, Debug)]
 pub struct Plot {
-    pub points: Vec<ChartPoint>,
+    pub lines: Vec<ChartLine>,
     pub x_ticks: Vec<ChartTick>,
     pub y_ticks: Vec<ChartTick>,
-    pub line: String,
 }
 
 /// A value axis: the (nice, rounded-outward) bounds the plot maps onto and the
@@ -159,25 +170,26 @@ fn format_stamp(epoch: f64) -> String {
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}")
 }
 
-/// Map a time-ordered [`Series`] into the chart's 0..1 space: X spans the first
-/// to the last timestamp, Y spans the value axis inverted (0 is the top). An
-/// empty series plots nothing; a single point (or several sharing one timestamp)
+/// Map a [`Series`] into the chart's 0..1 space: X spans the first to the
+/// last timestamp across every channel, Y spans one value axis (shared by
+/// every channel, so R/G/B stay comparable) inverted (0 is the top). An empty
+/// series plots nothing; a single point (or several sharing one timestamp)
 /// centers on X, having no span to normalize against.
 ///
 /// Times are labeled in UTC — the frame's acquisition time (`DATE-LOC`, else
 /// `DATE-OBS`) exactly as the header spelled it, with no zone conversion.
 pub fn plot(series: &Series) -> Plot {
-    let (Some(first), Some(last)) = (series.points.first(), series.points.last()) else {
+    let all_points = || series.channels.iter().flat_map(|c| c.points.iter());
+    let (Some(t_lo), Some(t_hi)) = (
+        all_points().map(|p| p.time).min_by(f64::total_cmp),
+        all_points().map(|p| p.time).max_by(f64::total_cmp),
+    ) else {
         return Plot::default();
     };
-    let (t_lo, t_hi) = (first.time, last.time);
-    let axis = series
-        .points
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
-            (lo.min(p.value), hi.max(p.value))
-        });
-    let axis = value_axis(axis.0, axis.1);
+    let value_range = all_points().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+        (lo.min(p.value), hi.max(p.value))
+    });
+    let axis = value_axis(value_range.0, value_range.1);
 
     let x_of = |t: f64| {
         if t_hi > t_lo {
@@ -194,24 +206,37 @@ pub fn plot(series: &Series) -> Plot {
         }
     };
 
-    let points: Vec<ChartPoint> = series
-        .points
+    let lines = series
+        .channels
         .iter()
-        .map(|p| ChartPoint {
-            x: x_of(p.time),
-            y: y_of(p.value),
-            time_label: format_stamp(p.time).into(),
-            value_label: format_stat(p.value).into(),
+        .map(|channel| {
+            let points: Vec<ChartPoint> = channel
+                .points
+                .iter()
+                .map(|p| ChartPoint {
+                    x: x_of(p.time),
+                    y: y_of(p.value),
+                    time_label: format_stamp(p.time).into(),
+                    value_label: format_stat(p.value).into(),
+                })
+                .collect();
+
+            // Slint can't repeat a Path with `for`, so each channel's polyline
+            // arrives as one pre-built SVG command string in the same 0..1
+            // space as its points.
+            let mut line = String::new();
+            for (i, p) in points.iter().enumerate() {
+                let verb = if i == 0 { 'M' } else { 'L' };
+                line.push_str(&format!("{verb} {:.5} {:.5} ", p.x, p.y));
+            }
+
+            ChartLine {
+                label: channel.label,
+                points,
+                line: line.trim_end().to_string(),
+            }
         })
         .collect();
-
-    // Slint can't repeat a Path with `for`, so the whole polyline arrives as one
-    // pre-built SVG command string in the same 0..1 space as the points.
-    let mut line = String::new();
-    for (i, p) in points.iter().enumerate() {
-        let verb = if i == 0 { 'M' } else { 'L' };
-        line.push_str(&format!("{verb} {:.5} {:.5} ", p.x, p.y));
-    }
 
     // The date labels the first tick and then only the ticks that roll over to
     // a new day. Repeating one date under all six ticks of a single night is
@@ -236,7 +261,7 @@ pub fn plot(series: &Series) -> Plot {
         .collect();
 
     Plot {
-        points,
+        lines,
         x_ticks,
         y_ticks: axis
             .ticks
@@ -248,29 +273,60 @@ pub fn plot(series: &Series) -> Plot {
                 date_label: Default::default(),
             })
             .collect(),
-        line: line.trim_end().to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libfitz::analytics::{Metric, SamplePoint};
+    use crate::controller::metrics::{ChannelSeries, Metric, SamplePoint};
     use std::path::PathBuf;
 
+    fn sample_points(samples: &[(f64, f64)]) -> Vec<SamplePoint> {
+        samples
+            .iter()
+            .map(|&(time, value)| SamplePoint {
+                time,
+                time_str: String::new(),
+                value,
+                path: PathBuf::from("f.fits"),
+            })
+            .collect()
+    }
+
+    /// A single unlabeled-channel series, as a star metric or a mono/CFA
+    /// pixel source would build.
     fn series(samples: &[(f64, f64)]) -> Series {
         Series {
             metric: Metric::Mean,
             unavailable: 0,
-            points: samples
-                .iter()
-                .map(|&(time, value)| SamplePoint {
-                    time,
-                    time_str: String::new(),
-                    value,
-                    path: PathBuf::from("f.fits"),
-                })
-                .collect(),
+            channels: vec![ChannelSeries {
+                label: None,
+                points: sample_points(samples),
+            }],
+        }
+    }
+
+    /// A three-channel series, as an already-debayered RGB pixel source
+    /// would build, one set of samples per channel.
+    fn rgb_series(r: &[(f64, f64)], g: &[(f64, f64)], b: &[(f64, f64)]) -> Series {
+        Series {
+            metric: Metric::Mean,
+            unavailable: 0,
+            channels: vec![
+                ChannelSeries {
+                    label: Some("R"),
+                    points: sample_points(r),
+                },
+                ChannelSeries {
+                    label: Some("G"),
+                    points: sample_points(g),
+                },
+                ChannelSeries {
+                    label: Some("B"),
+                    points: sample_points(b),
+                },
+            ],
         }
     }
 
@@ -302,7 +358,7 @@ mod tests {
     #[test]
     fn time_ticks_land_on_wall_clock_boundaries() {
         // A 3-hour session ticks every half hour, on the half hour.
-        let lo = libfitz::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let ticks = time_ticks(lo, lo + 3.0 * 3600.0);
         let labels: Vec<String> = ticks.iter().map(|&t| format_time(t)).collect();
         assert_eq!(
@@ -329,14 +385,14 @@ mod tests {
 
     #[test]
     fn formatters_render_utc_wall_clock() {
-        let t = libfitz::info::parse_date_obs("2026-05-31T04:57:09.004664").unwrap();
+        let t = libfitz::fits_file::parse_date_obs("2026-05-31T04:57:09.004664").unwrap();
         // The timestamp renders exactly as the header spelled it — no zone shift.
         assert_eq!(format_time(t), "04:57");
         assert_eq!(format_date(t), "2026-05-31");
         assert_eq!(format_stamp(t), "2026-05-31 04:57:09");
 
         // A timestamp late in the day keeps its own date; no offset moves it.
-        let evening = libfitz::info::parse_date_obs("2026-06-22T23:30:00").unwrap();
+        let evening = libfitz::fits_file::parse_date_obs("2026-06-22T23:30:00").unwrap();
         assert_eq!(format_date(evening), "2026-06-22");
         assert_eq!(format_time(evening), "23:30");
 
@@ -350,7 +406,7 @@ mod tests {
     fn x_ticks_carry_the_date_only_where_it_changes() {
         // A session running up to and through midnight UTC, so the date rolls
         // over partway across the axis.
-        let lo = libfitz::info::parse_date_obs("2026-06-22T23:00:00").unwrap();
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T23:00:00").unwrap();
         let p = plot(&series(&[
             (lo, 100.0),
             (lo + 3600.0, 150.0),
@@ -382,28 +438,30 @@ mod tests {
     #[test]
     fn plot_normalizes_points_into_the_unit_square() {
         // Three frames an hour apart with a rising metric.
-        let lo = libfitz::info::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
         let p = plot(&series(&[
             (lo, 100.0),
             (lo + 3600.0, 150.0),
             (lo + 7200.0, 200.0),
         ]));
+        assert_eq!(p.lines.len(), 1);
+        let points = &p.lines[0].points;
 
         // X spans first..last; the middle sample sits halfway.
-        assert_eq!(p.points[0].x, 0.0);
-        assert_eq!(p.points[1].x, 0.5);
-        assert_eq!(p.points[2].x, 1.0);
+        assert_eq!(points[0].x, 0.0);
+        assert_eq!(points[1].x, 0.5);
+        assert_eq!(points[2].x, 1.0);
         // Y is inverted: the largest value plots nearest the top.
-        assert!(p.points[0].y > p.points[1].y && p.points[1].y > p.points[2].y);
-        assert!(p.points.iter().all(|q| (0.0..=1.0).contains(&q.y)));
-        assert_eq!(p.points[1].value_label, "150");
+        assert!(points[0].y > points[1].y && points[1].y > points[2].y);
+        assert!(points.iter().all(|q| (0.0..=1.0).contains(&q.y)));
+        assert_eq!(points[1].value_label, "150");
         // The tooltip stamp is the full UTC date and time.
-        assert_eq!(p.points[1].time_label, "2026-06-22 23:00:00");
+        assert_eq!(points[1].time_label, "2026-06-22 23:00:00");
 
         // The line is one move followed by a lineto per remaining point, in the
         // same coordinates as the marks.
-        assert!(p.line.starts_with("M 0.00000 "));
-        assert_eq!(p.line.matches('L').count(), 2);
+        assert!(p.lines[0].line.starts_with("M 0.00000 "));
+        assert_eq!(p.lines[0].line.matches('L').count(), 2);
 
         // Ticks stay inside the plot and are labeled.
         assert!(p.x_ticks.iter().all(|t| (0.0..=1.0).contains(&t.pos)));
@@ -413,19 +471,63 @@ mod tests {
 
     #[test]
     fn plot_handles_empty_and_degenerate_series() {
-        // Nothing to plot: no points, no line, no ticks.
+        // Nothing to plot: no lines, no ticks.
         assert_eq!(plot(&series(&[])), Plot::default());
 
         // A single frame has no time span to normalize against, so it centers.
         let one = plot(&series(&[(1000.0, 42.0)]));
-        assert_eq!(one.points.len(), 1);
-        assert_eq!(one.points[0].x, 0.5);
-        assert!((0.0..=1.0).contains(&one.points[0].y));
+        assert_eq!(one.lines[0].points.len(), 1);
+        assert_eq!(one.lines[0].points[0].x, 0.5);
+        assert!((0.0..=1.0).contains(&one.lines[0].points[0].y));
         assert_eq!(one.x_ticks.len(), 1);
 
         // Several frames sharing one timestamp likewise collapse onto X 0.5
         // without producing NaNs.
         let same = plot(&series(&[(1000.0, 1.0), (1000.0, 2.0)]));
-        assert!(same.points.iter().all(|p| p.x == 0.5 && p.y.is_finite()));
+        assert!(
+            same.lines[0]
+                .points
+                .iter()
+                .all(|p| p.x == 0.5 && p.y.is_finite())
+        );
+    }
+
+    #[test]
+    fn plot_builds_one_line_per_channel_on_a_shared_axis() {
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let p = plot(&rgb_series(
+            &[(lo, 10.0), (lo + 3600.0, 20.0)],
+            &[(lo, 100.0), (lo + 3600.0, 200.0)],
+            &[(lo, 1000.0), (lo + 3600.0, 2000.0)],
+        ));
+
+        assert_eq!(p.lines.len(), 3);
+        assert_eq!(
+            p.lines.iter().map(|l| l.label).collect::<Vec<_>>(),
+            [Some("R"), Some("G"), Some("B")]
+        );
+        // The B channel's much larger values pin the shared axis, so the R
+        // channel's line sits near the bottom of the plot rather than filling
+        // it — proof the axis isn't computed per channel.
+        assert!(p.lines[0].points[1].y > p.lines[2].points[1].y);
+        assert!(
+            p.y_ticks
+                .iter()
+                .any(|t| t.label.parse::<f64>().unwrap() > 200.0)
+        );
+    }
+
+    #[test]
+    fn plot_spans_the_time_range_across_every_channel() {
+        // Channel B has a later last point than A; the shared X axis must
+        // stretch to cover it rather than clipping to the first channel seen.
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let p = plot(&rgb_series(
+            &[(lo, 1.0)],
+            &[(lo, 1.0)],
+            &[(lo, 1.0), (lo + 7200.0, 2.0)],
+        ));
+        assert_eq!(p.lines[0].points[0].x, 0.0);
+        assert_eq!(p.lines[2].points[1].x, 1.0);
     }
 }

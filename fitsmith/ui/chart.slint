@@ -1,22 +1,89 @@
 import { Palette } from "std-widgets.slint";
 import { ChartPoint, ChartTick } from "types.slint";
 
+// One channel's point marks and hover tooltips, positioned within its
+// parent's `width`/`height` (the plot area). Factored out so the chart can
+// instantiate it once per channel (1 for a star metric or a single-channel
+// pixel source, 3 for a per-channel one) without repeating the markup —
+// unlike the line itself, Slint has no trouble repeating a plain component.
+component ChannelMarks inherits Rectangle {
+    in property <[ChartPoint]> points;
+    in property <color> mark-color;
+    in property <color> hover-color;
+    in property <color> tip-bg;
+    in property <color> tip-fg;
+    in property <color> tip-border;
+
+    background: transparent;
+
+    for point in root.points: mark := Rectangle {
+        x: point.x * root.width - self.width / 2;
+        y: point.y * root.height - self.height / 2;
+        width: 9px;
+        height: 9px;
+        border-radius: 4.5px;
+        background: touch.has-hover ? root.hover-color : root.mark-color;
+        touch := TouchArea { }
+
+        if touch.has-hover: Rectangle {
+            // Above the mark, or below when too close to the top edge.
+            x: (mark.width - tip-layout.preferred-width) / 2;
+            y: point.y * root.height < 56px
+                ? mark.height + 4px
+                : -tip-layout.preferred-height - 4px;
+            width: tip-layout.preferred-width;
+            height: tip-layout.preferred-height;
+            background: root.tip-bg;
+            border-width: 1px;
+            border-color: root.tip-border;
+            border-radius: 4px;
+            tip-layout := VerticalLayout {
+                padding: 7px;
+                spacing: 2px;
+                Text {
+                    text: point.time-label;
+                    color: root.tip-fg;
+                    font-size: 11px;
+                    font-weight: 700;
+                }
+                Text {
+                    text: point.value-label;
+                    color: root.tip-fg;
+                    font-size: 11px;
+                }
+            }
+        }
+    }
+}
+
 // A time-series line chart with point marks: the plot area of the analytics
 // dialog (not a dialog itself). Purely presentational — the controller feeds
-// screen-normalized 0..1 points, the matching SVG `line-commands` string for
-// the series line (Slint can't repeat Path elements with `for`, slint#754),
-// and pre-formatted tick labels. Y always fits the widget; X stretches by
-// `zoom` inside a horizontal Flickable, so zoom > 1 scrolls sideways and
-// session gaps (meridian flip, clouds) stay visible as real gaps. Hovering a
-// mark shows a time/value tooltip. All colors derive from the active color
-// scheme, so the chart is legible on light and dark themes alike.
+// screen-normalized 0..1 points per channel and the matching SVG line-command
+// strings (Slint can't repeat Path elements with `for`, slint#754, hence three
+// fixed R/G/B slots rather than a list), plus pre-formatted tick labels. A
+// single-channel series (a star metric, or a mono/CFA pixel source) uses only
+// the R slot and draws in a neutral blue; a per-channel pixel metric on an
+// already-debayered RGB source fills all three and draws in red/green/blue.
+// Y always fits the widget; X stretches by `zoom` inside a horizontal
+// Flickable, so zoom > 1 scrolls sideways and session gaps (meridian flip,
+// clouds) stay visible as real gaps. Hovering a mark shows a time/value
+// tooltip. All colors derive from the active color scheme, so the chart is
+// legible on light and dark themes alike.
 export component AnalyticsChart inherits Rectangle {
-    in property <[ChartPoint]> points;
+    // Channel R — the sole channel when `label-r` is empty.
+    in property <[ChartPoint]> points-r;
+    in property <string> line-r;
+    in property <string> label-r;
+    // Channel G — empty (`label-g` "") unless the series is per-channel.
+    in property <[ChartPoint]> points-g;
+    in property <string> line-g;
+    in property <string> label-g;
+    // Channel B.
+    in property <[ChartPoint]> points-b;
+    in property <string> line-b;
+    in property <string> label-b;
     in property <[ChartTick]> x-ticks;
     in property <[ChartTick]> y-ticks;
-    // SVG path commands for the series line, in the same normalized 0..1
-    // coordinate space as the points (viewbox below stretches it to fit).
-    in property <string> line-commands;
     // 1.0 = fit the width; up to 4.0 = 4x wider, scrolled horizontally.
     in property <float> zoom: 1.0;
     // Y-axis title (the plotted metric's name).
@@ -28,8 +95,11 @@ export component AnalyticsChart inherits Rectangle {
     property <color> plot-bg: root.dark-theme ? #1e1e1e : #fdfdfd;
     property <color> axis-color: root.dark-theme ? #666666 : #999999;
     property <color> grid-color: root.dark-theme ? #333333 : #e4e4e4;
-    property <color> line-color: root.dark-theme ? #4da3e8 : #0a5ea8;
-    property <color> mark-color: root.dark-theme ? #7fc0f5 : #0a5ea8;
+    property <bool> per-channel: root.label-g != "" || root.label-b != "";
+    property <color> single-color: root.dark-theme ? #4da3e8 : #0a5ea8;
+    property <color> color-r: root.per-channel ? #e05252 : root.single-color;
+    property <color> color-g: #2ea043;
+    property <color> color-b: #3b82f6;
     property <color> mark-hover: root.dark-theme ? #ffffff : #063d6e;
     property <color> label-color: root.dark-theme ? #b0b0b0 : #555555;
     property <color> tip-bg: root.dark-theme ? #2b2b2b : #fbfbfb;
@@ -134,67 +204,93 @@ export component AnalyticsChart inherits Rectangle {
             }
         }
 
-        // The series line. The 0..1 viewbox with `fill` stretches the
-        // normalized commands to the (zoomed) plot size; stroke width stays
-        // in logical pixels.
+        // The series lines. Each channel's 0..1 viewbox with `fill` stretches
+        // its normalized commands to the (zoomed) plot size; stroke width
+        // stays in logical pixels. The R slot is always drawn; G/B only exist
+        // for a per-channel (3-channel) series.
         Path {
             x: 0;
             y: 0;
             width: root.content-w;
             height: root.area-h;
-            commands: root.line-commands;
+            commands: root.line-r;
             viewbox-width: 1.0;
             viewbox-height: 1.0;
             fit: fill;
-            stroke: root.line-color;
+            stroke: root.color-r;
+            stroke-width: 2px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        if root.label-g != "": Path {
+            x: 0;
+            y: 0;
+            width: root.content-w;
+            height: root.area-h;
+            commands: root.line-g;
+            viewbox-width: 1.0;
+            viewbox-height: 1.0;
+            fit: fill;
+            stroke: root.color-g;
+            stroke-width: 2px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        if root.label-b != "": Path {
+            x: 0;
+            y: 0;
+            width: root.content-w;
+            height: root.area-h;
+            commands: root.line-b;
+            viewbox-width: 1.0;
+            viewbox-height: 1.0;
+            fit: fill;
+            stroke: root.color-b;
             stroke-width: 2px;
             stroke-line-cap: round;
             stroke-line-join: round;
         }
 
-        // Point marks with a hover tooltip each (the file-list hover pattern,
-        // inline instead of a PopupWindow so it tracks the scrolled content).
-        for point in root.points: mark := Rectangle {
-            x: point.x * root.content-w - self.width / 2;
-            y: point.y * root.area-h - self.height / 2;
-            width: 9px;
-            height: 9px;
-            border-radius: 4.5px;
-            background: touch.has-hover ? root.mark-hover : root.mark-color;
-            touch := TouchArea { }
-
-            if touch.has-hover: Rectangle {
-                // Above the mark, or below when too close to the top edge.
-                x: (mark.width - tip-layout.preferred-width) / 2;
-                y: point.y * root.area-h < 56px
-                    ? mark.height + 4px
-                    : -tip-layout.preferred-height - 4px;
-                width: tip-layout.preferred-width;
-                height: tip-layout.preferred-height;
-                background: root.tip-bg;
-                border-width: 1px;
-                border-color: root.tip-border;
-                border-radius: 4px;
-                tip-layout := VerticalLayout {
-                    padding: 7px;
-                    spacing: 2px;
-                    Text {
-                        text: point.time-label;
-                        color: root.tip-fg;
-                        font-size: 11px;
-                        font-weight: 700;
-                    }
-                    Text {
-                        text: point.value-label;
-                        color: root.tip-fg;
-                        font-size: 11px;
-                    }
-                }
-            }
+        // Point marks + hover tooltips, one instance per channel slot.
+        ChannelMarks {
+            x: 0;
+            y: 0;
+            width: root.content-w;
+            height: root.area-h;
+            points: root.points-r;
+            mark-color: root.color-r;
+            hover-color: root.mark-hover;
+            tip-bg: root.tip-bg;
+            tip-fg: root.tip-fg;
+            tip-border: root.tip-border;
+        }
+        if root.label-g != "": ChannelMarks {
+            x: 0;
+            y: 0;
+            width: root.content-w;
+            height: root.area-h;
+            points: root.points-g;
+            mark-color: root.color-g;
+            hover-color: root.mark-hover;
+            tip-bg: root.tip-bg;
+            tip-fg: root.tip-fg;
+            tip-border: root.tip-border;
+        }
+        if root.label-b != "": ChannelMarks {
+            x: 0;
+            y: 0;
+            width: root.content-w;
+            height: root.area-h;
+            points: root.points-b;
+            mark-color: root.color-b;
+            hover-color: root.mark-hover;
+            tip-bg: root.tip-bg;
+            tip-fg: root.tip-fg;
+            tip-border: root.tip-border;
         }
     }
 
-    if root.points.length == 0: Text {
+    if root.points-r.length == 0 && root.points-g.length == 0 && root.points-b.length == 0: Text {
         x: root.y-axis-w + (root.viewport-w - self.width) / 2;
         y: root.title-h + (root.area-h - self.height) / 2;
         text: "No data to plot";

@@ -290,6 +290,45 @@ pub struct ImageMeta {
     pub bitpix: i64,
 }
 
+/// Parse a `DATE-OBS`/`DATE-LOC`-style header value
+/// (`"2026-06-22T22:00:00"`, optionally with fractional seconds) into a
+/// Unix-epoch timestamp. The string carries no timezone, so it is read as
+/// UTC verbatim — no zone conversion is applied. `None` for anything that
+/// doesn't parse as `YYYY-MM-DDTHH:MM:SS[.ffffff]`.
+pub fn parse_date_obs(s: &str) -> Option<f64> {
+    let (date, time) = s.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: u32 = date_parts.next()?.parse().ok()?;
+    let day: u32 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+
+    let mut time_parts = time.split(':');
+    let hour: f64 = time_parts.next()?.parse().ok()?;
+    let minute: f64 = time_parts.next()?.parse().ok()?;
+    let second: f64 = time_parts.next()?.parse().ok()?;
+    if time_parts.next().is_some() {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day);
+    Some(days as f64 * 86400.0 + hour * 3600.0 + minute * 60.0 + second)
+}
+
+/// Days since the Unix epoch (1970-01-01) for a civil date, exact over the
+/// whole proleptic Gregorian calendar. Howard Hinnant's `days_from_civil`.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = (m as i64 + 9) % 12; // Mar=0 .. Feb=11
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
 /// Read `source`'s image metadata without decoding (or decompressing) its
 /// pixels — the header-only counterpart to [`load_fits`], for callers that only
 /// report on a frame rather than process it.
@@ -626,6 +665,37 @@ mod tests {
                     .as_deref()
                     .is_some_and(|c| c.contains("debayered by fitz"))
         }));
+    }
+
+    #[test]
+    fn parse_date_obs_reads_utc_wall_clock_with_no_zone_shift() {
+        // No fractional seconds.
+        let t = parse_date_obs("2026-06-22T22:00:00").unwrap();
+        assert_eq!(
+            t,
+            days_from_civil(2026, 6, 22) as f64 * 86400.0 + 22.0 * 3600.0
+        );
+
+        // Fractional seconds survive.
+        let t = parse_date_obs("2026-05-31T04:57:09.004664").unwrap();
+        let expected =
+            days_from_civil(2026, 5, 31) as f64 * 86400.0 + 4.0 * 3600.0 + 57.0 * 60.0 + 9.004664;
+        assert!((t - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_date_obs_rejects_malformed_input() {
+        assert_eq!(parse_date_obs(""), None);
+        assert_eq!(parse_date_obs("2026-06-22"), None); // no time component
+        assert_eq!(parse_date_obs("2026-06-22T22:00"), None); // missing seconds
+        assert_eq!(parse_date_obs("not-a-date T 00:00:00"), None);
+    }
+
+    #[test]
+    fn days_from_civil_matches_known_epoch_offsets() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        assert_eq!(days_from_civil(2000, 3, 1), 11017);
     }
 
     #[test]

@@ -57,6 +57,18 @@ pub enum CompressionSettings {
     Gzip2,
 }
 
+/// Map a `fitskit` compression algorithm onto the [`CompressionSettings`]
+/// [`save_raw`] accepts, falling back to [`CompressionSettings::NoCompression`]
+/// for any algorithm this crate doesn't otherwise support (e.g. Hcompress1).
+pub fn compression_settings_for(algorithm: CompressionType) -> CompressionSettings {
+    match algorithm {
+        CompressionType::Rice1 => CompressionSettings::Rice1,
+        CompressionType::Gzip1 => CompressionSettings::Gzip1,
+        CompressionType::Gzip2 => CompressionSettings::Gzip2,
+        _ => CompressionSettings::NoCompression,
+    }
+}
+
 /// Saves the raw fits file, applying compression of requested
 pub fn save_raw(
     fits: &FitsFile,
@@ -241,6 +253,26 @@ mod tests {
         let mut target_fits = FitsFile::from_file(&target).unwrap();
 
         assert!(copy_headers_raw(&source_fits, &mut target_fits).is_err());
+    }
+
+    #[test]
+    fn compression_settings_for_maps_known_algorithms_and_falls_back() {
+        assert!(matches!(
+            compression_settings_for(CompressionType::Rice1),
+            CompressionSettings::Rice1
+        ));
+        assert!(matches!(
+            compression_settings_for(CompressionType::Gzip1),
+            CompressionSettings::Gzip1
+        ));
+        assert!(matches!(
+            compression_settings_for(CompressionType::Gzip2),
+            CompressionSettings::Gzip2
+        ));
+        assert!(matches!(
+            compression_settings_for(CompressionType::Hcompress1),
+            CompressionSettings::NoCompression
+        ));
     }
 
     #[test]

@@ -1,10 +1,12 @@
-//! Application logic bridging the Slint UI to `libfitz`. Files are decoded and
-//! rendered off the UI thread into display-ready [`LoadedDoc`]s (preview +
-//! headers + stats), kept in a byte-budgeted LRU cache so re-selecting or
-//! blinking back to a file re-displays instantly, with no re-decode. A
-//! generation counter drops stale results when the user scrubs faster than
-//! frames can render. Turning a document into UI properties is [`crate::view`]'s
-//! job; this module owns state, threading and blink.
+//! Application logic bridging the Slint UI to `libfitz`. Files are decoded off
+//! the UI thread; their headers/stats/star metrics ([`crate::doc::FileMeta`])
+//! stay resident for the life of the working set, while rendered previews are
+//! kept in a byte-budgeted LRU keyed by toggle state so re-selecting or
+//! blinking back to a previously-seen combination redisplays instantly, with
+//! no re-decode. A generation counter drops stale results when the user
+//! scrubs faster than frames can render. Turning a document into UI
+//! properties is [`crate::view`]'s job; this module owns state, threading and
+//! blink.
 //!
 //! The controller is split by concern:
 //!
@@ -21,6 +23,7 @@ mod analytics;
 mod convert;
 mod export;
 mod inspect;
+pub(crate) mod metrics;
 mod viewer;
 
 pub use analytics::*;
@@ -30,20 +33,31 @@ pub use inspect::*;
 pub use viewer::*;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use libfitz::analytics::{FileMetrics, MetricFamily};
 use libfitz::fitskit::CompressionType;
-use libfitz::preview::PreviewParams;
+use metrics::{FileMetrics, MetricFamily};
 use slint::{Model, ModelRc, Timer, VecModel};
 
-use crate::doc::LoadedDoc;
+use crate::doc::FileMeta;
 use crate::files::{display_name, expand_inputs, is_compressed, scan_directory};
 use crate::{AppWindow, FileRow, view};
 
+/// Key for the rendered-preview cache: a path plus the toggle state it was
+/// rendered under. Keying on the toggles (rather than clearing the cache on
+/// every flip) means switching back to a previously-seen setting redisplays
+/// instantly, and a toggle flip to a new combination is a plain reload — see
+/// `viewer::load_and_render`.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct PreviewKey {
+    pub path: PathBuf,
+    pub debayer: bool,
+    pub stretch: bool,
+}
 
 /// All UI-thread application state. Lives in a thread-local because Slint is
 /// single-threaded: every mutation happens either from a callback or from a
@@ -53,9 +67,15 @@ struct AppState {
     paths: Vec<PathBuf>,
     /// The `[FileRow]` model backing the list view (mirrors `paths`).
     files_model: Rc<VecModel<FileRow>>,
-    /// Loaded documents (preview + headers + stats), keyed by path. Cleared
-    /// when a setting invalidates the rendered preview.
-    cache: crate::cache::LruCache<PathBuf, Rc<LoadedDoc>>,
+    /// Headers, curated info, pixel statistics and star metrics, keyed by
+    /// path — resident for as long as a path stays in the working set, never
+    /// evicted by an LRU (see `doc::FileMeta`).
+    meta: HashMap<PathBuf, Rc<FileMeta>>,
+    /// Rendered display buffers, keyed by path *and* the debayer/stretch
+    /// toggle state they were rendered under. Byte-budgeted LRU; a toggle
+    /// flip to an unseen combination is a plain reload, not a cache
+    /// invalidation.
+    previews: crate::cache::LruCache<PreviewKey, Rc<image::RgbImage>>,
     /// Currently selected index into `paths`, if any.
     selected: Option<usize>,
     /// Bumped on every selection/re-render request; a worker result is applied
@@ -107,14 +127,16 @@ impl AppState {
         // so plenty of full-frame images stay resident for instant blink /
         // re-selection without ever budgeting more than the machine can give.
         // The `.max(1)` only satisfies the LRU's positive-capacity assert when
-        // the available memory can't be read at all.
+        // the available memory can't be read at all. `meta` is deliberately
+        // unbudgeted — see its field comment.
         // TODO: make this user-configurable.
         let cache_capacity = ((max_mem * 4 / 5) as usize).max(1);
 
         Self {
             paths: Vec::new(),
             files_model: Rc::new(VecModel::default()),
-            cache: crate::cache::LruCache::new(cache_capacity),
+            meta: HashMap::new(),
+            previews: crate::cache::LruCache::new(cache_capacity),
             selected: None,
             generation: 0,
             blink_timer: Timer::default(),
@@ -146,7 +168,7 @@ pub fn init(app: &AppWindow) {
 fn update_memory(app: &AppWindow) {
     let (used, capacity) = STATE.with(|s| {
         let st = s.borrow();
-        (st.cache.total_bytes(), st.cache.capacity())
+        (st.previews.total_bytes(), st.previews.capacity())
     });
     app.set_memory_text(
         format!(
@@ -175,15 +197,12 @@ fn format_bytes(n: usize) -> String {
     }
 }
 
-/// Snapshot the debayer/stretch toggle state from the UI into preview
-/// parameters. Shared by the [`viewer`] load path and the [`export`] batch, so
-/// an exported file matches what the viewer is showing.
-fn params(app: &AppWindow) -> PreviewParams {
-    PreviewParams {
-        debayer: app.get_debayer_enabled(),
-        stretch: app.get_stretch_enabled(),
-        ..PreviewParams::default()
-    }
+/// Snapshot the debayer/stretch toggle state from the UI as `(debayer,
+/// stretch)`. Shared by the [`viewer`] load path, the [`inspect`] dialog and
+/// the [`export`] batch, so an exported file matches what the viewer is
+/// showing.
+fn view_toggles(app: &AppWindow) -> (bool, bool) {
+    (app.get_debayer_enabled(), app.get_stretch_enabled())
 }
 
 /// Build the list row for a path: base name plus a "compressed" badge for `.fz`.
@@ -312,7 +331,8 @@ pub fn clear_files(app: &AppWindow) {
         st.blink_timer.stop();
         st.paths.clear();
         st.files_model.set_vec(Vec::new());
-        st.cache.clear();
+        st.meta.clear();
+        st.previews.clear();
         // The analyses are kept for the lifetime of the working set, and this
         // is the end of one.
         st.analytics_cache.clear();
@@ -321,6 +341,22 @@ pub fn clear_files(app: &AppWindow) {
     });
     show_empty(app);
     update_memory(app);
+}
+
+/// Drop a path's resident metadata and every cached rendered preview for it
+/// (all four debayer/stretch combinations) — e.g. when it leaves the working
+/// set, or is rewritten in place by compress/decompress.
+fn forget_path(st: &mut AppState, path: &Path) {
+    st.meta.remove(path);
+    for debayer in [false, true] {
+        for stretch in [false, true] {
+            st.previews.remove(&PreviewKey {
+                path: path.to_path_buf(),
+                debayer,
+                stretch,
+            });
+        }
+    }
 }
 
 /// The rows a remove-action drops: every checked row, or — when none are
@@ -376,7 +412,7 @@ pub fn remove_selected(app: &AppWindow) {
         for &i in targets.iter().rev() {
             let path = st.paths.remove(i);
             st.files_model.remove(i);
-            st.cache.remove(&path);
+            forget_path(&mut st, &path);
             // Not needed for correctness — the stamp would catch a rewrite
             // anyway — but it stops a long session accumulating analyses for
             // files nobody has open.

@@ -7,6 +7,7 @@ const HISTOGRAM_BIN_COUNT: usize = 256;
 
 const RGB_CHANNEL_COUNT: usize = 3;
 
+#[derive(Clone, Copy)]
 pub struct Stats {
     /// mean value of pixels
     pub mean: f32,
@@ -56,6 +57,7 @@ impl Default for Stats {
     }
 }
 
+#[derive(Clone)]
 pub struct ImageStats {
     pub channels: Vec<Stats>,
     pub histogram: [u64; HISTOGRAM_BIN_COUNT],

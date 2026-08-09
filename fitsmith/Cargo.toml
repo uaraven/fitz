@@ -1,6 +1,6 @@
 [package]
 name = "fitsmith"
-version = "0.2.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 
@@ -35,6 +35,10 @@ slint = "1"
 rfd = "0.15"
 anyhow = "1"
 sysinfo = "0.39.6"
+# Only needed to name `image::RgbImage`, the type `render_preview` and the
+# cached preview buffer are built from — no encoders required here, libfitz
+# already owns those.
+image = { version = "0.25", default-features = false }
 
 # macOS only: used to turn off automatic window tabbing so AppKit stops
 # injecting "Show Tab Bar"/"Show All Tabs" into our View menu. Already in the
