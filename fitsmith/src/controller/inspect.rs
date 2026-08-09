@@ -72,13 +72,13 @@ fn finish_open(
     path: PathBuf,
     debayer: bool,
     stretch: bool,
-    outcome: anyhow::Result<(Option<FileMeta>, image::RgbaImage)>,
+    outcome: anyhow::Result<(Option<FileMeta>, image::RgbImage)>,
 ) {
     app.set_busy(false);
     match outcome {
         Ok((meta, rgba)) => {
             let cost = rgba.as_raw().len();
-            let rgba = Rc::new(rgba);
+            let rgb = Rc::new(rgba);
             STATE.with(|s| {
                 let mut st = s.borrow_mut();
                 if let Some(m) = meta {
@@ -90,11 +90,11 @@ fn finish_open(
                         debayer,
                         stretch,
                     },
-                    rgba.clone(),
+                    rgb.clone(),
                     cost,
                 );
             });
-            show_tiles(app, &rgba);
+            show_tiles(app, &rgb);
         }
         Err(e) => {
             app.set_status_text(format!("Failed to open {}: {e}", display_name(&path)).into());
@@ -104,7 +104,7 @@ fn finish_open(
 
 /// Crop the nine aberration tiles from a preview and show the dialog, sizing the
 /// grid so each crop draws 1:1.
-fn show_tiles(app: &AppWindow, preview: &image::RgbaImage) {
+fn show_tiles(app: &AppWindow, preview: &image::RgbImage) {
     let sz = aberration_tile_size(preview.width() as usize, preview.height() as usize);
     let tiles = aberration_tiles(preview, sz);
     app.set_aberration_tiles(ModelRc::new(VecModel::from(tiles)));
@@ -114,7 +114,7 @@ fn show_tiles(app: &AppWindow, preview: &image::RgbaImage) {
 
 /// Build the nine tile images (row-major: TL, TC, TR, ML, C, MR, BL, BC, BR)
 /// from a rendered preview buffer, each an `sz × sz` crop.
-fn aberration_tiles(preview: &image::RgbaImage, sz: usize) -> Vec<Image> {
+fn aberration_tiles(preview: &image::RgbImage, sz: usize) -> Vec<Image> {
     let (w, h) = (preview.width() as usize, preview.height() as usize);
     aberration_regions(w, h, sz)
         .iter()
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn nine_tiles_are_cropped_from_a_real_frame() {
         let image = libfitz::fits_file::load_fits(&test_data("uncompressed.fit")).unwrap();
-        let preview = libfitz::preview::render_preview(&image).unwrap().to_rgba8();
+        let preview = libfitz::preview::render_preview(&image).unwrap().to_rgb8();
 
         let sz = aberration_tile_size(preview.width() as usize, preview.height() as usize);
         let tiles = aberration_tiles(&preview, sz);

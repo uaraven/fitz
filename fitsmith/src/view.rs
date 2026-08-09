@@ -13,7 +13,7 @@ use crate::{AppWindow, HeaderRow, StatItem};
 
 /// Show a loaded document: its image (plus natural size for fit/zoom), the
 /// header table, and the pixel statistics + histogram.
-pub fn show_doc(app: &AppWindow, meta: &FileMeta, preview: &image::RgbaImage) {
+pub fn show_doc(app: &AppWindow, meta: &FileMeta, preview: &image::RgbImage) {
     app.set_preview_image(preview_to_image(preview));
     app.set_image_width(preview.width() as f32);
     app.set_image_height(preview.height() as f32);

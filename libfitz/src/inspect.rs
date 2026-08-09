@@ -59,13 +59,13 @@ pub fn aberration_regions(width: usize, height: usize, sz: usize) -> [(usize, us
 /// the `width × height` image (as [`aberration_regions`] guarantees); rows are
 /// copied honoring the source stride.
 pub fn crop_rgba8(src: &[u8], width: usize, height: usize, x: usize, y: usize, sz: usize) -> Tile {
-    debug_assert_eq!(src.len(), width * height * 4);
+    debug_assert_eq!(src.len(), width * height * 3);
     debug_assert!(x + sz <= width && y + sz <= height);
-    let mut rgba8 = vec![0u8; sz * sz * 4];
+    let mut rgba8 = vec![0u8; sz * sz * 3];
     for row in 0..sz {
-        let src_start = ((y + row) * width + x) * 4;
-        let dst_start = row * sz * 4;
-        rgba8[dst_start..dst_start + sz * 4].copy_from_slice(&src[src_start..src_start + sz * 4]);
+        let src_start = ((y + row) * width + x) * 3;
+        let dst_start = row * sz * 3;
+        rgba8[dst_start..dst_start + sz * 3].copy_from_slice(&src[src_start..src_start + sz * 3]);
     }
     Tile { size: sz, rgba8 }
 }

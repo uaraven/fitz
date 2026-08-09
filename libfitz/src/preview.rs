@@ -1,27 +1,27 @@
-//! Build a display-ready preview of an in-memory FITS [`Image`]: round-trip it
-//! through [`image_to_fits`] and read the first image HDU back as an `image`
-//! crate [`DynamicImage`](image::DynamicImage), ready for a GUI or terminal
-//! renderer to paint.
+//! Build a display-ready preview of an in-memory [`Image`]: its own pixel
+//! buffer, narrowed to 16-bit samples, wrapped directly in an `image` crate
+//! [`DynamicImage`](image::DynamicImage) ready for a GUI or terminal renderer
+//! to paint. Built straight from `Image`, not via a FITS round-trip:
+//! `fitskit`'s FITS→`DynamicImage` conversion only understands a single 2D
+//! plane, so encoding an already-debayered `RGB` image and reading it back
+//! would silently mis-shape the 3-plane cube into a grayscale buffer.
 
-use crate::data::Image;
-use crate::fits_file::{SaveOptions, find_image_hdu_index, image_to_fits};
-use crate::keywords::{BSCALE, BZERO};
+use crate::data::{Image, ImageType};
 use anyhow::{Result, anyhow};
-use fitskit::HduData;
+use image::{DynamicImage, ImageBuffer, Luma, Rgb};
 
-pub fn render_preview(src: &Image) -> Result<image::DynamicImage> {
-    let fits = image_to_fits(src, SaveOptions::default())?;
-    let image_hdu = find_image_hdu_index(&fits).ok_or_else(|| anyhow!("conversion error"))?;
-    let header = &fits.hdus[image_hdu].header;
-    // `image_to_fits` always writes the BSCALE/BZERO that actually apply to the
-    // encoded samples (32768 for the unsigned-16 convention); hardcoding (1.0,
-    // 0.0) here instead clamped every negative-offset sample to 0 and washed
-    // out half the display range.
-    let bscale = header.get_float(BSCALE).unwrap_or(1.0);
-    let bzero = header.get_float(BZERO).unwrap_or(0.0);
-    match &fits.hdus[image_hdu].data {
-        HduData::Image(img) => Ok(img.to_dynamic_image(bscale, bzero)?),
-        _ => Err(anyhow!("conversion error")),
+pub fn render_preview(src: &Image) -> Result<DynamicImage> {
+    let (width, height) = (src.width as u32, src.height as u32);
+    let samples = src.pixels.as_u16();
+    match src.image_type {
+        ImageType::RGB => ImageBuffer::<Rgb<u16>, _>::from_raw(width, height, samples)
+            .map(DynamicImage::ImageRgb16)
+            .ok_or_else(|| anyhow!("conversion error")),
+        ImageType::Grayscale | ImageType::CFA(_) => {
+            ImageBuffer::<Luma<u16>, _>::from_raw(width, height, samples)
+                .map(DynamicImage::ImageLuma16)
+                .ok_or_else(|| anyhow!("conversion error"))
+        }
     }
 }
 
@@ -65,5 +65,26 @@ mod tests {
             buf.as_raw().iter().map(|&v| v as f64).sum::<f64>() / buf.as_raw().len() as f64
         };
         assert_ne!(mean(&flat), mean(&stretched));
+    }
+
+    /// Regression test: a debayered (`ImageType::RGB`) frame used to be
+    /// rendered by round-tripping through a FITS-encoded 3-plane cube and
+    /// `fitskit::to_dynamic_image`, which only understands a single 2D plane
+    /// and either errors or mis-shapes the buffer — visibly, a "debayered"
+    /// preview that stayed grayscale. `render_preview` must return an actual
+    /// RGB16 image, not a Luma16 one, for an already-debayered source.
+    #[test]
+    fn render_preview_keeps_debayered_frames_in_color() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("mosaic.fit");
+        write_mosaic_fits(&path, 16, 16, Some("RGGB"));
+
+        let mosaic = load_fits(&path).unwrap();
+        let rgb = mosaic.debayer().unwrap().unwrap();
+        let dynamic = render_preview(&rgb).unwrap();
+
+        assert!(matches!(dynamic, DynamicImage::ImageRgb16(_)));
+        assert_eq!(dynamic.width(), 16);
+        assert_eq!(dynamic.height(), 16);
     }
 }

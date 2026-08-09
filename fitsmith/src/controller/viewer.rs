@@ -163,13 +163,13 @@ pub(super) fn load_and_render(
     stretch: bool,
     need_meta: bool,
     report: &dyn Fn(&'static str),
-) -> Result<(Option<FileMeta>, image::RgbaImage)> {
+) -> Result<(Option<FileMeta>, image::RgbImage)> {
     report("Reading");
     let image = libfitz::fits_file::load_fits(path)?;
     let meta = need_meta.then(|| FileMeta::build(&image));
     let processed = apply_pipeline(image, debayer, stretch, report)?;
     report("Rendering");
-    let rgba = libfitz::preview::render_preview(&processed)?.to_rgba8();
+    let rgba = libfitz::preview::render_preview(&processed)?.to_rgb8();
     Ok((meta, rgba))
 }
 
@@ -194,7 +194,7 @@ pub(super) fn apply_pipeline(
     };
     if stretch {
         report("Stretching");
-        img = img.stretch(true, libfitz::stretch::DEFAULT_BRIGHTNESS);
+        img = img.stretch(false, libfitz::stretch::DEFAULT_BRIGHTNESS);
     }
     Ok(img)
 }
@@ -212,7 +212,7 @@ fn finish_load(
     path: PathBuf,
     debayer: bool,
     stretch: bool,
-    outcome: Result<(Option<FileMeta>, image::RgbaImage)>,
+    outcome: Result<(Option<FileMeta>, image::RgbImage)>,
     req: u64,
 ) {
     match outcome {
@@ -266,7 +266,7 @@ fn finish_load(
 
 /// Show a loaded document on screen — image, header table and stats panel — and,
 /// if blink is running, arm the next advance.
-fn display_doc(app: &AppWindow, path: &Path, meta: &FileMeta, preview: &image::RgbaImage) {
+fn display_doc(app: &AppWindow, path: &Path, meta: &FileMeta, preview: &image::RgbImage) {
     view::show_doc(app, meta, preview);
     app.set_busy(false);
     app.set_status_text(

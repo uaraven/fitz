@@ -75,7 +75,7 @@ struct AppState {
     /// toggle state they were rendered under. Byte-budgeted LRU; a toggle
     /// flip to an unseen combination is a plain reload, not a cache
     /// invalidation.
-    previews: crate::cache::LruCache<PreviewKey, Rc<image::RgbaImage>>,
+    previews: crate::cache::LruCache<PreviewKey, Rc<image::RgbImage>>,
     /// Currently selected index into `paths`, if any.
     selected: Option<usize>,
     /// Bumped on every selection/re-render request; a worker result is applied
