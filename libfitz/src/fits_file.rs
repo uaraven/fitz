@@ -4,7 +4,9 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use crate::fits_bayer::{cfa_str, parse_cfa};
-use crate::keywords::{BAYERPAT, BSCALE, BZERO, CFA_KEYWORDS, add_history, copy_missing_metadata};
+use crate::keywords::{
+    BAYERPAT, BSCALE, BZERO, CFA_KEYWORDS, DATAMAX, DATAMIN, add_history, copy_missing_metadata,
+};
 use fitskit::{
     Bitpix, CompressOptions, FitsFile, HduData, Header, HeaderValue, ImageData, PixelData,
 };
@@ -39,12 +41,24 @@ fn fits_u16_to_u16(x: f32) -> u16 {
     (x as u32).clamp(MIN_U16, MAX_U16) as u16
 }
 
+/// Full scale of the wide integer sample types, as `f32` so they can serve both
+/// as the divisor and as the target range handed to `min_max_range`.
+const MAX_U32: f32 = 4_294_967_295.0;
+const MAX_U64: f32 = 18_446_744_073_709_551_615.0;
+
 fn fits_u32_to_f32(x: f32) -> f32 {
-    (x / 4_294_967_295.0).clamp(MIN_F32, MAX_F32)
+    (x / MAX_U32).clamp(MIN_F32, MAX_F32)
 }
 
 fn fits_u64_to_f32(x: f32) -> f32 {
-    (x / 18_446_744_073_709_551_615.0).clamp(MIN_F32, MAX_F32)
+    (x / MAX_U64).clamp(MIN_F32, MAX_F32)
+}
+
+struct DataTransform {
+    bscale: f32,
+    bzero: f32,
+    datamin: f32,
+    datamax: f32,
 }
 
 /// Apply the image's BSCALE/BZERO scaling and clamp into a supported
@@ -52,27 +66,42 @@ fn fits_u64_to_f32(x: f32) -> f32 {
 /// float/wide-integer sources to `f32` clamped to [0, 1]. Scaling and clamping
 /// fuse into a single parallel pass, and the output type follows the sample
 /// type directly.
-fn load_pixels(img: &PixelData, b_scale: f32, b_zero: f32) -> PixelBuffer {
-    let scale = |x: f32| b_zero + b_scale * x;
-    let to_f32 = |x: f32| scale(x).clamp(0.0, 1.0);
+fn load_pixels(img: &PixelData, transform: DataTransform) -> PixelBuffer {
+    let scale = |x: f32| transform.bzero + transform.bscale * x;
+
+    // Rescale from the source's own [DATAMIN, DATAMAX] onto [min, max]. A
+    // degenerate range carries no scale to recover, so the value passes through.
+    let range = transform.datamax - transform.datamin;
+    let min_max_range = |x: f32, min: f32, max: f32| {
+        if range > 0.0 {
+            min + (x - transform.datamin) / range * (max - min)
+        } else {
+            x
+        }
+    };
+    let to_f32 = |x: f32| min_max_range(scale(x), 0.0, 1.0).clamp(0.0, 1.0);
 
     match img {
         PixelData::U8(v) => PixelBuffer::U16(
             v.par_iter()
-                .map(|&x| fits_u8_to_u16(scale(x as f32)))
+                .map(|&x| fits_u8_to_u16(min_max_range(scale(x as f32), 0.0, 255.0)))
                 .collect(),
         ),
         PixelData::I16(v) => PixelBuffer::U16(
             v.par_iter()
-                .map(|&x| fits_u16_to_u16(scale(x as f32)))
+                .map(|&x| fits_u16_to_u16(min_max_range(scale(x as f32), 0.0, MAX_U16 as f32)))
                 .collect(),
         ),
-        PixelData::I32(v) => {
-            PixelBuffer::F32(v.par_iter().map(|&x| fits_u32_to_f32(x as f32)).collect())
-        }
-        PixelData::I64(v) => {
-            PixelBuffer::F32(v.par_iter().map(|&x| fits_u64_to_f32(x as f32)).collect())
-        }
+        PixelData::I32(v) => PixelBuffer::F32(
+            v.par_iter()
+                .map(|&x| fits_u32_to_f32(min_max_range(scale(x as f32), 0.0, MAX_U32)))
+                .collect(),
+        ),
+        PixelData::I64(v) => PixelBuffer::F32(
+            v.par_iter()
+                .map(|&x| fits_u64_to_f32(min_max_range(scale(x as f32), 0.0, MAX_U64)))
+                .collect(),
+        ),
         PixelData::F32(v) => PixelBuffer::F32(v.par_iter().map(|&x| to_f32(x)).collect()),
         PixelData::F64(v) => PixelBuffer::F32(v.par_iter().map(|&x| to_f32(x as f32)).collect()),
     }
@@ -118,7 +147,18 @@ pub fn load_fits(source: &Path) -> Result<Image> {
         let b_scale = hdu.header.get_float(BSCALE).unwrap_or(1.0) as f32;
         let b_zero = hdu.header.get_float(BZERO).unwrap_or(0.0) as f32;
 
-        let pixels = load_pixels(&img.pixels, b_scale, b_zero);
+        let datamax = hdu.header.get_float(DATAMAX).unwrap_or(0.0) as f32;
+        let datamin = hdu.header.get_float(DATAMIN).unwrap_or(0.0) as f32;
+
+        let pixels = load_pixels(
+            &img.pixels,
+            DataTransform {
+                bscale: b_scale,
+                bzero: b_zero,
+                datamax,
+                datamin,
+            },
+        );
         // FITS stores a cube planar; every in-memory RGB buffer is interleaved.
         let pixels = match image_type {
             ImageType::RGB => pixels.interleave_planes(),
@@ -372,7 +412,8 @@ mod tests {
     use super::*;
     use crate::data::{ImageType, PixelBuffer};
     use crate::test_support::{
-        output_header, test_data, write_mosaic_fits, write_rgb_cube_f32_fits, write_rgb_cube_fits,
+        output_header, test_data, write_fits_with_float_keywords, write_mosaic_fits,
+        write_rgb_cube_f32_fits, write_rgb_cube_fits,
     };
     use bayer::CFA;
     use fitskit::{Bitpix, CompressOptions};
@@ -600,6 +641,210 @@ mod tests {
             .flat_map(|i| [i, n + i, 2 * n + i].map(|v| v as f32 / (3 * n) as f32))
             .collect();
         assert_eq!(samples, &expected);
+    }
+
+    /// Load a one-row image of `pixels` carrying `keywords`, and hand back the
+    /// buffer it produced. Every DATAMIN/DATAMAX test below is the same shape:
+    /// a handful of samples in, the rescaled buffer out.
+    fn load_samples(name: &str, pixels: PixelData, keywords: &[(&str, f64)]) -> PixelBuffer {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join(name);
+        let len = match &pixels {
+            PixelData::U8(v) => v.len(),
+            PixelData::I16(v) => v.len(),
+            PixelData::I32(v) => v.len(),
+            PixelData::I64(v) => v.len(),
+            PixelData::F32(v) => v.len(),
+            PixelData::F64(v) => v.len(),
+        };
+        write_fits_with_float_keywords(&path, vec![len, 1], pixels, keywords);
+        load_fits(&path).unwrap().pixels
+    }
+
+    fn u16_samples(pixels: PixelBuffer) -> Vec<u16> {
+        match pixels {
+            PixelBuffer::U16(v) => v,
+            _ => panic!("an integer source loads into the u16 pixel buffer"),
+        }
+    }
+
+    fn f32_samples(pixels: PixelBuffer) -> Vec<f32> {
+        match pixels {
+            PixelBuffer::F32(v) => v,
+            _ => panic!("a float source loads into the f32 pixel buffer"),
+        }
+    }
+
+    /// Compare float samples that survived a round trip through a wide integer
+    /// range, where the divide-then-multiply costs a few ulps.
+    fn assert_close(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {
+            assert!((a - e).abs() < 1e-6, "sample {i}: got {a}, expected {e}");
+        }
+    }
+
+    /// The DATAMIN..DATAMAX window maps onto the full 8-bit range before the
+    /// 8-to-16-bit widening, so a frame using a slice of the range still fills
+    /// the buffer. The truncation to whole ADU is the pre-existing `as u32`.
+    #[test]
+    fn a_u8_data_range_rescales_onto_the_full_byte_range() {
+        let pixels = PixelData::U8(vec![32, 64, 96, 128, 160]);
+        let samples = u16_samples(load_samples(
+            "u8.fits",
+            pixels,
+            &[("DATAMIN", 32.0), ("DATAMAX", 160.0)],
+        ));
+        // (s - 32) / 128 * 255, truncated, then widened by *257.
+        assert_eq!(samples, vec![0, 16191, 32639, 49087, 65535]);
+    }
+
+    /// The same for a 16-bit source, whose target range is the full 0..=65535.
+    #[test]
+    fn an_i16_data_range_rescales_onto_the_full_u16_range() {
+        let pixels = PixelData::I16(vec![0, 256, 512, 768, 1024]);
+        let samples = u16_samples(load_samples(
+            "i16.fits",
+            pixels,
+            &[("DATAMIN", 0.0), ("DATAMAX", 1024.0)],
+        ));
+        // s / 1024 * 65535, truncated.
+        assert_eq!(samples, vec![0, 16383, 32767, 49151, 65535]);
+    }
+
+    /// A frame in the unsigned-16 convention whose data range already spans the
+    /// full scale is left alone — the rescale is an identity, not a no-op path.
+    #[test]
+    fn a_full_scale_data_range_leaves_samples_untouched() {
+        let pixels = PixelData::I16(vec![-32768, 0, 32767]);
+        let samples = u16_samples(load_samples(
+            "full.fits",
+            pixels,
+            &[("BZERO", 32768.0), ("DATAMIN", 0.0), ("DATAMAX", 65535.0)],
+        ));
+        assert_eq!(samples, vec![0, 32768, 65535]);
+    }
+
+    /// BSCALE/BZERO resolve the sample to its physical value first; the data
+    /// range is expressed in those same physical units and applies after.
+    #[test]
+    fn bscale_and_bzero_apply_before_the_data_range() {
+        let pixels = PixelData::I16(vec![0, 100, 200]);
+        let samples = u16_samples(load_samples(
+            "scaled.fits",
+            pixels,
+            &[
+                ("BSCALE", 2.0),
+                ("BZERO", 100.0),
+                // Physical values are 100, 300, 500.
+                ("DATAMIN", 100.0),
+                ("DATAMAX", 500.0),
+            ],
+        ));
+        assert_eq!(samples, vec![0, 32767, 65535]);
+    }
+
+    /// A 32-bit source normalizes into [0, 1] by way of the u32 full scale, so
+    /// the data range still lands the samples where they belong. Without it a
+    /// frame of a few thousand ADU divided by u32::MAX would read as black.
+    #[test]
+    fn an_i32_data_range_normalizes_into_the_unit_interval() {
+        let pixels = PixelData::I32(vec![0, 250, 500, 750, 1000]);
+        let samples = f32_samples(load_samples(
+            "i32.fits",
+            pixels,
+            &[("DATAMIN", 0.0), ("DATAMAX", 1000.0)],
+        ));
+        assert_close(&samples, &[0.0, 0.25, 0.5, 0.75, 1.0]);
+    }
+
+    /// The same for a 64-bit source against the u64 full scale.
+    #[test]
+    fn an_i64_data_range_normalizes_into_the_unit_interval() {
+        let pixels = PixelData::I64(vec![0, 250, 500, 750, 1000]);
+        let samples = f32_samples(load_samples(
+            "i64.fits",
+            pixels,
+            &[("DATAMIN", 0.0), ("DATAMAX", 1000.0)],
+        ));
+        assert_close(&samples, &[0.0, 0.25, 0.5, 0.75, 1.0]);
+    }
+
+    /// The float paths carry ADU counts as often as they carry [0, 1] samples;
+    /// the data range is what tells the two apart.
+    #[test]
+    fn an_f32_data_range_normalizes_into_the_unit_interval() {
+        let pixels = PixelData::F32(vec![100.0, 350.0, 600.0]);
+        let samples = f32_samples(load_samples(
+            "f32.fits",
+            pixels,
+            &[("DATAMIN", 100.0), ("DATAMAX", 600.0)],
+        ));
+        assert_eq!(samples, vec![0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn an_f64_data_range_normalizes_into_the_unit_interval() {
+        let pixels = PixelData::F64(vec![1000.0, 2000.0, 3000.0]);
+        let samples = f32_samples(load_samples(
+            "f64.fits",
+            pixels,
+            &[("DATAMIN", 1000.0), ("DATAMAX", 3000.0)],
+        ));
+        assert_eq!(samples, vec![0.0, 0.5, 1.0]);
+    }
+
+    /// DATAMIN/DATAMAX are advisory, and stale ones are common — a sample
+    /// outside the declared window clamps rather than wrapping or overshooting.
+    #[test]
+    fn samples_outside_the_data_range_clamp() {
+        let pixels = PixelData::F32(vec![-50.0, 50.0, 150.0]);
+        let samples = f32_samples(load_samples(
+            "clamp.fits",
+            pixels,
+            &[("DATAMIN", 0.0), ("DATAMAX", 100.0)],
+        ));
+        assert_eq!(samples, vec![0.0, 0.5, 1.0]);
+    }
+
+    /// With no data range declared there is no window to map from, so samples
+    /// pass through untouched and the pre-existing behaviour stands.
+    #[test]
+    fn a_file_without_a_data_range_passes_samples_through() {
+        let pixels = PixelData::F32(vec![0.0, 0.25, 1.0]);
+        let samples = f32_samples(load_samples("plain.fits", pixels, &[]));
+        assert_eq!(samples, vec![0.0, 0.25, 1.0]);
+    }
+
+    /// The regression this was all for: a real ASTAP-stacked float frame whose
+    /// samples are ADU counts (329..4169) rather than [0, 1]. Read as if they
+    /// were already normalized, every pixel pinned to 1.0 and the frame opened
+    /// pure white; against its DATAMAX it spans the range as it should.
+    ///
+    /// That DATAMAX is 3895 while the brightest pixel is 4169, so the very top
+    /// does clip — but at 151 samples out of 25.2M, not the whole frame.
+    #[test]
+    fn a_float_frame_of_adu_counts_spans_the_range_instead_of_saturating() {
+        let input = test_data("rgb_datamax.fits");
+        let loaded = load_fits(&input).unwrap();
+        assert_eq!(loaded.image_type, ImageType::RGB);
+
+        let samples = f32_samples(loaded.pixels);
+        let min = samples.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let clipped = samples.iter().filter(|&&s| s >= 1.0).count();
+
+        // 329.83 / 3895, the frame's darkest pixel over its declared ceiling.
+        assert!(
+            (min - 0.084_680_88).abs() < 1e-6,
+            "darkest sample was {min}"
+        );
+        assert_eq!(max, 1.0);
+        assert!(
+            clipped < samples.len() / 1000,
+            "{clipped} of {} samples clipped; the frame is saturating again",
+            samples.len()
+        );
     }
 
     /// A cube with anything other than three planes is not an image this

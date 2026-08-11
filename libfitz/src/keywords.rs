@@ -4,6 +4,8 @@ use fitskit::Header;
 pub const BAYERPAT: &str = "BAYERPAT";
 pub const BSCALE: &str = "BSCALE";
 pub const BZERO: &str = "BZERO";
+pub const DATAMAX: &str = "DATAMAX";
+pub const DATAMIN: &str = "DATAMIN";
 
 /// CFA-mosaic keywords that become meaningless once an image is debayered into
 /// an RGB image. Dropped by the image commands (debayer/stretch/split) when
@@ -25,7 +27,7 @@ pub fn add_history(dest: &mut Header, text: &str) {
 
 /// True if a keyword must not be carried onto an output header: either a
 /// structural/reserved keyword (see [`is_reserved_keyword`]) or one the caller
-/// explicitly named in `extra_drop`. 
+/// explicitly named in `extra_drop`.
 fn is_droppable(name: &str, extra_drop: &[&str]) -> bool {
     is_reserved_keyword(name) || extra_drop.iter().any(|d| d.eq_ignore_ascii_case(name))
 }

@@ -22,6 +22,25 @@ pub(crate) fn output_header(path: &Path) -> Header {
     FitsFile::from_file(path).unwrap().primary().header.clone()
 }
 
+/// Write a FITS image of `axes` shape holding `pixels`, stamped with the given
+/// float keywords (DATAMIN/DATAMAX, BSCALE/BZERO, …).
+///
+/// Takes the samples ready-made rather than synthesizing them, so one helper
+/// covers every `PixelData` variant the load-time rescaling has to handle.
+pub(crate) fn write_fits_with_float_keywords(
+    path: &Path,
+    axes: Vec<usize>,
+    pixels: PixelData,
+    keywords: &[(&str, f64)],
+) {
+    let img = ImageData::new(axes, pixels);
+    let mut fits = FitsFile::with_primary_image(img);
+    let header = &mut fits.primary_mut().header;
+    for &(key, value) in keywords {
+        header.set(key, HeaderValue::Float(value), None);
+    }
+    fits.to_file(path).unwrap();
+}
 
 /// Write a 2D single-plane I16 mosaic, optionally tagged with a BAYERPAT.
 pub(crate) fn write_mosaic_fits(path: &Path, width: usize, height: usize, pattern: Option<&str>) {
