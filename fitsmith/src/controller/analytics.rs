@@ -482,7 +482,7 @@ fn current_series(app: &AppWindow) -> Series {
     STATE.with(|s| metrics::build_series(&s.borrow().analytics, metric))
 }
 
-/// A default export file name for the plotted metric, e.g. `analytics-mean-adu.svg`
+/// A default export file name for the plotted metric, e.g. `analytics-mean.svg`
 /// or `star-hfr.svg` — the prefix says which dialog it came out of.
 fn export_file_name(metric: Metric, extension: &str) -> String {
     let slug: String = metric
@@ -924,21 +924,16 @@ mod tests {
 
     #[test]
     fn export_file_name_slugifies_the_metric() {
-        assert_eq!(
-            export_file_name(Metric::Mean, "svg"),
-            "analytics-mean-adu.svg"
-        );
+        assert_eq!(export_file_name(Metric::Mean, "svg"), "analytics-mean.svg");
         assert_eq!(
             export_file_name(Metric::SaturatedCount, "csv"),
             "analytics-saturated-count.csv"
         );
         // The slugifier replaces every non-ASCII-alphanumeric char with '-', so
-        // a "Noise σ" label would slug to a bare "analytics-noise-.svg". The
-        // label spells sigma out instead — the fix belongs in the label, not in
-        // a special case here.
+        // a label with spaces still comes out as one dash-joined word.
         assert_eq!(
             export_file_name(Metric::Sigma, "svg"),
-            "analytics-noise-sigma.svg"
+            "analytics-stddev.svg"
         );
 
         // A star metric exports under its own prefix, so the two dialogs' files

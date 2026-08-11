@@ -5,11 +5,11 @@
 use libfitz::stars::StarStats;
 use libfitz::stats::{ImageStats, Stats};
 use libfitz::summary::SummaryField;
-use slint::{Image, ModelRc, VecModel};
+use slint::{Image, ModelRc, SharedString, VecModel};
 
 use crate::doc::FileMeta;
 use crate::image::preview_to_image;
-use crate::{AppWindow, HeaderRow, StatItem};
+use crate::{AppWindow, HeaderRow, StatItem, StatRow};
 
 /// Show a loaded document: its image (plus natural size for fit/zoom), the
 /// header table, and the pixel statistics + histogram.
@@ -20,6 +20,7 @@ pub fn show_doc(app: &AppWindow, meta: &FileMeta, preview: &image::RgbImage) {
     app.set_header_rows(header_rows(meta));
     app.set_info(info_items(&meta.info));
     app.set_stats(stat_items(&meta.stats));
+    app.set_stat_channels(stat_channels(&meta.stats));
     app.set_star_stats(star_items(&meta.stars));
     app.set_histogram(histogram(&meta.stats));
 }
@@ -31,7 +32,8 @@ pub fn clear(app: &AppWindow) {
     app.set_image_height(0.0);
     app.set_header_rows(ModelRc::new(VecModel::<HeaderRow>::default()));
     app.set_info(ModelRc::new(VecModel::<StatItem>::default()));
-    app.set_stats(ModelRc::new(VecModel::<StatItem>::default()));
+    app.set_stats(ModelRc::new(VecModel::<StatRow>::default()));
+    app.set_stat_channels(ModelRc::new(VecModel::<SharedString>::default()));
     app.set_star_stats(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
 }
@@ -64,42 +66,55 @@ fn info_items(fields: &[SummaryField]) -> ModelRc<StatItem> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// The labeled pixel statistics for the panel, one row per measurement. A
-/// single-channel source (grayscale/CFA) shows one number; an already-
-/// debayered RGB source shows all three channels on the same row, mirroring
-/// `fitz info`'s per-channel table.
-fn stat_items(stats: &ImageStats) -> ModelRc<StatItem> {
+/// The labeled pixel statistics for the panel, one row per measurement with
+/// one value per channel. A single-channel source (grayscale/CFA) gets a
+/// single value column; an already-debayered RGB source gets one column per
+/// channel, aligned under the headers from [`stat_channels`].
+fn stat_items(stats: &ImageStats) -> ModelRc<StatRow> {
     let row = |label: &str, extract: fn(&Stats) -> f64| {
-        stat(label, join_channels(&stats.channels, extract))
+        stat_row(label, channel_values(&stats.channels, extract))
     };
     let items = vec![
-        row("Min ADU", |s| s.min as f64),
-        row("Max ADU", |s| s.max as f64),
-        row("Mean ADU", |s| s.mean as f64),
-        row("Median ADU", |s| s.median as f64),
-        row("Sigma ADU", |s| s.sigma as f64),
-        row("MAD ADU", |s| s.mad as f64),
+        row("Min", |s| s.min as f64),
+        row("Max", |s| s.max as f64),
+        row("Mean", |s| s.mean as f64),
+        row("Median", |s| s.median as f64),
+        row("Mode", |s| s.mode as f64),
+        row("Avg Dev", |s| s.avg_dev as f64),
+        row("Std Dev", |s| s.sigma as f64),
+        row("MAD", |s| s.mad as f64),
+        row("Bit-depth(est)", |s| s.estimated_bit_depth as f64),
         row("Zeros", |s| s.zero_count as f64),
+        row("Saturated", |s| s.saturated_count as f64),
     ];
     ModelRc::new(VecModel::from(items))
 }
 
-/// Format one measurement across every channel: a bare number for a single
-/// channel, or `"R <v>  G <v>  B <v>"` for three.
-fn join_channels(channels: &[Stats], extract: fn(&Stats) -> f64) -> String {
-    const LABELS: [&str; 3] = ["R", "G", "B"];
-    if channels.len() == 3 {
-        LABELS
-            .iter()
-            .zip(channels)
-            .map(|(label, s)| format!("{label} {}", format_stat(extract(s))))
-            .collect::<Vec<_>>()
-            .join("  ")
+/// The channel headers printed once above the pixel-statistics columns:
+/// empty for a single-channel source (nothing to label), `["R", "G", "B"]`
+/// for an already-debayered RGB source.
+fn stat_channels(stats: &ImageStats) -> ModelRc<SharedString> {
+    let labels: Vec<SharedString> = if stats.channels.len() == 3 {
+        ["R", "G", "B"].map(SharedString::from).to_vec()
     } else {
-        channels
-            .first()
-            .map(|s| format_stat(extract(s)))
-            .unwrap_or_default()
+        Vec::new()
+    };
+    ModelRc::new(VecModel::from(labels))
+}
+
+/// One measurement's formatted value per channel.
+fn channel_values(channels: &[Stats], extract: fn(&Stats) -> f64) -> ModelRc<SharedString> {
+    let values: Vec<SharedString> = channels
+        .iter()
+        .map(|s| format_stat(extract(s)).into())
+        .collect();
+    ModelRc::new(VecModel::from(values))
+}
+
+fn stat_row(label: &str, values: ModelRc<SharedString>) -> StatRow {
+    StatRow {
+        label: label.into(),
+        values,
     }
 }
 
@@ -142,7 +157,7 @@ pub fn format_stat(v: f64) -> String {
     if v.fract() == 0.0 {
         format!("{v:.0}")
     } else {
-        format!("{v:.3}")
+        format!("{v:.2}")
     }
 }
 
@@ -182,6 +197,18 @@ mod tests {
             .collect()
     }
 
+    /// Flatten a `StatRow` model back into `"label: v1  v2  v3"` strings for
+    /// assertions.
+    fn stat_rows(model: &ModelRc<StatRow>) -> Vec<String> {
+        model
+            .iter()
+            .map(|s| {
+                let values: Vec<String> = s.values.iter().map(|v| v.to_string()).collect();
+                format!("{}: {}", s.label, values.join("  "))
+            })
+            .collect()
+    }
+
     fn mono_stats(
         min: u16,
         max: u16,
@@ -211,17 +238,22 @@ mod tests {
         let stats = mono_stats(0, 65535, 1234.5, 1000.0, 12.75, 8.0, 7);
         let items = stat_items(&stats);
         assert_eq!(
-            rows(&items),
+            stat_rows(&items),
             [
-                "Min ADU: 0",
-                "Max ADU: 65535",
-                "Mean ADU: 1234.500",
-                "Median ADU: 1000",
-                "Sigma ADU: 12.750",
-                "MAD ADU: 8",
+                "Min: 0",
+                "Max: 65535",
+                "Mean: 1234.50",
+                "Median: 1000",
+                "Mode: 0",
+                "Avg Dev: 0",
+                "Std Dev: 12.75",
+                "MAD: 8",
+                "Bit-depth(est): 0",
                 "Zeros: 7",
+                "Saturated: 0",
             ]
         );
+        assert!(stat_channels(&stats).iter().next().is_none());
     }
 
     #[test]
@@ -250,11 +282,16 @@ mod tests {
             histogram: [0u64; 256],
         };
         let items = stat_items(&stats);
-        let min_row = rows(&items)
+        let min_row = stat_rows(&items)
             .into_iter()
-            .find(|r| r.starts_with("Min ADU"))
+            .find(|r| r.starts_with("Min:"))
             .unwrap();
-        assert_eq!(min_row, "Min ADU: R 10  G 20  B 30");
+        assert_eq!(min_row, "Min: 10  20  30");
+        let channels: Vec<String> = stat_channels(&stats)
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        assert_eq!(channels, ["R", "G", "B"]);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { VerticalBox, TabWidget } from "std-widgets.slint";
-import { FileRow, HeaderRow, StatItem, ChartPoint, ChartTick } from "types.slint";
+import { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
 import { StatsPanel } from "stats_panel.slint";
@@ -16,7 +16,7 @@ import { Toolbar } from "toolbar.slint";
 import { StatusBar } from "status_bar.slint";
 
 // Re-export the shared structs so the generated Rust names them at the crate root.
-export { FileRow, HeaderRow, StatItem, ChartPoint, ChartTick }
+export { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick }
 
 export component AppWindow inherits Window {
     in property <image> preview-image;
@@ -38,11 +38,14 @@ export component AppWindow inherits Window {
     in-out property <length> file-list-width: 240px;
     // FITS header cards for the Headers tab.
     in property <[HeaderRow]> header-rows;
-    // Pixel statistics (empty for an already-debayered RGB cube) and the
-    // matching 0..1 histogram bar heights for the stats panel. `star-stats` is
-    // the panel's separate star-metrics column (count, HFR, FWHM, eccentricity),
+    // Pixel statistics (empty for an already-debayered RGB cube), one row per
+    // measurement with one value per channel, plus the channel headers
+    // ("R"/"G"/"B", or empty for a single-channel source) and the matching
+    // 0..1 histogram bar heights for the stats panel. `star-stats` is the
+    // panel's separate star-metrics column (count, HFR, FWHM, eccentricity),
     // empty when the frame carries no star metrics.
-    in property <[StatItem]> stats;
+    in property <[StatRow]> stats;
+    in property <[string]> stat-channels;
     in property <[StatItem]> star-stats;
     in property <[float]> histogram;
     // Curated metadata summary (label/value pairs, as `fitz info` reports) for
@@ -515,6 +518,7 @@ export component AppWindow inherits Window {
                         // (mutually exclusive), shrinking the image area to fit.
                         if root.show-stats: StatsPanel {
                             stats: root.stats;
+                            stat-channels: root.stat-channels;
                             star-stats: root.star-stats;
                             histogram: root.histogram;
                         }

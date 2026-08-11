@@ -26,6 +26,15 @@ export struct StatItem {
     value: string,
 }
 
+// One row of pixel statistics: a label plus one formatted value per channel
+// (one value for grayscale/CFA, three for an already-debayered RGB cube), so
+// the panel can lay channel values out in aligned columns under a single
+// "R"/"G"/"B" header instead of repeating the channel letter on every row.
+export struct StatRow {
+    label: string,
+    values: [string],
+}
+
 // One sample on the analytics chart. `x`/`y` are screen-normalized 0..1
 // coordinates within the plot area — (0, 0) is the top-left corner, so the
 // controller maps time to `x` and (inverted) metric value to `y`; the Slint
