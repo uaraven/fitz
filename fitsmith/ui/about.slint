@@ -30,7 +30,13 @@ export component AboutDialog inherits Rectangle {
             padding: 28px;
             spacing: 10px;
             alignment: center;
+            cross-axis-alignment: center;
 
+            Image {
+                source: @image-url("../assets/128x128.png");
+                width: 72px;
+                height: 72px;
+            }
             Text {
                 text: "FitSmith";
                 font-size: 24px;
@@ -44,7 +50,7 @@ export component AboutDialog inherits Rectangle {
                 horizontal-alignment: center;
             }
             Text {
-                text: "A toolset for FITS files";
+                text: "©2026 Oles Voronin";
                 color: #c8c8c8;
                 wrap: word-wrap;
                 horizontal-alignment: center;

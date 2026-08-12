@@ -58,6 +58,9 @@ export component AppWindow inherits Window {
     in property <string> memory-text;
     // App version (set from Cargo's package version) for the About dialog.
     in property <string> app-version;
+    // Whether the Help menu is shown. On macOS the native "About FitSmith" app-menu
+    // item already covers this (see main.rs), so the in-app Help menu is redundant there.
+    in property <bool> show-help-menu: true;
     // Whether the Help ▸ About overlay is showing.
     in-out property <bool> show-about: false;
     // Whether the "clear the working set?" confirmation is showing.
@@ -391,7 +394,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        Menu {
+        if root.show-help-menu : Menu {
             title: "Help";
             MenuItem {
                 title: "About FitSmith";

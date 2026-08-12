@@ -14,6 +14,7 @@ path = "src/main.rs"
 [package.metadata.bundle]
 name = "FitSmith"
 identifier = "dev.fitz.fitsmith"
+copyright = "Copyright © 2026 Oles Voronin"
 short_description = "A GUI frontend for the fitz FITS toolset."
 long_description = """
 FitSmith opens FITS astronomy images, debayers and auto-stretches them for a live

@@ -47,6 +47,9 @@ fn main() -> Result<()> {
     let app = AppWindow::new()?;
     app.set_status_text("No image — add files to view".into());
     app.set_app_version(env!("CARGO_PKG_VERSION").into());
+    // The native "About FitSmith" app-menu item covers this on macOS
+    #[cfg(target_os = "macos")]
+    app.set_show_help_menu(false);
     controller::init(&app);
 
     // Every callback below just re-acquires the window from a weak handle and
