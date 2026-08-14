@@ -42,6 +42,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use libfitz::fitskit::CompressionType;
 use metrics::{FileMetrics, MetricFamily};
+use rayon::prelude::*;
 use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel, Weak};
 
 use crate::doc::FileMeta;
@@ -320,16 +321,16 @@ fn index_of(path: &Path) -> Option<usize> {
     STATE.with(|s| s.borrow().paths.iter().position(|p| p == path))
 }
 
-/// Read the header of each newly added path off the UI thread and fill in its
-/// row's exposure once done, then refresh the status bar totals. A no-op for
-/// an empty list.
+/// Read the header of each newly added path off the UI thread
+/// and fill in its row's exposure once done, then refresh the status
+/// bar totals. A no-op for an empty list.
 fn spawn_exposure_load(weak: Weak<AppWindow>, paths: Vec<PathBuf>) {
     if paths.is_empty() {
         return;
     }
     std::thread::spawn(move || {
         let loaded: Vec<(PathBuf, f32)> = paths
-            .into_iter()
+            .into_par_iter()
             .map(|path| {
                 let exposure = load_exposure(&path);
                 (path, exposure)

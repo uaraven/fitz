@@ -4,7 +4,7 @@ use std::path::Path;
 /// header
 /// Returns 0 if file failed to load or the EXPTIME header is missing
 pub fn load_exposure(path: &Path) -> f32 {
-    let header = libfitz::fits_file::load_header(&path);
+    let header = libfitz::fits_file::load_header(path);
     let exposure = header.map(|h| h.header.get_float("EXPTIME")).unwrap_or(None).unwrap_or(0.0);
     exposure as f32
 }

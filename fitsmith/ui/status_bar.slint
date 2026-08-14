@@ -36,19 +36,31 @@ export component StatusBar inherits HorizontalBox {
         alignment: start;
         horizontal-stretch: 0;
         Text {
-            text: "Files: \{root.total-files} (\{root.checked-files})";
+            text: "Files: \{root.total-files}";
             overflow: elide;
             vertical-alignment: center;
         }
-        Separator {}
-        if root.total-exposure > 0: Text {
-            text: "Int: \{time(root.total-exposure)}";
-            overflow: elide;
-            vertical-alignment: center;
-        }
-        if root.total-exposure > 0: Separator{}
-    }
 
+        if root.checked-files > 0:
+        Text {
+            text: "(\{root.checked-files})";
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Separator { }
+
+        if root.total-exposure > 0: Text {
+            text: "Tᵢₙₜ: \{time(root.total-exposure)}";
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.checked-exposure > 0: Text {
+            text: "(\{time(root.checked-exposure)})";
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.total-exposure > 0: Separator { }
+    }
 
     // A live spinner while a load/render is in flight.
     if root.busy: Spinner {
@@ -74,6 +86,7 @@ export component StatusBar inherits HorizontalBox {
     Rectangle {
         horizontal-stretch: 1;
     }
+
     Text {
         text: root.memory-text;
         color: #a0a0a0;

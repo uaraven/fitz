@@ -1,6 +1,6 @@
 [package]
 name = "fitsmith"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MIT"
 
@@ -29,6 +29,10 @@ icon = [
     "assets/256x256.png",
     "assets/256x256@2x.png",
 ]
+# Registers FitSmith as an "Open With" handler (Alternate rank, not default) for
+# .fit/.fits/.fit.fz/.fits.fz on macOS. cargo-bundle has no first-class field for
+# document-type associations, so this splices raw Info.plist keys in directly.
+osx_info_plist_exts = ["assets/document-types.plist.xml"]
 
 [dependencies]
 libfitz = { path = "../libfitz" }
@@ -40,6 +44,7 @@ sysinfo = "0.39.6"
 # cached preview buffer are built from — no encoders required here, libfitz
 # already owns those.
 image = { version = "0.25", default-features = false }
+rayon = "1"
 
 # macOS only: used to turn off automatic window tabbing so AppKit stops
 # injecting "Show Tab Bar"/"Show All Tabs" into our View menu. Already in the

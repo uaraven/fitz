@@ -152,6 +152,13 @@ info -> Run anyway). If you change the app icon, regenerate the sizes in `fitsmi
 (`32x32.png`, `128x128.png`, `128x128@2x.png`, `256x256.png`, `256x256@2x.png`) from the
 source image and cargo-bundle will convert them to `.icns`/`.ico` as needed.
 
+The macOS bundle registers FitSmith as an "Open With" handler for `.fit`/`.fits`/`.fit.fz`/
+`.fits.fz` (Finder's "Open With" menu, right-click a file; `LSHandlerRank` `Alternate`, so it
+never silently takes over as the default opener for these extensions). That comes from
+`fitsmith/assets/document-types.plist.xml`, spliced into the generated `Info.plist` via
+`osx_info_plist_exts` in `Cargo.toml` — cargo-bundle has no dedicated field for document-type
+associations, so update that file directly if the set of registered extensions ever changes.
+
 Because FitSmith links Slint under the GPLv3 (see below), any packaged binary you distribute
 carries that obligation — see [Slint and licensing](#slint-and-licensing).
 
