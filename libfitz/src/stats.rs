@@ -146,11 +146,10 @@ pub(crate) fn single_channel_stats(pixels: &PixelBuffer) -> ImageStats {
 /// Calculates the numbers of the 16-bit mono pixels in image
 /// Returns 65536-value vector which is essentially a histogram of the image
 fn single_channel_px_counts(pixels: &PixelBuffer) -> Vec<u32> {
-    let counts = match pixels {
+    match pixels {
         PixelBuffer::U16(px) => count_into_bins(px, |&v| v as usize),
         PixelBuffer::F32(px) => count_into_bins(px, |&v| float_to_u16(v)),
-    };
-    counts
+    }
 }
 
 /// Chunk length for the counting passes below: one chunk per thread, but never

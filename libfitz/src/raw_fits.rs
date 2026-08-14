@@ -35,11 +35,11 @@ pub fn copy_headers_raw(
     source_fits: &FitsFile,
     target_fits: &mut FitsFile,
 ) -> anyhow::Result<usize> {
-    let source_image_hdu_index = find_image_hdu_index(&source_fits)
+    let source_image_hdu_index = find_image_hdu_index(source_fits)
         .ok_or_else(|| anyhow!("No image data found in source file"))?;
     let source_hdu = &source_fits.hdus[source_image_hdu_index];
 
-    let target_image_hdu_index = find_image_hdu_index(&target_fits)
+    let target_image_hdu_index = find_image_hdu_index(target_fits)
         .ok_or_else(|| anyhow!("No image data found in target file"))?;
     let target_hdu = &mut target_fits.hdus[target_image_hdu_index];
 

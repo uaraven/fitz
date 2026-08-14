@@ -125,31 +125,31 @@ fn print_stats(out: &mut String, img_stats: &ImageStats, log_scale: bool) {
     if stats.len() == 3 {
         print_table_header(out, "Channels", &["R", "G", "B"]);
     }
-    print_table(out, "Min", &stats, |s: &Stats| s.min.to_string());
-    print_table(out, "Max", &stats, |s: &Stats| s.max.to_string());
-    print_table(out, "Mean", &stats, |s: &Stats| {
+    print_table(out, "Min", stats, |s: &Stats| s.min.to_string());
+    print_table(out, "Max", stats, |s: &Stats| s.max.to_string());
+    print_table(out, "Mean", stats, |s: &Stats| {
         round_to(s.mean as f64, 2).to_string()
     });
-    print_table(out, "Median", &stats, |s: &Stats| {
+    print_table(out, "Median", stats, |s: &Stats| {
         round_to(s.median as f64, 2).to_string()
     });
-    print_table(out, "Mode", &stats, |s: &Stats| {
+    print_table(out, "Mode", stats, |s: &Stats| {
         round_to(s.mode as f64, 2).to_string()
     });
-    print_table(out, "Avg Dev", &stats, |s: &Stats| {
+    print_table(out, "Avg Dev", stats, |s: &Stats| {
         round_to(s.avg_dev as f64, 2).to_string()
     });
-    print_table(out, "MAD", &stats, |s: &Stats| {
+    print_table(out, "MAD", stats, |s: &Stats| {
         round_to(s.mad as f64, 2).to_string()
     });
-    print_table(out, "σ", &stats, |s: &Stats| {
+    print_table(out, "σ", stats, |s: &Stats| {
         round_to(s.sigma as f64, 2).to_string()
     });
-    print_table(out, "Bit-depth (est)", &stats, |s: &Stats| {
+    print_table(out, "Bit-depth (est)", stats, |s: &Stats| {
         s.estimated_bit_depth.to_string()
     });
-    print_table(out, "Zeros", &stats, |s: &Stats| s.zero_count.to_string());
-    print_table(out, "Saturated", &stats, |s: &Stats| {
+    print_table(out, "Zeros", stats, |s: &Stats| s.zero_count.to_string());
+    print_table(out, "Saturated", stats, |s: &Stats| {
         s.saturated_count.to_string()
     });
 
@@ -186,17 +186,17 @@ fn print_star_stats(out: &mut String, stats: &StarStats) {
     let _ = writeln!(
         out,
         "          HFR: {}",
-        round_to(stats.hfr.unwrap_or_else(|| 0.0), 2)
+        round_to(stats.hfr.unwrap_or(0.0), 2)
     );
     let _ = writeln!(
         out,
         "         FWHM: {}",
-        round_to(stats.fwhm.unwrap_or_else(|| 0.0), 2)
+        round_to(stats.fwhm.unwrap_or(0.0), 2)
     );
     let _ = writeln!(
         out,
         " Eccentricity: {}",
-        round_to(stats.eccentricity.unwrap_or_else(|| 0.0), 2)
+        round_to(stats.eccentricity.unwrap_or(0.0), 2)
     );
 }
 

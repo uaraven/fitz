@@ -63,7 +63,7 @@ fn export_as_jpeg(target: &Path, img: &Image, quality: u8) -> anyhow::Result<()>
     let (w, h) = (img.width as u32, img.height as u32);
     let rgb = img.image_type == ImageType::RGB;
 
-    let _ = match rgb {
+    match rgb {
         true => enc.write_image(&img.pixels.as_u8(), w, h, ExtendedColorType::Rgb8),
         false => enc.write_image(&img.pixels.as_u8(), w, h, ExtendedColorType::L8),
     }?;
@@ -78,7 +78,7 @@ pub fn export_as_png(target: &Path, img: &Image) -> anyhow::Result<()> {
     let (w, h) = (img.width as u32, img.height as u32);
     let rgb = img.image_type == ImageType::RGB;
 
-    let _ = match rgb {
+    match rgb {
         true => enc.write_image(&img.pixels.as_u16_bytes(), w, h, ExtendedColorType::Rgb16),
         false => enc.write_image(&img.pixels.as_u16_bytes(), w, h, ExtendedColorType::L16),
     }?;

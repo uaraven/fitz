@@ -7,8 +7,9 @@ use libfitz::data::ImageType;
 use libfitz::export::{ExportFormat, FitsOptions, TiffOptions};
 use libfitz::fits_file::load_fits;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum OutputFormat {
+    #[default]
     Fits,
     Tiff,
     Jpeg,
@@ -23,12 +24,6 @@ impl OutputFormat {
             OutputFormat::Jpeg => "jpg",
             OutputFormat::Png => "png",
         }
-    }
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        OutputFormat::Fits
     }
 }
 

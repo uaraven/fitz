@@ -37,7 +37,7 @@ pub(crate) fn red_sites(cfa: CFA) -> Vec<(usize, usize)> {
     }
 }
 
-pub(crate) fn cfa_pixels(image: &Image, pattern: &Vec<(usize, usize)>) -> (usize, usize, Vec<u16>) {
+pub(crate) fn cfa_pixels(image: &Image, pattern: &[(usize, usize)]) -> (usize, usize, Vec<u16>) {
     let (pw, ph) = (image.width / 2, image.height / 2);
     let values = &image.pixels.as_u16ref();
     let plane = (0..ph)
