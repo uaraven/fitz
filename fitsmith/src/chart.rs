@@ -9,14 +9,7 @@
 
 use crate::controller::metrics::Series;
 use crate::view::format_stat;
-use crate::{ChartPoint, ChartTick};
-use rayon::prelude::*;
-
-#[derive(Default, PartialEq, Debug)]
-pub struct StatLine {
-    pub pos: f32,
-    pub label: String,
-}
+use crate::{ChartPoint, ChartTick, StatLine};
 
 /// One plotted line: its channel label (`None` for a star metric or a
 /// single-channel pixel source, `Some("R"/"G"/"B")` otherwise), its points in
@@ -268,37 +261,34 @@ pub fn plot(series: &Series) -> Plot {
         })
         .collect();
 
-    let stat_lines = match series.channels.len() {
-        1 => {
-            let mean = series.channels[0]
+    let stat_lines = match series.channels.first() {
+        Some(channel) if series.channels.len() == 1 && channel.points.len() >= 2 => {
+            let n = channel.points.len() as f64;
+            let mean = channel.points.iter().map(|p| p.value).sum::<f64>() / n;
+            let sigma = (channel
                 .points
-                .par_iter()
-                .map(|p| p.value)
+                .iter()
+                .map(|p| (p.value - mean) * (p.value - mean))
                 .sum::<f64>()
-                / series.channels[0].points.len() as f64;
-            let sigma = (series.channels[0]
-                .points
-                .par_iter()
-                .map(|p| (mean - p.value) * (mean - p.value))
-                .sum::<f64>()
-                / series.channels[0].points.len() as f64)
+                / n)
                 .sqrt();
-            (1..4)
-                .flat_map(|k| {
-                    vec![
-                        StatLine {
-                            pos: y_of(mean + sigma * k as f64),
-                            label: format!("{}σ", k),
-                        },
-                        StatLine {
-                            pos: y_of(mean - sigma * k as f64),
-                            label: format!("-{}σ", k),
-                        },
-                    ]
+            let mut entries = vec![("mean".to_string(), mean)];
+            if sigma > 0.0 {
+                for k in 1..=3 {
+                    entries.push((format!("+{k}σ"), mean + sigma * k as f64));
+                    entries.push((format!("-{k}σ"), mean - sigma * k as f64));
+                }
+            }
+            entries
+                .into_iter()
+                .map(|(label, v)| StatLine {
+                    pos: y_of(v),
+                    label: label.into(),
                 })
+                .filter(|l| (0.0..=1.0).contains(&l.pos))
                 .collect()
         }
-        _ => vec![],
+        _ => Vec::new(),
     };
 
     Plot {
@@ -557,6 +547,39 @@ mod tests {
                 .iter()
                 .any(|t| t.label.parse::<f64>().unwrap() > 200.0)
         );
+    }
+
+    #[test]
+    fn plot_computes_mean_and_sigma_bands_for_a_single_channel_series() {
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        // Mean 20, population sigma sqrt(200/3) ≈ 8.16 — well inside the
+        // 10..30 axis, so mean and ±1σ survive the visible-range filter while
+        // ±2σ/±3σ fall outside it and are dropped.
+        let p = plot(&series(&[
+            (lo, 10.0),
+            (lo + 3600.0, 20.0),
+            (lo + 7200.0, 30.0),
+        ]));
+        let labels: Vec<&str> = p.stat_lines.iter().map(|l| l.label.as_str()).collect();
+        assert_eq!(labels, ["mean", "+1σ", "-1σ"]);
+        let mean_pos = p.stat_lines.iter().find(|l| l.label == "mean").unwrap().pos;
+        assert!((mean_pos - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn plot_has_no_stat_lines_for_a_multi_channel_series() {
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let p = plot(&rgb_series(
+            &[(lo, 10.0), (lo + 3600.0, 20.0)],
+            &[(lo, 100.0), (lo + 3600.0, 200.0)],
+            &[(lo, 1000.0), (lo + 3600.0, 2000.0)],
+        ));
+        assert!(p.stat_lines.is_empty());
+    }
+
+    #[test]
+    fn plot_has_no_stat_lines_for_a_single_point_series() {
+        assert!(plot(&series(&[(1000.0, 42.0)])).stat_lines.is_empty());
     }
 
     #[test]

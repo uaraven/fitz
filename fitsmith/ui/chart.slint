@@ -1,5 +1,5 @@
 import { Palette } from "std-widgets.slint";
-import { ChartPoint, ChartTick } from "types.slint";
+import { ChartPoint, ChartTick, StatLine } from "types.slint";
 
 // One channel's point marks, positioned within its parent's `width`/`height`
 // (the plot area). Factored out so the chart can instantiate it once per
@@ -13,7 +13,7 @@ import { ChartPoint, ChartTick } from "types.slint";
 // tooltip drawn as a child here would be cut off at the plot's edges. The
 // chart renders the actual tooltip as an overlay above the Flickable.
 component ChannelMarks inherits Rectangle {
-    in property <bool> show-std-dev: false;
+    in property <[ChartPoint]> points;
     in property <color> mark-color;
     in property <color> hover-color;
     callback point-hover(ChartPoint, bool);
@@ -54,7 +54,6 @@ export component AnalyticsChart inherits Rectangle {
     in property <[ChartPoint]> points-r;
 
     // std deviation charts
-    in property <[ChartPoint]> points;
     in property <[StatLine]> stat-lines;
     in property <bool> show-std-dev;
 
@@ -91,7 +90,7 @@ export component AnalyticsChart inherits Rectangle {
     property <color> tip-bg: root.dark-theme ? #2b2b2b : #fbfbfb;
     property <color> tip-fg: root.dark-theme ? #e0e0e0 : #202020;
     property <color> tip-border: root.dark-theme ? #555555 : #cccccc;
-    property <color> stat-line-color: root.dark-theme ? #857530 : #104040;
+    property <color> stat-line-color: root.dark-theme ? #857530A0 : #104040A0;
 
     // The currently-hovered point (if any), reported by whichever channel's
     // `ChannelMarks` fires `point-hover`. Backs the tooltip overlay below.
@@ -133,6 +132,17 @@ export component AnalyticsChart inherits Rectangle {
         font-size: 11px;
     }
 
+    for line in root.stat-lines: Text {
+        x: 0;
+        y: root.title-h + line.pos * root.area-h - self.height / 2;
+        width: root.y-axis-w - 8px;
+        horizontal-alignment: right;
+        text: line.label;
+        color: root.stat-line-color;
+        font-size: 10px;
+        visible: root.show-std-dev && !root.per-channel;
+    }
+
     flick := Flickable {
         x: root.y-axis-w;
         y: root.title-h;
@@ -153,14 +163,14 @@ export component AnalyticsChart inherits Rectangle {
         }
 
 
-        if root.show-std-dev && !root.per-channel:
-            for line in root.stat-lines: Rectangle {
-                y: line.pos;
-                 x:root.area-h;
-                 width: content-w;
-                 height: 1px;
-                 background: root.stat-line-color;
-            }
+        for line in root.stat-lines: Rectangle {
+            x: 0;
+            y: line.pos * root.area-h;
+            width: root.content-w;
+            height: 1px;
+            background: root.stat-line-color;
+            visible: root.show-std-dev && !root.per-channel;
+        }
 
         // Gridlines: horizontal per Y tick, vertical per X tick. They live in
         // the scrolled content so vertical lines track their timestamps.

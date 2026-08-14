@@ -1,6 +1,7 @@
 //! Rendering a [`Plot`] as a standalone SVG document: the analytics chart's
 //! export format.
 
+use crate::StatLine;
 use crate::chart::{ChartLine, Plot};
 
 /// The exported canvas, in SVG user units. A 2.5:1 plot is wide enough for a
@@ -38,7 +39,7 @@ const GRID_COLOR: &str = "#e4e4e4";
 /// three channels.
 const SINGLE_LINE_COLOR: &str = "#0a5ea8";
 const LABEL_COLOR: &str = "#555555";
-const STAT_LINE_COLOR : &str = "#656500";
+const STAT_LINE_COLOR: &str = "#8a6d1f";
 
 /// The stroke/mark color for channel `index` of a `count`-channel plot: the
 /// neutral single-line color for `count == 1`, R/G/B hex for three.
@@ -189,24 +190,28 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
     for (i, line) in plot.lines.iter().enumerate() {
         draw_line(&mut s, line, channel_color(count, i));
     }
-    if plot.lines.len() == 1 {
-        for stat_line in plot.stat_lines.iter() {
-            draw_h_line(&mut s, stat_line.pos, STAT_LINE_COLOR);
-        }
+    for stat_line in &plot.stat_lines {
+        draw_stat_line(&mut s, stat_line);
     }
-    
+
     s.push_str("</svg>\n");
     s
 }
 
-fn draw_h_line(s: &mut String, y: f32, color: &str) {
+fn draw_stat_line(s: &mut String, line: &StatLine) {
+    let y = plot_y(line.pos);
     s.push_str(&format!(
-        "<polyline fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" \
-         stroke-linecap=\"round\" stroke-linejoin=\"round\" points=\""
+        "<line x1=\"{Y_AXIS_W}\" y1=\"{y:.2}\" x2=\"{:.2}\" y2=\"{y:.2}\" \
+         stroke=\"{STAT_LINE_COLOR}\" stroke-width=\"1\" stroke-dasharray=\"5,4\"/>\n",
+        Y_AXIS_W + PLOT_W
     ));
-    s.push_str(&format!("0.0,{} ", plot_y(y)));
-    s.push_str(&format!("{},{} ", WIDTH, plot_y(y)));
-    s.push_str("\"/>\n");
+    s.push_str(&format!(
+        "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{FONT_SIZE}\" text-anchor=\"end\" \
+         dominant-baseline=\"central\" fill=\"{STAT_LINE_COLOR}\">{}</text>\n",
+        Y_AXIS_W + PLOT_W - 4.0,
+        y - 3.0,
+        escape(&line.label)
+    ));
 }
 
 /// Draw one channel's polyline and point marks in `color`. Built from the
@@ -410,6 +415,46 @@ mod tests {
         assert!(doc.contains("<title>R "));
         assert!(doc.contains("<title>G "));
         assert!(doc.contains("<title>B "));
+    }
+
+    #[test]
+    fn svg_draws_stat_lines_for_a_single_channel_plot() {
+        let p = sample_plot();
+        assert!(!p.stat_lines.is_empty());
+        let doc = svg(&p, "Mean (ADU)");
+        assert!(doc.contains("stroke-dasharray"));
+        assert!(doc.contains(">mean</text>"));
+    }
+
+    #[test]
+    fn svg_draws_no_stat_lines_for_a_per_channel_plot() {
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let point = |v: f64| SamplePoint {
+            time: lo,
+            time_str: String::new(),
+            value: v,
+            path: PathBuf::from("f.fits"),
+        };
+        let series = Series {
+            metric: Metric::Mean,
+            unavailable: 0,
+            channels: vec![
+                ChannelSeries {
+                    label: Some("R"),
+                    points: vec![point(10.0), point(20.0)],
+                },
+                ChannelSeries {
+                    label: Some("G"),
+                    points: vec![point(10.0), point(20.0)],
+                },
+                ChannelSeries {
+                    label: Some("B"),
+                    points: vec![point(10.0), point(20.0)],
+                },
+            ],
+        };
+        let doc = svg(&plot(&series), "Mean (ADU)");
+        assert!(!doc.contains("stroke-dasharray"));
     }
 
     #[test]

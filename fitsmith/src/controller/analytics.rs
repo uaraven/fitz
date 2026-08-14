@@ -462,6 +462,7 @@ fn replot(app: &AppWindow) {
 
     app.set_analytics_x_ticks(ModelRc::new(VecModel::from(plot.x_ticks)));
     app.set_analytics_y_ticks(ModelRc::new(VecModel::from(plot.y_ticks)));
+    app.set_analytics_stat_lines(ModelRc::new(VecModel::from(plot.stat_lines)));
 }
 
 /// How to word the frames that analyzed fine but have no value for the plotted

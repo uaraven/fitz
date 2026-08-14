@@ -1,7 +1,7 @@
 import { Button, ComboBox, Slider, CheckBox } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 import { AnalyticsChart } from "chart.slint";
-import { ChartPoint, ChartTick } from "types.slint";
+import { ChartPoint, ChartTick, StatLine } from "types.slint";
 
 // The chart modal behind both Tools ▸ Analytics… and Tools ▸ Star metrics…:
 // plots one metric across the checked working-set files, ordered by acquisition
@@ -49,6 +49,7 @@ export component AnalyticsDialog inherits DialogCard {
 
     in property <[StatLine]> stat-lines;
     in-out property <bool> stddev-enabled: false;
+    property <bool> per-channel: root.label-g != "" || root.label-b != "";
 
     callback metric-changed(int);
     callback export-svg();
@@ -96,8 +97,7 @@ export component AnalyticsDialog inherits DialogCard {
 
             CheckBox {
                 text: "σ bands";
-                checked: root.stddev-enabled;
-                changed checked => { root.stddev-enabled }
+                checked <=> root.stddev-enabled;
                 enabled: !root.per-channel;
             }
 
