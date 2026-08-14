@@ -10,12 +10,11 @@ use libfitz::fitskit::CompressionType;
 use slint::{ComponentHandle, Model, Weak};
 
 use crate::AppWindow;
-use crate::controller::support::load_exposure;
 use crate::files::{compressed_output_path, decompressed_output_path, display_name, is_compressed};
 
 use super::{
     STATE, algorithm_for_index, batch_is_current, begin_file_batch, make_row, operation_targets,
-    raise_batch_cancel, require_existing_dir, set_row_status, update_memory,
+    raise_batch_cancel, require_existing_dir, set_row_status, spawn_exposure_load, update_memory,
 };
 
 /// The two file operations the Tools menu drives. `Compress` carries the
@@ -261,7 +260,9 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
         let mut st = s.borrow_mut();
         if let Some(i) = st.paths.iter().position(|p| p == old) {
             st.paths[i] = new.to_path_buf();
-            st.files_model.set_row_data(i, make_row(new, load_exposure(&st.paths[i])));
+            // Exposure is filled in asynchronously once the rewritten file's
+            // header has been read off the UI thread — see `spawn_exposure_load`.
+            st.files_model.set_row_data(i, make_row(new, 0.0));
         }
         // The rewritten file lives under a new path, so the stamp check can
         // never reach the old entry — drop it here instead.
@@ -269,6 +270,7 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
         st.analytics_cache.remove(old);
     });
     update_memory(app);
+    spawn_exposure_load(app.as_weak(), vec![new.to_path_buf()]);
 }
 
 #[cfg(test)]

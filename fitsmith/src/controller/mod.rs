@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use libfitz::fitskit::CompressionType;
 use metrics::{FileMetrics, MetricFamily};
-use slint::{Model, ModelRc, Timer, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel, Weak};
 
 use crate::doc::FileMeta;
 use crate::files::{display_name, expand_inputs, is_compressed, scan_directory};
@@ -283,34 +283,80 @@ fn add_and_select(app: &AppWindow, paths: Vec<PathBuf>) {
     let Some(first) = paths.first().cloned() else {
         return;
     };
-    let target = add_paths(paths).or_else(|| index_of(&first));
+    let (target, added) = add_paths(paths);
+    let target = target.or_else(|| index_of(&first));
     if let Some(index) = target {
         select_file(app, index as i32);
     }
     update_exposure(app);
+    spawn_exposure_load(app.as_weak(), added);
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
-/// model. Returns the index of the first newly added path (for auto-select), or
-/// `None` if every path was already present.
-fn add_paths(new_paths: Vec<PathBuf>) -> Option<usize> {
+/// model. Returns the index of the first newly added path (for auto-select, or
+/// `None` if every path was already present), plus every newly added path so
+/// the caller can kick off an async exposure load for them.
+fn add_paths(new_paths: Vec<PathBuf>) -> (Option<usize>, Vec<PathBuf>) {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         let mut first_added = None;
+        let mut added = Vec::new();
         for path in new_paths {
             if st.paths.iter().any(|p| p == &path) {
                 continue;
             }
-            st.files_model.push(make_row(&path, load_exposure(&path)));
-            st.paths.push(path);
+            // Exposure is filled in asynchronously once its header has been
+            // read off the UI thread — see `spawn_exposure_load`.
+            st.files_model.push(make_row(&path, 0.0));
+            st.paths.push(path.clone());
             first_added.get_or_insert(st.paths.len() - 1);
+            added.push(path);
         }
-        first_added
+        (first_added, added)
     })
 }
 
 fn index_of(path: &Path) -> Option<usize> {
     STATE.with(|s| s.borrow().paths.iter().position(|p| p == path))
+}
+
+/// Read the header of each newly added path off the UI thread and fill in its
+/// row's exposure once done, then refresh the status bar totals. A no-op for
+/// an empty list.
+fn spawn_exposure_load(weak: Weak<AppWindow>, paths: Vec<PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let loaded: Vec<(PathBuf, f32)> = paths
+            .into_iter()
+            .map(|path| {
+                let exposure = load_exposure(&path);
+                (path, exposure)
+            })
+            .collect();
+        let _ = weak.upgrade_in_event_loop(move |app| apply_loaded_exposures(&app, loaded));
+    });
+}
+
+/// Apply the results of `spawn_exposure_load` to the rows that are still in
+/// the working set — a row removed, or the set cleared, while its header was
+/// still loading is looked up by path and silently skipped, since the working
+/// set may have changed shape by the time this runs — then refresh the
+/// total/checked exposure readouts.
+fn apply_loaded_exposures(app: &AppWindow, loaded: Vec<(PathBuf, f32)>) {
+    STATE.with(|s| {
+        let st = s.borrow();
+        for (path, exposure) in loaded {
+            if let Some(i) = st.paths.iter().position(|p| *p == path)
+                && let Some(mut row) = st.files_model.row_data(i)
+            {
+                row.exposure = exposure;
+                st.files_model.set_row_data(i, row);
+            }
+        }
+    });
+    update_exposure(app);
 }
 
 // --- removing / clearing files ------------------------------------------
