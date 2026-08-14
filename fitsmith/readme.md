@@ -63,7 +63,9 @@ and the CLI behave identically.
        timezone — the clock you observed by. Each tick reads as a date over a time, with the
        date shown on the first tick and again wherever the session crosses local midnight.
      - **Reading the chart** — hover a point for its local date, time and value; the zoom
-       slider runs from fit-to-width up to 4x, scrolling horizontally.
+       slider runs from fit-to-width up to 4x, scrolling horizontally. The **σ bands** checkbox
+       overlays the plotted series' own mean and ±1σ/±2σ/±3σ reference lines; it's only
+       meaningful for a single plotted line, so it's disabled when the working set is RGB.
      - **Export** — **Export SVG** saves the chart as a vector document covering the whole
        series (not just the part on screen), and **Export CSV** saves the plotted series as
        `time_iso,epoch_seconds,value` rows — those stay UTC, as `DATE-OBS` recorded them.

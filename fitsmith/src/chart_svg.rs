@@ -1,17 +1,7 @@
 //! Rendering a [`Plot`] as a standalone SVG document: the analytics chart's
 //! export format.
-//!
-//! Vector rather than raster because a chart *is* vector data — the export ends
-//! up in a log, a forum post or a paper, all of which want it sharp at any size.
-//! It also sidesteps the reason the old PNG export was wrong: that one cropped
-//! the chart out of a window snapshot, so a zoomed-in chart exported only the
-//! slice the Flickable happened to be showing. Here the geometry comes from
-//! [`plot`](crate::chart::plot), which spans the whole series regardless of what
-//! is on screen, so zoom simply doesn't enter into it.
-//!
-//! Pure "data in → string out", like the rest of [`crate::chart`]: no window, no
-//! files, unit-testable on its own.
 
+use crate::StatLine;
 use crate::chart::{ChartLine, Plot};
 
 /// The exported canvas, in SVG user units. A 2.5:1 plot is wide enough for a
@@ -49,6 +39,7 @@ const GRID_COLOR: &str = "#e4e4e4";
 /// three channels.
 const SINGLE_LINE_COLOR: &str = "#0a5ea8";
 const LABEL_COLOR: &str = "#555555";
+const STAT_LINE_COLOR: &str = "#8a6d1f";
 
 /// The stroke/mark color for channel `index` of a `count`-channel plot: the
 /// neutral single-line color for `count == 1`, R/G/B hex for three.
@@ -199,9 +190,28 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
     for (i, line) in plot.lines.iter().enumerate() {
         draw_line(&mut s, line, channel_color(count, i));
     }
+    for stat_line in &plot.stat_lines {
+        draw_stat_line(&mut s, stat_line);
+    }
 
     s.push_str("</svg>\n");
     s
+}
+
+fn draw_stat_line(s: &mut String, line: &StatLine) {
+    let y = plot_y(line.pos);
+    s.push_str(&format!(
+        "<line x1=\"{Y_AXIS_W}\" y1=\"{y:.2}\" x2=\"{:.2}\" y2=\"{y:.2}\" \
+         stroke=\"{STAT_LINE_COLOR}\" stroke-width=\"1\" stroke-dasharray=\"5,4\"/>\n",
+        Y_AXIS_W + PLOT_W
+    ));
+    s.push_str(&format!(
+        "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{FONT_SIZE}\" text-anchor=\"end\" \
+         dominant-baseline=\"central\" fill=\"{STAT_LINE_COLOR}\">{}</text>\n",
+        Y_AXIS_W + PLOT_W - 4.0,
+        y - 3.0,
+        escape(&line.label)
+    ));
 }
 
 /// Draw one channel's polyline and point marks in `color`. Built from the
@@ -405,6 +415,46 @@ mod tests {
         assert!(doc.contains("<title>R "));
         assert!(doc.contains("<title>G "));
         assert!(doc.contains("<title>B "));
+    }
+
+    #[test]
+    fn svg_draws_stat_lines_for_a_single_channel_plot() {
+        let p = sample_plot();
+        assert!(!p.stat_lines.is_empty());
+        let doc = svg(&p, "Mean (ADU)");
+        assert!(doc.contains("stroke-dasharray"));
+        assert!(doc.contains(">mean</text>"));
+    }
+
+    #[test]
+    fn svg_draws_no_stat_lines_for_a_per_channel_plot() {
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let point = |v: f64| SamplePoint {
+            time: lo,
+            time_str: String::new(),
+            value: v,
+            path: PathBuf::from("f.fits"),
+        };
+        let series = Series {
+            metric: Metric::Mean,
+            unavailable: 0,
+            channels: vec![
+                ChannelSeries {
+                    label: Some("R"),
+                    points: vec![point(10.0), point(20.0)],
+                },
+                ChannelSeries {
+                    label: Some("G"),
+                    points: vec![point(10.0), point(20.0)],
+                },
+                ChannelSeries {
+                    label: Some("B"),
+                    points: vec![point(10.0), point(20.0)],
+                },
+            ],
+        };
+        let doc = svg(&plot(&series), "Mean (ADU)");
+        assert!(!doc.contains("stroke-dasharray"));
     }
 
     #[test]

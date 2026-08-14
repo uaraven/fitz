@@ -1,5 +1,5 @@
 import { VerticalBox, TabWidget } from "std-widgets.slint";
-import { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick } from "types.slint";
+import { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
 import { StatsPanel } from "stats_panel.slint";
@@ -133,6 +133,8 @@ export component AppWindow inherits Window {
     in property <[string]> analytics-metric-model;
     in-out property <int> analytics-metric;
     in-out property <float> analytics-zoom: 1.0;
+    in-out property <bool> analytics-stddev-enabled: false;
+    in property <[StatLine]> analytics-stat-lines;
     in property <string> analytics-metric-label;
     in property <int> analytics-plotted-count;
     in property <int> analytics-skipped-no-date;
@@ -718,6 +720,8 @@ export component AppWindow inherits Window {
         unavailable-note: root.analytics-unavailable-note;
         metric-index <=> root.analytics-metric;
         zoom <=> root.analytics-zoom;
+        stddev-enabled <=> root.analytics-stddev-enabled;
+        stat-lines: root.analytics-stat-lines;
         metric-changed(index) => {
             root.analytics-metric-changed(index);
         }

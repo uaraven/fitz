@@ -1,5 +1,5 @@
 import { Palette } from "std-widgets.slint";
-import { ChartPoint, ChartTick } from "types.slint";
+import { ChartPoint, ChartTick, StatLine } from "types.slint";
 
 // One channel's point marks, positioned within its parent's `width`/`height`
 // (the plot area). Factored out so the chart can instantiate it once per
@@ -52,6 +52,11 @@ component ChannelMarks inherits Rectangle {
 export component AnalyticsChart inherits Rectangle {
     // Channel R — the sole channel when `label-r` is empty.
     in property <[ChartPoint]> points-r;
+
+    // std deviation charts
+    in property <[StatLine]> stat-lines;
+    in property <bool> show-std-dev;
+
     in property <string> line-r;
     in property <string> label-r;
     // Channel G — empty (`label-g` "") unless the series is per-channel.
@@ -85,6 +90,7 @@ export component AnalyticsChart inherits Rectangle {
     property <color> tip-bg: root.dark-theme ? #2b2b2b : #fbfbfb;
     property <color> tip-fg: root.dark-theme ? #e0e0e0 : #202020;
     property <color> tip-border: root.dark-theme ? #555555 : #cccccc;
+    property <color> stat-line-color: root.dark-theme ? #857530A0 : #104040A0;
 
     // The currently-hovered point (if any), reported by whichever channel's
     // `ChannelMarks` fires `point-hover`. Backs the tooltip overlay below.
@@ -126,6 +132,17 @@ export component AnalyticsChart inherits Rectangle {
         font-size: 11px;
     }
 
+    for line in root.stat-lines: Text {
+        x: 0;
+        y: root.title-h + line.pos * root.area-h - self.height / 2;
+        width: root.y-axis-w - 8px;
+        horizontal-alignment: right;
+        text: line.label;
+        color: root.stat-line-color;
+        font-size: 10px;
+        visible: root.show-std-dev && !root.per-channel;
+    }
+
     flick := Flickable {
         x: root.y-axis-w;
         y: root.title-h;
@@ -143,6 +160,16 @@ export component AnalyticsChart inherits Rectangle {
             background: root.plot-bg;
             border-width: 1px;
             border-color: root.axis-color;
+        }
+
+
+        for line in root.stat-lines: Rectangle {
+            x: 0;
+            y: line.pos * root.area-h;
+            width: root.content-w;
+            height: 1px;
+            background: root.stat-line-color;
+            visible: root.show-std-dev && !root.per-channel;
         }
 
         // Gridlines: horizontal per Y tick, vertical per X tick. They live in
@@ -181,6 +208,7 @@ export component AnalyticsChart inherits Rectangle {
                 font-size: 11px;
                 horizontal-alignment: center;
             }
+
             Text {
                 text: tick.label;
                 color: root.label-color;
@@ -207,6 +235,7 @@ export component AnalyticsChart inherits Rectangle {
             stroke-line-cap: round;
             stroke-line-join: round;
         }
+
         if root.label-g != "": Path {
             x: 0;
             y: 0;
@@ -319,6 +348,7 @@ export component AnalyticsChart inherits Rectangle {
                 font-size: 11px;
                 font-weight: 700;
             }
+
             Text {
                 text: root.tip-point.value-label;
                 color: root.tip-fg;
