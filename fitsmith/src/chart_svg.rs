@@ -1,16 +1,5 @@
 //! Rendering a [`Plot`] as a standalone SVG document: the analytics chart's
 //! export format.
-//!
-//! Vector rather than raster because a chart *is* vector data — the export ends
-//! up in a log, a forum post or a paper, all of which want it sharp at any size.
-//! It also sidesteps the reason the old PNG export was wrong: that one cropped
-//! the chart out of a window snapshot, so a zoomed-in chart exported only the
-//! slice the Flickable happened to be showing. Here the geometry comes from
-//! [`plot`](crate::chart::plot), which spans the whole series regardless of what
-//! is on screen, so zoom simply doesn't enter into it.
-//!
-//! Pure "data in → string out", like the rest of [`crate::chart`]: no window, no
-//! files, unit-testable on its own.
 
 use crate::chart::{ChartLine, Plot};
 
@@ -49,6 +38,7 @@ const GRID_COLOR: &str = "#e4e4e4";
 /// three channels.
 const SINGLE_LINE_COLOR: &str = "#0a5ea8";
 const LABEL_COLOR: &str = "#555555";
+const STAT_LINE_COLOR : &str = "#656500";
 
 /// The stroke/mark color for channel `index` of a `count`-channel plot: the
 /// neutral single-line color for `count == 1`, R/G/B hex for three.
@@ -199,9 +189,24 @@ pub fn svg(plot: &Plot, metric_label: &str) -> String {
     for (i, line) in plot.lines.iter().enumerate() {
         draw_line(&mut s, line, channel_color(count, i));
     }
-
+    if plot.lines.len() == 1 {
+        for stat_line in plot.stat_lines.iter() {
+            draw_h_line(&mut s, stat_line.pos, STAT_LINE_COLOR);
+        }
+    }
+    
     s.push_str("</svg>\n");
     s
+}
+
+fn draw_h_line(s: &mut String, y: f32, color: &str) {
+    s.push_str(&format!(
+        "<polyline fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" \
+         stroke-linecap=\"round\" stroke-linejoin=\"round\" points=\""
+    ));
+    s.push_str(&format!("0.0,{} ", plot_y(y)));
+    s.push_str(&format!("{},{} ", WIDTH, plot_y(y)));
+    s.push_str("\"/>\n");
 }
 
 /// Draw one channel's polyline and point marks in `color`. Built from the

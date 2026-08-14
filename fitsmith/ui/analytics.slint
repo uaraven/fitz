@@ -1,4 +1,4 @@
-import { Button, ComboBox, Slider } from "std-widgets.slint";
+import { Button, ComboBox, Slider, CheckBox } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 import { AnalyticsChart } from "chart.slint";
 import { ChartPoint, ChartTick } from "types.slint";
@@ -47,6 +47,9 @@ export component AnalyticsDialog inherits DialogCard {
     // clamps to that range on its own.
     in-out property <float> zoom: 1.0;
 
+    in property <[StatLine]> stat-lines;
+    in-out property <bool> stddev-enabled: false;
+
     callback metric-changed(int);
     callback export-svg();
     callback export-csv();
@@ -78,6 +81,7 @@ export component AnalyticsDialog inherits DialogCard {
                 color: #c8c8c8;
                 vertical-alignment: center;
             }
+
             ComboBox {
                 model: root.metric-model;
                 current-index <=> root.metric-index;
@@ -85,20 +89,31 @@ export component AnalyticsDialog inherits DialogCard {
                     root.metric-changed(self.current-index);
                 }
             }
+
             Rectangle {
                 horizontal-stretch: 1;
             }
+
+            CheckBox {
+                text: "σ bands";
+                checked: root.stddev-enabled;
+                changed checked => { root.stddev-enabled }
+                enabled: !root.per-channel;
+            }
+
             Text {
                 text: "Zoom:";
                 color: #c8c8c8;
                 vertical-alignment: center;
             }
+
             Slider {
                 width: 140px;
                 minimum: 1.0;
                 maximum: 4.0;
                 value <=> root.zoom;
             }
+
             Text {
                 text: round(root.zoom * 10) / 10 + "x";
                 color: #c8c8c8;
@@ -122,12 +137,14 @@ export component AnalyticsDialog inherits DialogCard {
             y-ticks: root.y-ticks;
             metric-label: root.metric-label;
             zoom: root.zoom;
+            stat-lines: root.stat-lines;
+            show-std-dev: root.stddev-enabled;
         }
 
         Text {
             text: root.plotted-count + " plotted"
                 + (root.skipped-no-date > 0
-                    ? ", " + root.skipped-no-date + " skipped (no DATE-OBS)" : "")
+                ? ", " + root.skipped-no-date + " skipped (no DATE-OBS)" : "")
                 + (root.unavailable-note != "" ? ", " + root.unavailable-note : "");
             color: #a0a0a0;
             font-size: 12px;
@@ -142,6 +159,7 @@ export component AnalyticsDialog inherits DialogCard {
                     root.export-svg();
                 }
             }
+
             Button {
                 text: "Export CSV";
                 enabled: root.plotted-count > 0;
@@ -149,9 +167,11 @@ export component AnalyticsDialog inherits DialogCard {
                     root.export-csv();
                 }
             }
+
             Rectangle {
                 horizontal-stretch: 1;
             }
+
             Button {
                 text: "Close";
                 primary: true;

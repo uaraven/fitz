@@ -10,6 +10,13 @@
 use crate::controller::metrics::Series;
 use crate::view::format_stat;
 use crate::{ChartPoint, ChartTick};
+use rayon::prelude::*;
+
+#[derive(Default, PartialEq, Debug)]
+pub struct StatLine {
+    pub pos: f32,
+    pub label: String,
+}
 
 /// One plotted line: its channel label (`None` for a star metric or a
 /// single-channel pixel source, `Some("R"/"G"/"B")` otherwise), its points in
@@ -29,6 +36,7 @@ pub struct Plot {
     pub lines: Vec<ChartLine>,
     pub x_ticks: Vec<ChartTick>,
     pub y_ticks: Vec<ChartTick>,
+    pub stat_lines: Vec<StatLine>,
 }
 
 /// A value axis: the (nice, rounded-outward) bounds the plot maps onto and the
@@ -260,8 +268,42 @@ pub fn plot(series: &Series) -> Plot {
         })
         .collect();
 
+    let stat_lines = match series.channels.len() {
+        1 => {
+            let mean = series.channels[0]
+                .points
+                .par_iter()
+                .map(|p| p.value)
+                .sum::<f64>()
+                / series.channels[0].points.len() as f64;
+            let sigma = (series.channels[0]
+                .points
+                .par_iter()
+                .map(|p| (mean - p.value) * (mean - p.value))
+                .sum::<f64>()
+                / series.channels[0].points.len() as f64)
+                .sqrt();
+            (1..4)
+                .flat_map(|k| {
+                    vec![
+                        StatLine {
+                            pos: y_of(mean + sigma * k as f64),
+                            label: format!("{}σ", k),
+                        },
+                        StatLine {
+                            pos: y_of(mean - sigma * k as f64),
+                            label: format!("-{}σ", k),
+                        },
+                    ]
+                })
+                .collect()
+        }
+        _ => vec![],
+    };
+
     Plot {
         lines,
+        stat_lines,
         x_ticks,
         y_ticks: axis
             .ticks

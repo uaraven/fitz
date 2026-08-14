@@ -9,6 +9,7 @@
 // Release builds are packaged as a GUI app; suppress the console window Windows
 // would otherwise open behind it. Debug builds keep the console for eprintln/panic output.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+extern crate core;
 
 mod cache;
 mod chart;
