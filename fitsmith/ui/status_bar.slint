@@ -5,13 +5,49 @@ import { Separator } from "widgets.slint";
 // fine-grained pipeline step (only while one is running), and cache memory use
 // pinned to the far right. Purely presentational — the window feeds the text.
 export component StatusBar inherits HorizontalBox {
+    in property <int> total-files;
+    in property <int> checked-files;
+    in property <int> total-exposure;
+    in property <int> checked-exposure;
     in property <bool> busy;
     in property <string> status-text;
     in property <string> stage-text;
     in property <string> memory-text;
 
+    function zeropad(value: int) -> string {
+        let s = value.to-string-unlocalized();
+        return s.character-count < 2 ? "0" + s : s;
+    }
+
+    function time(total-seconds: int) -> string {
+        let tminutes = total-seconds / 60;
+        let seconds = mod(total-seconds, 60);
+        let hours = tminutes / 60;
+        let minutes = mod(tminutes, 60);
+        return "\{zeropad(hours)}:\{zeropad(minutes)}:\{zeropad(seconds)}";
+    }
+
     padding: 6px;
     spacing: 8px;
+
+    if root.total_files > 0:
+    HorizontalBox {
+        alignment: start;
+        horizontal-stretch: 0;
+        Text {
+            text: "Files: \{root.total-files} (\{root.checked-files})";
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        Separator {}
+        if root.total-exposure > 0: Text {
+            text: "Int: \{time(root.total-exposure)}";
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.total-exposure > 0: Separator{}
+    }
+
 
     // A live spinner while a load/render is in flight.
     if root.busy: Spinner {

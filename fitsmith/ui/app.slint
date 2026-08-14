@@ -32,6 +32,11 @@ export component AppWindow inherits Window {
     // handlers below).
     in-out property <bool> show-stats: false;
     in-out property <bool> show-info: false;
+
+    in property <int> checked-file-count;
+    in property <int> total-exposure: 0;
+    in property <int> checked-exposure: 0;
+
     in property <bool> busy: false;
     // Draggable split between the file list and the image/headers panel. Stored
     // as the file list's width; clamped to the min widths below at layout time.
@@ -543,6 +548,10 @@ export component AppWindow inherits Window {
         // Status bar: global activity on the left, the pipeline step (only while
         // one is running), and cache memory use pinned to the far right.
         StatusBar {
+            total-files: root.files.length;
+            checked-files: root.checked_file_count;
+            total-exposure: root.total-exposure;
+            checked-exposure: root.checked-exposure;
             busy: root.busy;
             status-text: root.status-text;
             stage-text: root.stage-text;

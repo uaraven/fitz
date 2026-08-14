@@ -10,6 +10,7 @@ use libfitz::fitskit::CompressionType;
 use slint::{ComponentHandle, Model, Weak};
 
 use crate::AppWindow;
+use crate::controller::support::load_exposure;
 use crate::files::{compressed_output_path, decompressed_output_path, display_name, is_compressed};
 
 use super::{
@@ -260,7 +261,7 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
         let mut st = s.borrow_mut();
         if let Some(i) = st.paths.iter().position(|p| p == old) {
             st.paths[i] = new.to_path_buf();
-            st.files_model.set_row_data(i, make_row(new));
+            st.files_model.set_row_data(i, make_row(new, load_exposure(&st.paths[i])));
         }
         // The rewritten file lives under a new path, so the stamp check can
         // never reach the old entry — drop it here instead.

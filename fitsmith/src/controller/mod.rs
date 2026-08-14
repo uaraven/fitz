@@ -25,6 +25,7 @@ mod export;
 mod inspect;
 pub(crate) mod metrics;
 mod viewer;
+mod support;
 
 pub use analytics::*;
 pub use convert::*;
@@ -46,6 +47,7 @@ use slint::{Model, ModelRc, Timer, VecModel};
 use crate::doc::FileMeta;
 use crate::files::{display_name, expand_inputs, is_compressed, scan_directory};
 use crate::{AppWindow, FileRow, view};
+use crate::controller::support::load_exposure;
 
 /// Key for the rendered-preview cache: a path plus the toggle state it was
 /// rendered under. Keying on the toggles (rather than clearing the cache on
@@ -206,7 +208,7 @@ fn view_toggles(app: &AppWindow) -> (bool, bool) {
 }
 
 /// Build the list row for a path: base name plus a "compressed" badge for `.fz`.
-fn make_row(path: &Path) -> FileRow {
+fn make_row(path: &Path, exposure: f32) -> FileRow {
     FileRow {
         name: display_name(path).into(),
         status: if is_compressed(path) {
@@ -218,6 +220,7 @@ fn make_row(path: &Path) -> FileRow {
         path: path.to_string_lossy().into_owned().into(),
         error: "".into(),
         checked: false,
+        exposure,
     }
 }
 
@@ -284,6 +287,7 @@ fn add_and_select(app: &AppWindow, paths: Vec<PathBuf>) {
     if let Some(index) = target {
         select_file(app, index as i32);
     }
+    update_exposure(app);
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
@@ -297,7 +301,7 @@ fn add_paths(new_paths: Vec<PathBuf>) -> Option<usize> {
             if st.paths.iter().any(|p| p == &path) {
                 continue;
             }
-            st.files_model.push(make_row(&path));
+            st.files_model.push(make_row(&path, load_exposure(&path)));
             st.paths.push(path);
             first_added.get_or_insert(st.paths.len() - 1);
         }
@@ -341,6 +345,8 @@ pub fn clear_files(app: &AppWindow) {
     });
     show_empty(app);
     update_memory(app);
+    update_exposure(app);
+    update_checked_count(app);
 }
 
 /// Drop a path's resident metadata and every cached rendered preview for it
@@ -430,6 +436,8 @@ pub fn remove_selected(app: &AppWindow) {
         return; // nothing was checked or highlighted
     };
     update_memory(app);
+    update_exposure(app);
+    update_checked_count(app);
     match target {
         // `select_file` re-displays a surviving file straight from the cache.
         Some(index) => select_file(app, index as i32),
@@ -447,6 +455,8 @@ pub fn toggle_check(_app: &AppWindow, index: i32) {
         return;
     }
     STATE.with(|s| toggle_check_row(&s.borrow().files_model, index as usize));
+    update_checked_count(_app);
+    update_exposure(_app);
 }
 
 /// Flip the `checked` flag on one row of the file model. A no-op for an
@@ -458,14 +468,42 @@ fn toggle_check_row(model: &VecModel<FileRow>, index: usize) {
     }
 }
 
+pub fn count_exposure(files: &VecModel<FileRow>) -> (f32, f32) {
+    files.iter().fold((0.0, 0.0), |acc, f|
+        (acc.0 + f.exposure, if f.checked { acc.1+f.exposure } else { acc.1 }))
+}
+
+pub fn count_checked_files(files: &VecModel<FileRow>) -> usize {
+    files.iter().filter(|x| x.checked).count()
+}
+
+pub fn update_checked_count(_app: &AppWindow) {
+    STATE.with(|s| {
+       let count = count_checked_files(&s.borrow().files_model);
+        _app.set_checked_file_count(count as i32);
+    } )
+}
+
+pub fn update_exposure(_app: &AppWindow) {
+    STATE.with(|s| {
+        let exp = count_exposure(&s.borrow().files_model);
+        _app.set_total_exposure(exp.0 as i32);
+        _app.set_checked_exposure(exp.1 as i32)
+    })
+}
+
 /// Check every row in the working set — Tools ▸ Select All (Ctrl/Cmd+A).
 pub fn select_all(_app: &AppWindow) {
     STATE.with(|s| set_all_checked(&s.borrow().files_model, true));
+    update_checked_count(_app);
+    update_exposure(_app);
 }
 
 /// Uncheck every row in the working set — Tools ▸ Deselect All (Ctrl/Cmd+D).
 pub fn deselect_all(_app: &AppWindow) {
     STATE.with(|s| set_all_checked(&s.borrow().files_model, false));
+    update_checked_count(_app);
+    update_exposure(_app);
 }
 
 /// Set every file row's `checked` flag to `checked`, only rewriting rows that
@@ -577,6 +615,7 @@ mod tests {
             path: name.into(),
             error: "".into(),
             checked: false,
+            exposure: 0.0,
         }
     }
 
@@ -593,6 +632,29 @@ mod tests {
         assert!(!model.row_data(1).unwrap().checked);
         toggle_check_row(&model, 9);
         assert_eq!(model.row_count(), 3);
+    }
+
+    #[test]
+    fn count_exposure_sums_total_and_checked_only() {
+        let model = VecModel::from(vec![
+            FileRow { exposure: 30.0, ..row("a") },
+            FileRow { checked: true, exposure: 60.0, ..row("b") },
+            FileRow { checked: true, exposure: 10.0, ..row("c") },
+        ]);
+        // Total sums every row; the checked total only the checked ones.
+        assert_eq!(count_exposure(&model), (100.0, 70.0));
+    }
+
+    #[test]
+    fn count_exposure_is_zero_for_an_empty_or_all_unchecked_model() {
+        let empty = VecModel::from(Vec::<FileRow>::new());
+        assert_eq!(count_exposure(&empty), (0.0, 0.0));
+
+        let none_checked = VecModel::from(vec![
+            FileRow { exposure: 30.0, ..row("a") },
+            FileRow { exposure: 60.0, ..row("b") },
+        ]);
+        assert_eq!(count_exposure(&none_checked), (90.0, 0.0));
     }
 
     #[test]
