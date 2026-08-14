@@ -357,6 +357,7 @@ fn apply_loaded_exposures(app: &AppWindow, loaded: Vec<(PathBuf, f32)>) {
         }
     });
     update_exposure(app);
+    app.window().request_redraw();
 }
 
 // --- removing / clearing files ------------------------------------------
