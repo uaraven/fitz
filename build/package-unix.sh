@@ -4,12 +4,12 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/../.." && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
 
 os="$(uname -s)"
 case "$os" in
     Darwin) formats=(osx) ;;
-    Linux) formats=(deb rpm) ;;
+    Linux) formats=(deb) ;;
     *)
         echo "package-unix.sh: unsupported OS '$os' (use package-windows.ps1 on Windows)" >&2
         exit 1
@@ -41,9 +41,25 @@ for fmt in "${formats[@]}"; do
     if [ "$fmt" = "osx" ]; then
         app_path="$bundle_dir/FitSmith.app"
         version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+
+        # cargo-bundle only builds/copies fitsmith's own binary; build and add
+        # the fitz CLI too, so the .app carries both (mirrors the Linux
+        # packages, which install fitz alongside fitsmith).
+        cargo build --release -p fitz
+        cp -p "$repo_root/target/release/fitz" "$app_path/Contents/MacOS/fitz"
+
+        # Stage the .app next to an /Applications symlink so the mounted .dmg
+        # shows the usual drag-to-install layout.
+        staging_dir="$bundle_dir/dmg-staging"
+        rm -rf "$staging_dir"
+        mkdir -p "$staging_dir"
+        cp -R "$app_path" "$staging_dir/"
+        ln -s /Applications "$staging_dir/Applications"
+
         dmg_path="$bundle_dir/FitSmith-$version.dmg"
         rm -f "$dmg_path"
-        hdiutil create -volname FitSmith -srcfolder "$app_path" -ov -format UDZO "$dmg_path"
+        hdiutil create -volname FitSmith -srcfolder "$staging_dir" -ov -format UDZO "$dmg_path"
+        rm -rf "$staging_dir"
         echo "Packaged: $dmg_path"
     else
         pkg_path="$(find "$bundle_dir" -maxdepth 1 -name "*.$fmt" | head -n1)"

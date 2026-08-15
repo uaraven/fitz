@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = Resolve-Path (Join-Path $scriptDir "..\..")
+$repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 
 if (-not (Get-Command "cargo-bundle" -ErrorAction SilentlyContinue)) {
     Write-Host "cargo-bundle not found; installing it (cargo install cargo-bundle)..."

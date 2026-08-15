@@ -45,8 +45,8 @@ CI, since Slint's per-OS windowing/font dependencies mean each package has to be
 that OS:
 
 ```shell
-./fitsmith/scripts/package-unix.sh       # macOS -> .dmg, Linux -> .deb + .rpm
-./fitsmith/scripts/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset on PATH)
+./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb + .rpm
+./build/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset on PATH)
 ```
 
 On Linux, building the `.rpm` needs `rpmbuild` on `PATH` (`sudo dnf install rpm-build` on
