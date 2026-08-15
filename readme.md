@@ -73,8 +73,8 @@ FitSmith can be built into a native installer for the OS you're running on, via
 [`cargo-bundle`](https://github.com/burtonageo/cargo-bundle):
 
 ```shell
-./fitsmith/scripts/package-unix.sh       # macOS -> .dmg, Linux -> .deb + .rpm
-./fitsmith/scripts/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset)
+./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb + .rpm
+./build/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset)
 ```
 
 There's no CI — each package has to be built on its own OS, since Slint's windowing and font
