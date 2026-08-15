@@ -3,6 +3,7 @@ name = "fitsmith"
 version = "0.4.2"
 edition = "2024"
 license = "MIT"
+description = "A GUI frontend for the fitz FITS toolset."
 
 [[bin]]
 name = "fitsmith"
@@ -13,13 +14,12 @@ path = "src/main.rs"
 # single self-contained binary.
 [package.metadata.bundle]
 name = "FitSmith"
-identifier = "dev.fitz.fitsmith"
+identifier = "cc.voronin.fitsmith"
 copyright = "Copyright © 2026 Oles Voronin"
 short_description = "A GUI frontend for the fitz FITS toolset."
 long_description = """
-FitSmith opens FITS astronomy images, debayers and auto-stretches them for a live
-preview, blinks through a working set, and inspects headers and pixel statistics.
-All FITS and image operations are performed by libfitz.
+FitSmith is a FITS astronomy images viewer with support for debayering and auto-stretches,
+blinking through a working set, and inspecting headers and pixel statistics.
 """
 category = "public.app-category.graphics-design"
 icon = [
@@ -33,6 +33,18 @@ icon = [
 # .fit/.fits/.fit.fz/.fits.fz on macOS. cargo-bundle has no first-class field for
 # document-type associations, so this splices raw Info.plist keys in directly.
 osx_info_plist_exts = ["assets/document-types.plist.xml"]
+linux_mime_types=["image/fits", "application/fits"]
+
+# Linux RPM build (cargo-bundle has no RPM backend). Unlike cargo-bundle's deb
+# backend, cargo-generate-rpm doesn't synthesize a .desktop entry from the
+# metadata above, so it's listed explicitly as an asset.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/fitsmith", dest = "/usr/bin/fitsmith", mode = "755" },
+    { source = "target/release/fitz", dest = "/usr/bin/fitz", mode = "755" },
+    { source = "assets/fitsmith.desktop", dest = "/usr/share/applications/fitsmith.desktop", mode = "644" },
+#    { source = "assets/fitsmith-icon.png", dest = "/usr/share/icons/hicolor/", mode = "644" }
+]
 
 [dependencies]
 libfitz = { path = "../libfitz" }
@@ -40,9 +52,6 @@ slint = "1"
 rfd = "0.15"
 anyhow = "1"
 sysinfo = "0.39.6"
-# Only needed to name `image::RgbImage`, the type `render_preview` and the
-# cached preview buffer are built from — no encoders required here, libfitz
-# already owns those.
 image = { version = "0.25", default-features = false }
 rayon = "1"
 
