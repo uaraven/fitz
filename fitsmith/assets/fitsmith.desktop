@@ -1,0 +1,10 @@
+[Desktop Entry]
+Encoding=UTF-8
+Categories=Graphics;
+Comment=FITS Viewer and analysis tool
+Exec=fitsmith %F
+Icon=fitsmith
+Name=FitSmith
+Terminal=false
+Type=Application
+MimeType=image/fits;application/fits;
