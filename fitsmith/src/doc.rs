@@ -47,10 +47,7 @@ impl FileMeta {
         let headers = img.header.iter().map(header_card).collect();
         let info = libfitz::summary::info_summary(img);
         let stats = img.stats();
-        let stars = img
-            .detection_plane()
-            .ok()
-            .map(|plane| plane.detect_stars(&StarDetectOptions::default()));
+        let stars = img.star_stats(&StarDetectOptions::default()).ok();
         FileMeta {
             headers,
             info,

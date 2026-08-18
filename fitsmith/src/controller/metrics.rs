@@ -179,9 +179,8 @@ pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> 
     let stats = image.stats().channels;
     let stars = opts
         .detect_stars
-        .then(|| image.detection_plane().ok())
-        .flatten()
-        .map(|plane| plane.detect_stars(&StarDetectOptions::default()));
+        .then(|| image.star_stats(&StarDetectOptions::default()).ok())
+        .flatten();
 
     Ok(FileAnalysis::Analyzed(FileMetrics {
         path: path.to_path_buf(),

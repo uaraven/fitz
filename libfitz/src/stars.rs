@@ -94,6 +94,27 @@ impl Image {
 
         aggregate(&stars)
     }
+
+    /// Detects stars and reports HFR/FWHM in full-resolution sensor-pixel
+    /// units. A CFA mosaic's detection plane is the half-resolution green
+    /// super-pixel grid (see [`Image::detection_plane`]), so raw
+    /// measurements on it are half the full-resolution figure; this scales
+    /// them back up so CFA and already-debayered frames report comparable
+    /// numbers, and so they're comparable to tools (e.g. N.I.N.A.) that
+    /// measure at full sensor resolution.
+    pub fn star_stats(&self, opts: &StarDetectOptions) -> Result<StarStats> {
+        let binning = if matches!(self.image_type, ImageType::CFA(_)) {
+            2.0
+        } else {
+            1.0
+        };
+        let stats = self.detection_plane()?.detect_stars(opts);
+        Ok(StarStats {
+            hfr: stats.hfr.map(|v| v * binning),
+            fwhm: stats.fwhm.map(|v| v * binning),
+            ..stats
+        })
+    }
 }
 
 /// Converts a pixel buffer's samples to `f64` values on the 0..=65535 scale.
@@ -608,6 +629,52 @@ pub(crate) mod tests {
         // which is the evidence it suppresses only noise and not real shape.
         let ecc = stats.eccentricity.unwrap();
         assert!((ecc - 0.278).abs() < 0.02, "eccentricity {ecc}");
+    }
+
+    #[test]
+    fn cfa_star_stats_report_full_resolution_pixel_units() {
+        let image = load_fits(&test_data("uncompressed.fit")).unwrap();
+        let half_res = image
+            .detection_plane()
+            .unwrap()
+            .detect_stars(&StarDetectOptions::default());
+        let full_res = image.star_stats(&StarDetectOptions::default()).unwrap();
+
+        assert_eq!(full_res.count, half_res.count);
+        assert_eq!(full_res.eccentricity, half_res.eccentricity);
+        assert!((full_res.hfr.unwrap() - 2.0 * half_res.hfr.unwrap()).abs() < 1e-9);
+        assert!((full_res.fwhm.unwrap() - 2.0 * half_res.fwhm.unwrap()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mono_star_stats_are_not_rescaled() {
+        let truth: Vec<(f64, f64, f64, f64, f64)> = (0..3)
+            .flat_map(|r| {
+                (0..3).map(move |c| {
+                    (
+                        20.0 + 30.0 * c as f64,
+                        20.0 + 30.0 * r as f64,
+                        2.0,
+                        2.0,
+                        5000.0,
+                    )
+                })
+            })
+            .collect();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("mono_field.fits");
+        write_star_field_fits(&path, 100, 100, 1000.0, &truth);
+        let image = load_fits(&path).unwrap();
+
+        let via_plane = image
+            .detection_plane()
+            .unwrap()
+            .detect_stars(&StarDetectOptions::default());
+        let via_star_stats = image.star_stats(&StarDetectOptions::default()).unwrap();
+
+        assert_eq!(via_star_stats.count, via_plane.count);
+        assert_eq!(via_star_stats.hfr, via_plane.hfr);
+        assert_eq!(via_star_stats.fwhm, via_plane.fwhm);
     }
 
     /// Stars detected on `uncompressed.fit`'s green super-pixel plane with the

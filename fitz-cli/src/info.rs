@@ -110,9 +110,7 @@ pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     // detection builds its threshold from the detection plane's own background,
     // never from the frame's PixelStats, so neither flag implies the other.
     if opts.stars {
-        let star_stats = image
-            .detection_plane()?
-            .detect_stars(&StarDetectOptions::default());
+        let star_stats = image.star_stats(&StarDetectOptions::default())?;
         print_star_stats(&mut out, &star_stats);
     }
 
