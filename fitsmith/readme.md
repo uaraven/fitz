@@ -8,6 +8,8 @@ It allows preview of multiple FITS files with debayering and screen stretch, if 
 
  - View FITS file. duh.
  - Blink through the working set of the FITS files.
+ - Reload the current file from disk (File ▸ Reload Current File, or `R`), recomputing its
+   headers, statistics and star analytics.
  - Batch export FITS to JPG, PNG or TIFF
  - Batch compression or decompression of FITS files
  - View headers

@@ -2,6 +2,8 @@
 //! with no state or threading. Data in, Slint properties out; the controller
 //! owns *when* to call these, this owns *how* the data maps to the UI.
 
+use std::borrow::Cow;
+
 use libfitz::stars::StarStats;
 use libfitz::stats::{ImageStats, Stats};
 use libfitz::summary::SummaryField;
@@ -9,11 +11,20 @@ use slint::{Image, ModelRc, SharedString, VecModel};
 
 use crate::doc::FileMeta;
 use crate::image::preview_to_image;
+use crate::overlay::draw_star_rings;
 use crate::{AppWindow, HeaderRow, StatItem, StatRow};
 
 /// Show a loaded document: its image (plus natural size for fit/zoom), the
-/// header table, and the pixel statistics + histogram.
-pub fn show_doc(app: &AppWindow, meta: &FileMeta, preview: &image::RgbImage) {
+/// header table, and the pixel statistics + histogram. `show_stars` draws a
+/// green ring around every detected star on top of the preview — an overlay
+/// only, so it never touches the cached rendered buffer.
+pub fn show_doc(app: &AppWindow, meta: &FileMeta, preview: &image::RgbImage, show_stars: bool) {
+    let preview: Cow<image::RgbImage> = if show_stars {
+        Cow::Owned(draw_star_rings(preview, &meta.star_list))
+    } else {
+        Cow::Borrowed(preview)
+    };
+    let preview = preview.as_ref();
     app.set_preview_image(preview_to_image(preview));
     app.set_image_width(preview.width() as f32);
     app.set_image_height(preview.height() as f32);

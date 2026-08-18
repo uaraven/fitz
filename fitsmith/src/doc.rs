@@ -2,7 +2,12 @@
 //! info summary, pixel statistics and star metrics the Headers tab and stats
 //! panel need. All of it is derived on the worker thread (where the decoded
 //! `Image` is already in hand) and cached as one unit, so switching tabs or
-//! toggling the stats panel never re-reads the file.
+//! toggling the stats panel never re-reads the file. For a CFA source the
+//! statistics follow the debayer toggle — the mosaic and its demosaiced RGB
+//! have different pixel statistics and star shapes — so the metadata records
+//! which state it was built under ([`FileMeta::debayered`]) and the
+//! controller caches it per state, recomputing only for a state it hasn't
+//! measured yet.
 //!
 //! Kept free of Slint types so the whole thing is `Send` (it crosses from the
 //! worker back to the UI thread) and the formatting logic stays unit-testable
@@ -13,7 +18,7 @@
 
 use libfitz::data::Image;
 use libfitz::fitskit::{HeaderValue, Keyword};
-use libfitz::stars::{StarDetectOptions, StarStats};
+use libfitz::stars::{Star, StarDetectOptions, StarStats};
 use libfitz::stats::ImageStats;
 use libfitz::summary::SummaryField;
 
@@ -24,9 +29,10 @@ pub struct HeaderCard {
     pub comment: String,
 }
 
-/// Everything the UI needs about one loaded file that doesn't depend on the
-/// debayer/stretch preview toggles, cached as a unit and kept resident for as
-/// long as the file stays in the working set.
+/// Everything the UI needs about one loaded file, cached as a unit and kept
+/// resident for as long as the file stays in the working set. Independent of
+/// the stretch toggle; for a CFA source it depends on the debayer toggle
+/// ([`FileMeta::debayered`]) and is cached per state by the controller.
 pub struct FileMeta {
     pub headers: Vec<HeaderCard>,
     /// The curated metadata summary (label/value pairs), the same fields the
@@ -38,21 +44,35 @@ pub struct FileMeta {
     /// The frame's star metrics. `None` only when [`Image::detection_plane`]
     /// can't build a detection plane from this image.
     pub stars: Option<StarStats>,
+    /// Every detected star's centroid and shape, for the View ▸ Show stars
+    /// overlay. Empty exactly when `stars` is `None` or reports zero stars.
+    /// Derived from the same detection pass as `stars` (via
+    /// [`libfitz::stars::aggregate`]) rather than a second one.
+    pub star_list: Vec<Star>,
+    /// The debayer toggle state this metadata was computed under, when it
+    /// matters: `Some(state)` for a CFA source, `None` for anything else
+    /// (where the toggle is a no-op and one measurement serves both states).
+    pub debayered: Option<bool>,
 }
 
 impl FileMeta {
-    /// Build the resident metadata from a decoded image. Runs on the worker
-    /// thread; computed once per file for the life of the working set.
-    pub fn build(img: &Image) -> Self {
+    /// Build the resident metadata from a decoded image — after the debayer
+    /// stage, so a demosaiced frame's statistics describe what's on screen.
+    /// `debayered` is the state to record: `Some(toggle)` when the source was
+    /// a CFA mosaic, `None` otherwise. Runs on the worker thread.
+    pub fn build(img: &Image, debayered: Option<bool>) -> Self {
         let headers = img.header.iter().map(header_card).collect();
         let info = libfitz::summary::info_summary(img);
         let stats = img.stats();
-        let stars = img.star_stats(&StarDetectOptions::default()).ok();
+        let star_list = img.star_list(&StarDetectOptions::default()).ok();
+        let stars = star_list.as_ref().map(|s| libfitz::stars::aggregate(s));
         FileMeta {
             headers,
             info,
             stats,
             stars,
+            star_list: star_list.unwrap_or_default(),
+            debayered,
         }
     }
 }
@@ -135,7 +155,7 @@ mod tests {
             PixelBuffer::U16(interleaved),
         );
 
-        let meta = FileMeta::build(&img);
+        let meta = FileMeta::build(&img, None);
         assert_eq!(meta.stats.channels.len(), 3);
         assert_eq!(
             (meta.stats.channels[0].min, meta.stats.channels[0].max),
@@ -162,7 +182,26 @@ mod tests {
             2,
             PixelBuffer::U16(vec![0; 8]),
         );
-        let meta = FileMeta::build(&img);
+        let meta = FileMeta::build(&img, None);
         assert_eq!(meta.stats.channels.len(), 1);
+    }
+
+    #[test]
+    fn cfa_meta_differs_per_debayer_state() {
+        let raw =
+            libfitz::fits_file::load_fits(&crate::controller::test_data("cfa_orion.fits")).unwrap();
+
+        // Built from the mosaic itself: one channel, recorded as the
+        // toggle-off measurement.
+        let mosaic = FileMeta::build(&raw, Some(false));
+        assert_eq!(mosaic.stats.channels.len(), 1);
+        assert_eq!(mosaic.debayered, Some(false));
+
+        // Built from the demosaiced frame: three channels, recorded as the
+        // toggle-on measurement.
+        let rgb_img = raw.debayer().unwrap().unwrap();
+        let rgb = FileMeta::build(&rgb_img, Some(true));
+        assert_eq!(rgb.stats.channels.len(), 3);
+        assert_eq!(rgb.debayered, Some(true));
     }
 }

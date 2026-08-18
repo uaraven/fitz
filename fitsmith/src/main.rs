@@ -17,6 +17,7 @@ mod controller;
 mod doc;
 mod files;
 mod image;
+mod overlay;
 mod view;
 
 use std::path::PathBuf;
@@ -69,6 +70,7 @@ fn main() -> Result<()> {
     forward!(on_open, |app| controller::open_file(&app));
     forward!(on_open_directory, |app| controller::open_directory(&app));
     forward!(on_clear_files, |app| controller::clear_files(&app));
+    forward!(on_reload_current, |app| controller::reload_current(&app));
     forward!(on_remove_selected, |app| controller::remove_selected(&app));
     forward!(on_select_all, |app| controller::select_all(&app));
     forward!(on_deselect_all, |app| controller::deselect_all(&app));

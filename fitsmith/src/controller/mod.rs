@@ -24,8 +24,8 @@ mod convert;
 mod export;
 mod inspect;
 pub(crate) mod metrics;
-mod viewer;
 mod support;
+mod viewer;
 
 pub use analytics::*;
 pub use convert::*;
@@ -45,10 +45,10 @@ use metrics::{FileMetrics, MetricFamily};
 use rayon::prelude::*;
 use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel, Weak};
 
+use crate::controller::support::load_exposure;
 use crate::doc::FileMeta;
 use crate::files::{display_name, expand_inputs, is_compressed, scan_directory};
 use crate::{AppWindow, FileRow, view};
-use crate::controller::support::load_exposure;
 
 /// Key for the rendered-preview cache: a path plus the toggle state it was
 /// rendered under. Keying on the toggles (rather than clearing the cache on
@@ -71,9 +71,13 @@ struct AppState {
     /// The `[FileRow]` model backing the list view (mirrors `paths`).
     files_model: Rc<VecModel<FileRow>>,
     /// Headers, curated info, pixel statistics and star metrics, keyed by
-    /// path — resident for as long as a path stays in the working set, never
-    /// evicted by an LRU (see `doc::FileMeta`).
-    meta: HashMap<PathBuf, Rc<FileMeta>>,
+    /// path *and* the debayer state they describe — resident for as long as a
+    /// path stays in the working set, never evicted by an LRU (see
+    /// `doc::FileMeta`). Keyed like [`PreviewKey`] (rather than invalidated on
+    /// a flip) so toggling debayer back and forth on a CFA source measures
+    /// each rendering once; a non-CFA source's toggle-independent metadata is
+    /// stored under both keys. Access via [`meta_lookup`] / [`meta_store`].
+    meta: HashMap<(PathBuf, bool), Rc<FileMeta>>,
     /// Rendered display buffers, keyed by path *and* the debayer/stretch
     /// toggle state they were rendered under. Byte-budgeted LRU; a toggle
     /// flip to an unseen combination is a plain reload, not a cache
@@ -197,6 +201,30 @@ fn format_bytes(n: usize) -> String {
         format!("{:.0} KB", n / KB)
     } else {
         format!("{n:.0} B")
+    }
+}
+
+/// The resident metadata valid under the given debayer toggle state, if any.
+fn meta_lookup(
+    meta: &HashMap<(PathBuf, bool), Rc<FileMeta>>,
+    path: &Path,
+    debayer: bool,
+) -> Option<Rc<FileMeta>> {
+    meta.get(&(path.to_path_buf(), debayer)).cloned()
+}
+
+/// Store freshly built metadata under every debayer state it is valid for:
+/// just the one it was built under for a CFA source, both for anything else
+/// (where the toggle is a no-op and one measurement serves both states).
+fn meta_store(meta: &mut HashMap<(PathBuf, bool), Rc<FileMeta>>, path: &Path, m: Rc<FileMeta>) {
+    match m.debayered {
+        Some(state) => {
+            meta.insert((path.to_path_buf(), state), m);
+        }
+        None => {
+            meta.insert((path.to_path_buf(), false), m.clone());
+            meta.insert((path.to_path_buf(), true), m);
+        }
     }
 }
 
@@ -397,12 +425,13 @@ pub fn clear_files(app: &AppWindow) {
     update_checked_count(app);
 }
 
-/// Drop a path's resident metadata and every cached rendered preview for it
-/// (all four debayer/stretch combinations) — e.g. when it leaves the working
-/// set, or is rewritten in place by compress/decompress.
+/// Drop a path's resident metadata (both debayer states) and every cached
+/// rendered preview for it (all four debayer/stretch combinations) — e.g.
+/// when it leaves the working set, or is rewritten in place by
+/// compress/decompress.
 fn forget_path(st: &mut AppState, path: &Path) {
-    st.meta.remove(path);
     for debayer in [false, true] {
+        st.meta.remove(&(path.to_path_buf(), debayer));
         for stretch in [false, true] {
             st.previews.remove(&PreviewKey {
                 path: path.to_path_buf(),
@@ -517,8 +546,12 @@ fn toggle_check_row(model: &VecModel<FileRow>, index: usize) {
 }
 
 pub fn count_exposure(files: &VecModel<FileRow>) -> (f32, f32) {
-    files.iter().fold((0.0, 0.0), |acc, f|
-        (acc.0 + f.exposure, if f.checked { acc.1+f.exposure } else { acc.1 }))
+    files.iter().fold((0.0, 0.0), |acc, f| {
+        (
+            acc.0 + f.exposure,
+            if f.checked { acc.1 + f.exposure } else { acc.1 },
+        )
+    })
 }
 
 pub fn count_checked_files(files: &VecModel<FileRow>) -> usize {
@@ -527,9 +560,9 @@ pub fn count_checked_files(files: &VecModel<FileRow>) -> usize {
 
 pub fn update_checked_count(_app: &AppWindow) {
     STATE.with(|s| {
-       let count = count_checked_files(&s.borrow().files_model);
+        let count = count_checked_files(&s.borrow().files_model);
         _app.set_checked_file_count(count as i32);
-    } )
+    })
 }
 
 pub fn update_exposure(_app: &AppWindow) {
@@ -598,9 +631,9 @@ fn require_existing_dir(text: &str, empty_msg: &'static str) -> Result<PathBuf, 
 }
 
 /// Absolute path to a bundled `test-data/` fixture. Shared by the controller
-/// submodules' tests so they exercise real FITS frames.
+/// submodules' and [`crate::doc`]'s tests so they exercise real FITS frames.
 #[cfg(test)]
-fn test_data(name: &str) -> PathBuf {
+pub(crate) fn test_data(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("test-data")
@@ -685,9 +718,20 @@ mod tests {
     #[test]
     fn count_exposure_sums_total_and_checked_only() {
         let model = VecModel::from(vec![
-            FileRow { exposure: 30.0, ..row("a") },
-            FileRow { checked: true, exposure: 60.0, ..row("b") },
-            FileRow { checked: true, exposure: 10.0, ..row("c") },
+            FileRow {
+                exposure: 30.0,
+                ..row("a")
+            },
+            FileRow {
+                checked: true,
+                exposure: 60.0,
+                ..row("b")
+            },
+            FileRow {
+                checked: true,
+                exposure: 10.0,
+                ..row("c")
+            },
         ]);
         // Total sums every row; the checked total only the checked ones.
         assert_eq!(count_exposure(&model), (100.0, 70.0));
@@ -699,8 +743,14 @@ mod tests {
         assert_eq!(count_exposure(&empty), (0.0, 0.0));
 
         let none_checked = VecModel::from(vec![
-            FileRow { exposure: 30.0, ..row("a") },
-            FileRow { exposure: 60.0, ..row("b") },
+            FileRow {
+                exposure: 30.0,
+                ..row("a")
+            },
+            FileRow {
+                exposure: 60.0,
+                ..row("b")
+            },
         ]);
         assert_eq!(count_exposure(&none_checked), (90.0, 0.0));
     }
@@ -726,6 +776,53 @@ mod tests {
 
         set_all_checked(&model, false);
         assert!((0..3).all(|i| !model.row_data(i).unwrap().checked));
+    }
+
+    #[test]
+    fn cfa_meta_is_cached_per_debayer_state_and_non_cfa_serves_both() {
+        // Real frames: a CFA mosaic and an already-debayered RGB cube.
+        let cfa_path = test_data("cfa_orion.fits");
+        let rgb_path = test_data("rgb.fits");
+        let mosaic = libfitz::fits_file::load_fits(&cfa_path).unwrap();
+        let rgb = libfitz::fits_file::load_fits(&rgb_path).unwrap();
+
+        let mut meta = HashMap::new();
+
+        // A CFA measurement lands only under the state it was built for.
+        let m = Rc::new(FileMeta::build(&mosaic, Some(false)));
+        meta_store(&mut meta, &cfa_path, m.clone());
+        assert!(Rc::ptr_eq(
+            &meta_lookup(&meta, &cfa_path, false).unwrap(),
+            &m
+        ));
+        assert!(meta_lookup(&meta, &cfa_path, true).is_none());
+
+        // The other state's measurement is kept alongside, not replacing it.
+        let d = Rc::new(FileMeta::build(
+            &mosaic.debayer().unwrap().unwrap(),
+            Some(true),
+        ));
+        meta_store(&mut meta, &cfa_path, d.clone());
+        assert!(Rc::ptr_eq(
+            &meta_lookup(&meta, &cfa_path, false).unwrap(),
+            &m
+        ));
+        assert!(Rc::ptr_eq(
+            &meta_lookup(&meta, &cfa_path, true).unwrap(),
+            &d
+        ));
+
+        // A non-CFA measurement serves both toggle states.
+        let r = Rc::new(FileMeta::build(&rgb, None));
+        meta_store(&mut meta, &rgb_path, r.clone());
+        assert!(Rc::ptr_eq(
+            &meta_lookup(&meta, &rgb_path, false).unwrap(),
+            &r
+        ));
+        assert!(Rc::ptr_eq(
+            &meta_lookup(&meta, &rgb_path, true).unwrap(),
+            &r
+        ));
     }
 
     #[test]
