@@ -215,7 +215,7 @@ Blobs that are too small (hot pixels), too large (nebulosity), clipped at the se
 
 `--stars` is independent of `--pixels` in both directions: neither implies the other (star detection derives its threshold from its own detection plane, never from the frame's pixel statistics). For an already-debayered RGB cube detection runs on the green channel.
 
-On a colour (CFA) frame, star detection itself runs on the green super-pixel plane, not the raw sensor grid — a star sampled through a Bayer filter is not a point-spread function, so each detection-plane pixel averages one 2x2 cell's two green sites. The reported `hfr`/`fwhm` are rescaled back up to full-resolution sensor-pixel units, though, so they read comparably to an already-debayered RGB cube's (detection runs on its separated green channel at full resolution) and to full-resolution tools such as NINA.
+On a colour (CFA) frame, star detection runs directly on the raw mosaic pixels at full sensor resolution — no debayering or green-channel extraction. A star sampled through a Bayer filter isn't a smooth point-spread function (a raw pixel only sees one of red, green or blue), but that checkerboard modulation washes out of the flux-weighted centroid and moments, so `hfr`/`fwhm` still track focus reliably and read comparably to an already-debayered RGB cube's (detection runs on its separated green channel, also at full resolution) and to other tools that measure raw OSC frames the same way, such as NINA.
 
 Pass `--headers` to skip the formatted summary entirely and instead dump the raw FITS header cards, one per line, exactly as found in the file.
 

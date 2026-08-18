@@ -6,10 +6,8 @@
 use rayon::prelude::*;
 
 use crate::data::{Image, ImageType, PixelBuffer};
-use crate::debayer::green_sites;
 use crate::stats::{Stats, full_scale};
-use anyhow::{Result, bail};
-use bayer::CFA;
+use anyhow::Result;
 use fitskit::Header;
 
 /// Multiplier converting a Gaussian's standard deviation into its full width
@@ -40,37 +38,26 @@ impl Background {
 }
 
 impl Image {
-    /// Builds the plane star detection should run on: the green super-pixel
-    /// plane of a CFA mosaic (half resolution), the green channel of an
-    /// already-debayered RGB image, or the frame itself if it's grayscale.
+    /// Builds the plane star detection should run on: the raw CFA mosaic
+    /// pixels treated directly as a mono frame (no debayering or channel
+    /// extraction — a Bayer pixel only samples one colour, so the flux
+    /// profile carries a checkerboard modulation, but that washes out of the
+    /// flux-weighted centroid/moments and keeps HFR/FWHM at full sensor
+    /// resolution, comparable to other tools that measure raw OSC frames the
+    /// same way), the green channel of an already-debayered RGB image, or
+    /// the frame itself if it's grayscale.
     pub fn detection_plane(&self) -> Result<Image> {
         match self.image_type {
             ImageType::RGB => Ok(self
                 .plane(1)
                 .expect("an RGB image always has three colour planes")),
-            ImageType::Grayscale => Ok(Image::new(
+            ImageType::Grayscale | ImageType::CFA(_) => Ok(Image::new(
                 ImageType::Grayscale,
                 Header::new(),
                 self.width,
                 self.height,
                 self.pixels.clone(),
             )),
-            ImageType::CFA(cfa) => {
-                if self.pixels.len() != self.width * self.height {
-                    bail!("mosaic pixel count does not match its declared size");
-                }
-                let (width, height, values) =
-                    green_super_pixels(&samples(&self.pixels), self.width, self.height, cfa);
-                let pixels =
-                    PixelBuffer::F32(values.iter().map(|&v| (v / 65535.0) as f32).collect());
-                Ok(Image::new(
-                    ImageType::Grayscale,
-                    Header::new(),
-                    width,
-                    height,
-                    pixels,
-                ))
-            }
         }
     }
 
@@ -95,25 +82,10 @@ impl Image {
         aggregate(&stars)
     }
 
-    /// Detects stars and reports HFR/FWHM in full-resolution sensor-pixel
-    /// units. A CFA mosaic's detection plane is the half-resolution green
-    /// super-pixel grid (see [`Image::detection_plane`]), so raw
-    /// measurements on it are half the full-resolution figure; this scales
-    /// them back up so CFA and already-debayered frames report comparable
-    /// numbers, and so they're comparable to tools (e.g. N.I.N.A.) that
-    /// measure at full sensor resolution.
+    /// Detects stars on this image's detection plane and returns their
+    /// per-frame HFR, FWHM and eccentricity.
     pub fn star_stats(&self, opts: &StarDetectOptions) -> Result<StarStats> {
-        let binning = if matches!(self.image_type, ImageType::CFA(_)) {
-            2.0
-        } else {
-            1.0
-        };
-        let stats = self.detection_plane()?.detect_stars(opts);
-        Ok(StarStats {
-            hfr: stats.hfr.map(|v| v * binning),
-            fwhm: stats.fwhm.map(|v| v * binning),
-            ..stats
-        })
+        Ok(self.detection_plane()?.detect_stars(opts))
     }
 }
 
@@ -126,29 +98,6 @@ fn samples(pixels: &PixelBuffer) -> Vec<f64> {
             .map(|&x| (x as f64 * 65535.0).clamp(0.0, 65535.0).trunc())
             .collect(),
     }
-}
-
-/// Reduces a raw mosaic to its green super-pixel plane: one output pixel per
-/// 2x2 CFA cell, the mean of that cell's two green sites.
-pub(crate) fn green_super_pixels(
-    values: &[f64],
-    width: usize,
-    height: usize,
-    cfa: CFA,
-) -> (usize, usize, Vec<f64>) {
-    let (pw, ph) = (width / 2, height / 2);
-    let green_offsets = green_sites(cfa);
-    let (ax, ay) = green_offsets[0];
-    let (bx, by) = green_offsets[1];
-    let plane = (0..ph)
-        .into_par_iter()
-        .flat_map_iter(|cy| {
-            let site =
-                move |gx: usize, gy: usize, cx: usize| values[(2 * cy + gy) * width + 2 * cx + gx];
-            (0..pw).map(move |cx| (site(ax, ay, cx) + site(bx, by, cx)) / 2.0)
-        })
-        .collect();
-    (pw, ph, plane)
 }
 
 /// Tuning parameters for star detection.
@@ -165,8 +114,8 @@ pub struct StarDetectOptions {
 
 impl Default for StarDetectOptions {
     fn default() -> Self {
-        // Sized for full-resolution frames; a CFA mosaic's half-resolution
-        // plane still clears these bounds in practice.
+        // Sized for full-resolution frames; every detection plane (mono,
+        // raw CFA, or an RGB cube's green channel) is now full resolution.
         Self {
             sigma_k: 5.0,
             min_pixels: 5,
@@ -580,9 +529,12 @@ pub(crate) mod tests {
     fn detection_plane_shape_follows_the_image_type() {
         let tmp = TempDir::new().unwrap();
 
-        // A CFA mosaic halves in both directions: one super-pixel per 2x2 cell.
+        // A CFA mosaic detects on its own raw pixels, at full resolution —
+        // no debayering or channel extraction.
+        let raw = load_fits(&test_data("uncompressed.fit")).unwrap();
         let mosaic = plane_of(&test_data("uncompressed.fit"));
-        assert_eq!((mosaic.width, mosaic.height), (1504, 1504));
+        assert_eq!((mosaic.width, mosaic.height), (raw.width, raw.height));
+        assert_eq!(samples(&mosaic.pixels), samples(&raw.pixels));
 
         // A mono frame detects on itself, at full resolution.
         let mono_path = tmp.path().join("mono.fits");
@@ -617,37 +569,34 @@ pub(crate) mod tests {
         let plane = plane_of(&test_data("uncompressed.fit"));
         let stats = detect(&plane);
 
-        // Pinned as a regression value: it is also the evidence that the
-        // full-resolution area floor is not eating stars on a half-resolution
-        // green plane.
+        // Pinned as a regression value.
         assert_eq!(stats.count, REAL_MOSAIC_STAR_COUNT);
         let hfr = stats.hfr.unwrap();
         assert!((0.5..10.0).contains(&hfr), "implausible HFR {hfr}");
-        // A tracked sub is not made of streaks. Pinned rather than bounded:
-        // this frame's elongation is *coherent* — every star's major axis
-        // points the same way — so the vector aggregation barely moves it,
-        // which is the evidence it suppresses only noise and not real shape.
+        // A tracked sub is not made of streaks. Pinned rather than bounded.
         let ecc = stats.eccentricity.unwrap();
-        assert!((ecc - 0.278).abs() < 0.02, "eccentricity {ecc}");
+        assert!((ecc - 0.134).abs() < 0.02, "eccentricity {ecc}");
     }
 
+    /// `star_stats` is just the `detection_plane` + `detect_stars` pipeline
+    /// in one call — check it agrees with calling the two steps directly, on
+    /// both a raw CFA mosaic and a synthetic mono field.
     #[test]
-    fn cfa_star_stats_report_full_resolution_pixel_units() {
-        let image = load_fits(&test_data("uncompressed.fit")).unwrap();
-        let half_res = image
-            .detection_plane()
-            .unwrap()
-            .detect_stars(&StarDetectOptions::default());
-        let full_res = image.star_stats(&StarDetectOptions::default()).unwrap();
+    fn star_stats_matches_the_detection_plane_pipeline() {
+        let assert_matches_plane = |image: &Image| {
+            let via_plane = image
+                .detection_plane()
+                .unwrap()
+                .detect_stars(&StarDetectOptions::default());
+            let via_star_stats = image.star_stats(&StarDetectOptions::default()).unwrap();
+            assert_eq!(via_star_stats.count, via_plane.count);
+            assert_eq!(via_star_stats.hfr, via_plane.hfr);
+            assert_eq!(via_star_stats.fwhm, via_plane.fwhm);
+            assert_eq!(via_star_stats.eccentricity, via_plane.eccentricity);
+        };
 
-        assert_eq!(full_res.count, half_res.count);
-        assert_eq!(full_res.eccentricity, half_res.eccentricity);
-        assert!((full_res.hfr.unwrap() - 2.0 * half_res.hfr.unwrap()).abs() < 1e-9);
-        assert!((full_res.fwhm.unwrap() - 2.0 * half_res.fwhm.unwrap()).abs() < 1e-9);
-    }
+        assert_matches_plane(&load_fits(&test_data("uncompressed.fit")).unwrap());
 
-    #[test]
-    fn mono_star_stats_are_not_rescaled() {
         let truth: Vec<(f64, f64, f64, f64, f64)> = (0..3)
             .flat_map(|r| {
                 (0..3).map(move |c| {
@@ -664,27 +613,11 @@ pub(crate) mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("mono_field.fits");
         write_star_field_fits(&path, 100, 100, 1000.0, &truth);
-        let image = load_fits(&path).unwrap();
-
-        let via_plane = image
-            .detection_plane()
-            .unwrap()
-            .detect_stars(&StarDetectOptions::default());
-        let via_star_stats = image.star_stats(&StarDetectOptions::default()).unwrap();
-
-        assert_eq!(via_star_stats.count, via_plane.count);
-        assert_eq!(via_star_stats.hfr, via_plane.hfr);
-        assert_eq!(via_star_stats.fwhm, via_plane.fwhm);
+        assert_matches_plane(&load_fits(&path).unwrap());
     }
 
-    /// Stars detected on `uncompressed.fit`'s green super-pixel plane with the
-    /// default options. Shared with `info`'s test of the same frame reached
-    /// through `header_info_with`.
-    ///
-    /// The evidence that the full-resolution area floor is safe on a half-
-    /// resolution plane: of the 6513 blobs over the threshold, 6116 are smaller
-    /// than 5 px and half are a *single* pixel — the floor is rejecting a noise
-    /// population, not stars. Dropping it to 1 admits all of them and drives the
-    /// median HFR to 0, which is what a one-pixel "star" measures.
-    pub(crate) const REAL_MOSAIC_STAR_COUNT: usize = 395;
+    /// Stars detected directly on `uncompressed.fit`'s raw CFA pixels (no
+    /// green-plane extraction) with the default options. Shared with `info`'s
+    /// test of the same frame reached through `header_info_with`.
+    pub(crate) const REAL_MOSAIC_STAR_COUNT: usize = 352;
 }
