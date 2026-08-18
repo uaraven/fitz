@@ -151,18 +151,11 @@ pub enum FileAnalysis {
     Skipped(SkipReason),
 }
 
-/// Tuning for [`analyze_file`]: whether to pay for star detection, which only
-/// the Star-metrics family needs.
-pub struct AnalyzeOptions {
-    pub detect_stars: bool,
-}
-
 /// Measure one file: its acquisition time (`DATE-LOC`, else `DATE-OBS`),
-/// pixel statistics, and — when requested — star metrics on its detection
-/// plane. A frame with no acquisition time is [`FileAnalysis::Skipped`]
-/// rather than an error, since it simply has nothing to plot a time axis
-/// against.
-pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> {
+/// pixel statistics, and star metrics on its detection plane. A frame with
+/// no acquisition time is [`FileAnalysis::Skipped`] rather than an error,
+/// since it simply has nothing to plot a time axis against.
+pub fn analyze_file(path: &Path) -> Result<FileAnalysis> {
     let image = libfitz::fits_file::load_fits(path)?;
     let time_str = image
         .header
@@ -177,10 +170,7 @@ pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> 
     };
 
     let stats = image.stats().channels;
-    let stars = opts
-        .detect_stars
-        .then(|| image.star_stats(&StarDetectOptions::default()).ok())
-        .flatten();
+    let stars = image.star_stats(&StarDetectOptions::default()).ok();
 
     Ok(FileAnalysis::Analyzed(FileMetrics {
         path: path.to_path_buf(),
@@ -488,36 +478,18 @@ mod tests {
 
     #[test]
     fn analyze_file_skips_a_frame_with_no_acquisition_time() {
-        let outcome = analyze_file(
-            &test_data("uncompressed.fit"),
-            &AnalyzeOptions {
-                detect_stars: false,
-            },
-        );
+        let outcome = analyze_file(&test_data("uncompressed.fit"));
         // The bundled fixture carries a real DATE-LOC/DATE-OBS, so it measures.
         assert!(matches!(outcome.unwrap(), FileAnalysis::Analyzed(_)));
     }
 
     #[test]
-    fn analyze_file_measures_pixel_stats_and_optional_stars() {
+    fn analyze_file_measures_pixel_stats_and_stars() {
         let path = test_data("uncompressed.fit");
-        let FileAnalysis::Analyzed(m) = analyze_file(
-            &path,
-            &AnalyzeOptions {
-                detect_stars: false,
-            },
-        )
-        .unwrap() else {
+        let FileAnalysis::Analyzed(m) = analyze_file(&path).unwrap() else {
             panic!("expected the bundled frame to measure");
         };
         assert!(!m.stats.is_empty());
-        assert!(m.stars.is_none(), "star detection wasn't requested");
-
-        let FileAnalysis::Analyzed(m) =
-            analyze_file(&path, &AnalyzeOptions { detect_stars: true }).unwrap()
-        else {
-            panic!("expected the bundled frame to measure");
-        };
         assert!(m.stars.is_some());
     }
 }

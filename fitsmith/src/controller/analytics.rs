@@ -2,9 +2,11 @@
 //! every target file off the UI thread, cache each frame's metrics, and turn the
 //! chosen metric's series into the normalized geometry `chart.slint` draws.
 //!
-//! Two menu entries, one dialog. They differ in four things — the title, which
-//! metrics the dropdown lists, whether the batch detects stars, and the export
-//! file-name prefix — and share everything else.
+//! Two menu entries, one dialog. They differ in three things — the title,
+//! which metrics the dropdown lists, and the export file-name prefix — and
+//! share everything else. Every batch measures both pixel statistics and
+//! star metrics regardless of which one opened it, so the two dialogs are
+//! fully interchangeable from the cache's point of view.
 //!
 //! Every metric of the open family is computed in one file read each, so
 //! switching the dropdown re-plots from the cache with no re-read. Zoom needs no
@@ -34,9 +36,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
-use super::metrics::{
-    self, AnalyzeOptions, FileAnalysis, FileMetrics, Metric, MetricFamily, Series, SkipReason,
-};
+use super::metrics::{self, FileAnalysis, FileMetrics, Metric, MetricFamily, Series, SkipReason};
 
 use crate::AppWindow;
 use crate::chart::plot;
@@ -73,15 +73,14 @@ fn family_title(family: MetricFamily) -> &'static str {
     }
 }
 
-/// Tools ▸ Analytics…: the pixel metrics. Never detects stars, so it stays
-/// exactly as fast as it has always been.
+/// Tools ▸ Analytics…: the pixel metrics.
 pub fn open_analytics_dialog(app: &AppWindow) {
     open_chart_dialog(app, MetricFamily::Pixel);
 }
 
-/// Tools ▸ Star metrics…: star count, HFR, FWHM and eccentricity. Detects stars
-/// because that is the entire point of opening it — the menu entry *is* the
-/// opt-in, so there is no checkbox to forget.
+/// Tools ▸ Star metrics…: star count, HFR, FWHM and eccentricity. Every batch
+/// measures stars regardless of which dialog opened it, so this is free once
+/// Analytics has already analyzed a file (and vice versa).
 pub fn open_star_metrics_dialog(app: &AppWindow) {
     open_chart_dialog(app, MetricFamily::Star);
 }
@@ -117,7 +116,7 @@ fn open_chart_dialog(app: &AppWindow, family: MetricFamily) {
         st.analytics_family = family;
         let generation = abort_batch(&mut st);
         st.analytics_cancel = Arc::new(AtomicBool::new(false));
-        let plan = plan_batch(&targets, &st.analytics_cache, family);
+        let plan = plan_batch(&targets, &st.analytics_cache);
         (generation, st.analytics_cancel.clone(), plan)
     });
 
@@ -132,14 +131,7 @@ fn open_chart_dialog(app: &AppWindow, family: MetricFamily) {
         show_results(app, plan, 0);
         return;
     }
-    spawn_analysis(
-        app.as_weak(),
-        plan.todo,
-        targets,
-        family,
-        generation,
-        cancel,
-    );
+    spawn_analysis(app.as_weak(), plan.todo, targets, generation, cancel);
 }
 
 /// The family the open dialog is showing.
@@ -192,21 +184,6 @@ impl FileStamp {
     }
 }
 
-/// Whether a cached outcome answers what `family` needs. The two families' work
-/// is *nested*, not disjoint: a star analysis computes the pixel statistics too,
-/// so it satisfies both, while a pixel analysis has no stars to report.
-///
-/// This is what makes Analytics-after-Star-metrics free, and Star-metrics-after
-/// -Analytics an honest re-read: the second genuinely needs the detection pass.
-fn satisfies(outcome: &FileAnalysis, family: MetricFamily) -> bool {
-    match (outcome, family) {
-        // A frame with no acquisition time is skipped by either family.
-        (FileAnalysis::Skipped(_), _) => true,
-        (FileAnalysis::Analyzed(_), MetricFamily::Pixel) => true,
-        (FileAnalysis::Analyzed(m), MetricFamily::Star) => m.stars.is_some(),
-    }
-}
-
 /// What one dialog open has to do: what the cache can already answer, and what
 /// still has to be read. The single place that decides whether a file is read,
 /// so the "reopening changes nothing" guarantee is testable without an event
@@ -221,22 +198,18 @@ struct Plan {
     todo: Vec<PathBuf>,
 }
 
-/// Partition `targets` into what `cache` already answers for `family` and what
-/// must be analyzed. An entry is usable only if it [`satisfies`] the family
-/// *and* its stamp still matches the file on disk.
-fn plan_batch(targets: &[PathBuf], cache: &AnalyticsCache, family: MetricFamily) -> Plan {
+/// Partition `targets` into what `cache` already answers and what must be
+/// analyzed. Every analysis measures both pixel statistics and star metrics,
+/// so any cache entry whose stamp still matches the file on disk answers
+/// either dialog — there is nothing family-specific left to check.
+fn plan_batch(targets: &[PathBuf], cache: &AnalyticsCache) -> Plan {
     let mut plan = Plan::default();
     for path in targets {
         match cache.get(path) {
-            Some(entry)
-                if satisfies(&entry.outcome, family)
-                    && FileStamp::of(path) == Some(entry.stamp) =>
-            {
-                match &entry.outcome {
-                    FileAnalysis::Analyzed(m) => plan.metrics.push(m.clone()),
-                    FileAnalysis::Skipped(SkipReason::NoDateObs) => plan.no_date += 1,
-                }
-            }
+            Some(entry) if FileStamp::of(path) == Some(entry.stamp) => match &entry.outcome {
+                FileAnalysis::Analyzed(m) => plan.metrics.push(m.clone()),
+                FileAnalysis::Skipped(SkipReason::NoDateObs) => plan.no_date += 1,
+            },
             _ => plan.todo.push(path.clone()),
         }
     }
@@ -271,24 +244,18 @@ fn cache_outcome(path: PathBuf, outcome: FileAnalysis, stamp: FileStamp) {
 /// program, and retrying on the next open is the right behaviour.
 fn analyze_batch(
     targets: &[PathBuf],
-    family: MetricFamily,
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, &Path),
     mut analyzed: impl FnMut(&Path, FileAnalysis),
     mut failed: impl FnMut(&Path, String),
 ) -> Option<usize> {
-    // Only the star family pays for detection: this is what keeps Analytics
-    // from silently getting slower now that the machinery exists.
-    let opts = AnalyzeOptions {
-        detect_stars: family == MetricFamily::Star,
-    };
     let mut failures = 0;
     for (i, path) in targets.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
         progress(i, path);
-        match metrics::analyze_file(path, &opts) {
+        match metrics::analyze_file(path) {
             Ok(outcome) => analyzed(path, outcome),
             Err(e) => {
                 failures += 1;
@@ -314,7 +281,6 @@ fn spawn_analysis(
     weak: Weak<AppWindow>,
     todo: Vec<PathBuf>,
     all: Vec<PathBuf>,
-    family: MetricFamily,
     generation: u64,
     cancel: Arc<AtomicBool>,
 ) {
@@ -330,7 +296,6 @@ fn spawn_analysis(
         let total = todo.len();
         let failures = analyze_batch(
             &todo,
-            family,
             &cancel,
             |i, path| {
                 let progress = i as f32 / total as f32;
@@ -376,7 +341,7 @@ fn spawn_analysis(
             // Every `analyzed` callback above was queued on this same event
             // loop before this closure, so the cache now answers for the whole
             // target list bar the files that failed to read.
-            let plan = STATE.with(|s| plan_batch(&all, &s.borrow().analytics_cache, family));
+            let plan = STATE.with(|s| plan_batch(&all, &s.borrow().analytics_cache));
             show_results(&app, plan, failures);
         });
     });
@@ -597,11 +562,10 @@ mod tests {
 
     /// Run a batch with no progress or failure reporting, tallying its outcomes.
     /// `None` when it was cancelled.
-    fn tally(targets: &[PathBuf], family: MetricFamily, cancel: &AtomicBool) -> Option<Tally> {
+    fn tally(targets: &[PathBuf], cancel: &AtomicBool) -> Option<Tally> {
         let mut t = Tally::default();
         let failed = analyze_batch(
             targets,
-            family,
             cancel,
             |_, _| {},
             |_, outcome| match outcome {
@@ -616,11 +580,10 @@ mod tests {
 
     /// Populate a cache the way a completed batch does — the setup every
     /// planning test starts from.
-    fn analyzed_cache(targets: &[PathBuf], family: MetricFamily) -> AnalyticsCache {
+    fn analyzed_cache(targets: &[PathBuf]) -> AnalyticsCache {
         let mut cache = AnalyticsCache::new();
         analyze_batch(
             targets,
-            family,
             &AtomicBool::new(false),
             |_, _| {},
             |path, outcome| {
@@ -644,7 +607,6 @@ mod tests {
         let (mut order, mut failures, mut analyzed) = (Vec::new(), Vec::new(), Vec::new());
         let failed = analyze_batch(
             &targets,
-            MetricFamily::Pixel,
             &cancel,
             |i, path| order.push((i, path.to_path_buf())),
             |path, _| analyzed.push(path.to_path_buf()),
@@ -666,12 +628,12 @@ mod tests {
         assert_eq!(order.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 1, 2]);
         assert_eq!(order[0].1, targets[0]);
 
-        // The same run, tallied: two measured frames, neither paying for star
-        // detection the pixel family didn't ask for.
-        let t = tally(&targets, MetricFamily::Pixel, &cancel).unwrap();
+        // The same run, tallied: two measured frames, both carrying star
+        // metrics too, since every batch now measures both.
+        let t = tally(&targets, &cancel).unwrap();
         assert_eq!(t.metrics.len(), 2);
         assert_eq!((t.no_date, t.failed), (0, 1));
-        assert!(t.metrics.iter().all(|m| m.stars.is_none()));
+        assert!(t.metrics.iter().all(|m| m.stars.is_some()));
     }
 
     #[test]
@@ -687,7 +649,6 @@ mod tests {
         let (mut seen, mut finished) = (Vec::new(), 0);
         let stopped = analyze_batch(
             &targets,
-            MetricFamily::Pixel,
             &cancel,
             |_, path| {
                 seen.push(path.to_path_buf());
@@ -705,35 +666,20 @@ mod tests {
         // Already cancelled before the first file: nothing is read at all.
         let cancel = AtomicBool::new(true);
         let mut count = 0;
-        let stopped = analyze_batch(
-            &targets,
-            MetricFamily::Pixel,
-            &cancel,
-            |_, _| count += 1,
-            |_, _| {},
-            |_, _| {},
-        );
+        let stopped = analyze_batch(&targets, &cancel, |_, _| count += 1, |_, _| {}, |_, _| {});
         assert!(stopped.is_none());
         assert_eq!(count, 0);
     }
 
     #[test]
-    fn analyze_batch_detects_stars_only_for_the_star_family() {
-        // The star family's whole reason for existing: its batch measures
-        // stars on a real mosaic.
+    fn analyze_batch_always_measures_stars() {
         let targets = vec![test_data("uncompressed.fit")];
         let cancel = AtomicBool::new(false);
-        let t = tally(&targets, MetricFamily::Star, &cancel).unwrap();
+        let t = tally(&targets, &cancel).unwrap();
 
         let stars = t.metrics[0].stars.as_ref().expect("stars measured");
         assert!(stars.count > 0);
         assert!(stars.hfr.is_some());
-
-        // Same file, pixel family: no detection, and so no star metric has an
-        // answer. This is the test that Analytics did not silently start paying
-        // for star detection.
-        let t = tally(&targets, MetricFamily::Pixel, &cancel).unwrap();
-        assert!(t.metrics[0].stars.is_none());
     }
 
     /// Write a minimal frame with no acquisition time — the input `analyze_file`
@@ -745,47 +691,12 @@ mod tests {
     }
 
     #[test]
-    fn satisfies_follows_the_nesting_of_the_two_families() {
-        let starry = tally(
-            &[test_data("uncompressed.fit")],
-            MetricFamily::Star,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let pixel = tally(
-            &[test_data("uncompressed.fit")],
-            MetricFamily::Pixel,
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-
-        // A star analysis computed the pixel statistics on its way, so it
-        // answers for both dialogs.
-        let star_entry = FileAnalysis::Analyzed(starry.metrics[0].clone());
-        assert!(satisfies(&star_entry, MetricFamily::Star));
-        assert!(satisfies(&star_entry, MetricFamily::Pixel));
-
-        // A pixel analysis has no stars to report, so the star dialog must read
-        // the frame again.
-        let pixel_entry = FileAnalysis::Analyzed(pixel.metrics[0].clone());
-        assert!(satisfies(&pixel_entry, MetricFamily::Pixel));
-        assert!(!satisfies(&pixel_entry, MetricFamily::Star));
-
-        // A frame with no acquisition time is skipped by either family — and
-        // caching that is the point: it must not be re-read just to be skipped
-        // again.
-        let skipped = FileAnalysis::Skipped(SkipReason::NoDateObs);
-        assert!(satisfies(&skipped, MetricFamily::Pixel));
-        assert!(satisfies(&skipped, MetricFamily::Star));
-    }
-
-    #[test]
     fn plan_batch_reads_every_target_with_an_empty_cache() {
         let targets = vec![
             test_data("uncompressed.fit"),
             test_data("compressed.fits.fz"),
         ];
-        let plan = plan_batch(&targets, &AnalyticsCache::new(), MetricFamily::Pixel);
+        let plan = plan_batch(&targets, &AnalyticsCache::new());
         assert_eq!(plan.todo, targets);
         assert!(plan.metrics.is_empty());
         assert_eq!(plan.no_date, 0);
@@ -803,8 +714,8 @@ mod tests {
             undated.clone(),
         ];
 
-        let cache = analyzed_cache(&targets, MetricFamily::Pixel);
-        let plan = plan_batch(&targets, &cache, MetricFamily::Pixel);
+        let cache = analyzed_cache(&targets);
+        let plan = plan_batch(&targets, &cache);
         assert!(plan.todo.is_empty(), "a reopen must read no file");
         assert_eq!(plan.metrics.len(), 2);
         // The skipped frame is still counted for the dialog's readout — cached
@@ -814,40 +725,31 @@ mod tests {
         // Checking one more file analyzes exactly that one, not the whole set.
         let mut grown = targets.clone();
         grown.push(test_data("uncompressed_debayer.fits"));
-        let plan = plan_batch(&grown, &cache, MetricFamily::Pixel);
+        let plan = plan_batch(&grown, &cache);
         assert_eq!(plan.todo, [test_data("uncompressed_debayer.fits")]);
         assert_eq!(plan.metrics.len(), 2);
 
         // Deselecting needs no invalidation: the surviving targets still hit.
-        let plan = plan_batch(&targets[..1], &cache, MetricFamily::Pixel);
+        let plan = plan_batch(&targets[..1], &cache);
         assert!(plan.todo.is_empty());
         assert_eq!(plan.metrics.len(), 1);
     }
 
     #[test]
-    fn star_metrics_re_reads_after_analytics_but_not_the_reverse() {
+    fn switching_between_dialogs_reads_nothing_either_way() {
+        // Every batch measures both pixel statistics and star metrics now, so
+        // a cache built by one dialog answers the other one too, in either
+        // order.
         let targets = vec![test_data("uncompressed.fit")];
+        let cache = analyzed_cache(&targets);
 
-        // Analytics then Star metrics: the detection pass is new information,
-        // so the frame is genuinely read again.
-        let pixel_cache = analyzed_cache(&targets, MetricFamily::Pixel);
-        assert_eq!(
-            plan_batch(&targets, &pixel_cache, MetricFamily::Star).todo,
-            targets
-        );
-
-        // Star metrics then Analytics: the richer entry already holds the pixel
-        // statistics, so nothing is read.
-        let star_cache = analyzed_cache(&targets, MetricFamily::Star);
-        let plan = plan_batch(&targets, &star_cache, MetricFamily::Pixel);
+        let plan = plan_batch(&targets, &cache);
         assert!(plan.todo.is_empty());
         assert!(plan.metrics[0].stars.is_some());
-        // And reopening the star dialog is free too.
-        assert!(
-            plan_batch(&targets, &star_cache, MetricFamily::Star)
-                .todo
-                .is_empty()
-        );
+        assert!(!plan.metrics[0].stats.is_empty());
+
+        // Reopening again — either dialog — is still free.
+        assert!(plan_batch(&targets, &cache).todo.is_empty());
     }
 
     #[test]
@@ -860,32 +762,22 @@ mod tests {
         std::fs::copy(test_data("uncompressed.fit"), &frame).unwrap();
         let targets = vec![frame.clone()];
 
-        let cache = analyzed_cache(&targets, MetricFamily::Pixel);
+        let cache = analyzed_cache(&targets);
         let before = FileStamp::of(&frame).unwrap();
-        assert!(
-            plan_batch(&targets, &cache, MetricFamily::Pixel)
-                .todo
-                .is_empty()
-        );
+        assert!(plan_batch(&targets, &cache).todo.is_empty());
 
         // Rewrite it with different content: the stamp moves and the entry is
         // no longer usable.
         write_undated_frame(&frame);
         let after = FileStamp::of(&frame).unwrap();
         assert_ne!(before, after);
-        assert_eq!(
-            plan_batch(&targets, &cache, MetricFamily::Pixel).todo,
-            targets
-        );
+        assert_eq!(plan_batch(&targets, &cache).todo, targets);
 
         // A file that has gone missing entirely is a miss too, never a hit on
         // the stale entry.
         std::fs::remove_file(&frame).unwrap();
         assert_eq!(FileStamp::of(&frame), None);
-        assert_eq!(
-            plan_batch(&targets, &cache, MetricFamily::Pixel).todo,
-            targets
-        );
+        assert_eq!(plan_batch(&targets, &cache).todo, targets);
     }
 
     #[test]
