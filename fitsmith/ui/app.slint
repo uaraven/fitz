@@ -27,6 +27,10 @@ export component AppWindow inherits Window {
     in-out property <bool> debayer-enabled: false;
     in-out property <bool> stretch-enabled: true;
     in-out property <bool> blinking: false;
+    // Overlays a green ring over every detected star on the preview; runs
+    // detection (if it hasn't already run for this file) rather than
+    // re-rendering the underlying image, so toggling it redisplays instantly.
+    in-out property <bool> show-stars: false;
     // The stats and info panels dock in the same spot and are mutually
     // exclusive — turning one on turns the other off (see the `changed`
     // handlers below).
@@ -238,6 +242,9 @@ export component AppWindow inherits Window {
     changed stretch-enabled => {
         root.toggles-changed();
     }
+    changed show-stars => {
+        root.toggles-changed();
+    }
     changed blinking => {
         root.blink-toggled();
     }
@@ -323,6 +330,12 @@ export component AppWindow inherits Window {
                 checkable: true;
                 checked <=> root.show-info;
                 shortcut: @keys(I);
+            }
+            MenuItem {
+                title: "Show stars";
+                checkable: true;
+                checked <=> root.show-stars;
+                shortcut: @keys(T);
             }
             MenuSeparator { }
             MenuItem {

@@ -267,7 +267,7 @@ fn finish_load(
 /// Show a loaded document on screen — image, header table and stats panel — and,
 /// if blink is running, arm the next advance.
 fn display_doc(app: &AppWindow, path: &Path, meta: &FileMeta, preview: &image::RgbImage) {
-    view::show_doc(app, meta, preview);
+    view::show_doc(app, meta, preview, app.get_show_stars());
     app.set_busy(false);
     app.set_status_text(
         format!(

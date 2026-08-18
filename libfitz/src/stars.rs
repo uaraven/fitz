@@ -44,13 +44,11 @@ impl Image {
     /// profile carries a checkerboard modulation, but that washes out of the
     /// flux-weighted centroid/moments and keeps HFR/FWHM at full sensor
     /// resolution, comparable to other tools that measure raw OSC frames the
-    /// same way), the green channel of an already-debayered RGB image, or
+    /// same way), a weighted luminance of an already-debayered RGB image, or
     /// the frame itself if it's grayscale.
     pub fn detection_plane(&self) -> Result<Image> {
         match self.image_type {
-            ImageType::RGB => Ok(self
-                .plane(1)
-                .expect("an RGB image always has three colour planes")),
+            ImageType::RGB => Ok(self.luminance()),
             ImageType::Grayscale | ImageType::CFA(_) => Ok(Image::new(
                 ImageType::Grayscale,
                 Header::new(),
@@ -61,9 +59,54 @@ impl Image {
         }
     }
 
-    /// Detects the stars on this image and aggregates their shapes into
-    /// per-frame HFR, FWHM and eccentricity.
-    pub fn detect_stars(&self, opts: &StarDetectOptions) -> StarStats {
+    /// Converts the image to grayscale luminance image
+    /// CFA and Grayscale images are returned as-is
+    /// For RGB images the luminance is calculated from R,G,B values and returned as a single-channel image
+    fn luminance(&self) -> Image {
+        match self.image_type {
+            ImageType::CFA(_) | ImageType::Grayscale => Image::new(
+                self.image_type,
+                self.header.clone(),
+                self.width,
+                self.height,
+                self.pixels.clone(),
+            ),
+            ImageType::RGB => {
+                let pixels = match &self.pixels {
+                    PixelBuffer::U16(ipixels) => {
+                        let pxl = ipixels
+                            .par_chunks(3)
+                            .map(|rgb| {
+                                ((3 * rgb[0] as u32 + 10 * rgb[1] as u32 + rgb[2] as u32) / 14)
+                                    .clamp(0, 65535) as u16
+                            })
+                            .collect();
+                        PixelBuffer::U16(pxl)
+                    }
+                    PixelBuffer::F32(fpixels) => {
+                        let pxl = fpixels
+                            .par_chunks(3)
+                            .map(|rgb| 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
+                            .collect();
+                        PixelBuffer::F32(pxl)
+
+                    }
+                };
+                Image::new(
+                    ImageType::Grayscale,
+                    self.header.clone(),
+                    self.width,
+                    self.height,
+                    pixels,
+                )
+            }
+        }
+    }
+
+    /// Detects the stars on this image, returning each one's centroid and
+    /// measured shape. The basis for both [`Image::detect_stars`]'s
+    /// per-frame aggregate and a GUI overlay that needs each star's position.
+    pub fn detect_star_list(&self, opts: &StarDetectOptions) -> Vec<Star> {
         let stats = &self.stats().channels[0];
         let bg = Background::from_stats(stats);
         let saturation = full_scale(stats.estimated_bit_depth) as f64;
@@ -73,19 +116,30 @@ impl Image {
         let mut mask: Vec<bool> = values.par_iter().map(|&v| v > threshold).collect();
 
         let blobs = blobs_above_threshold(&mut mask, self.width, self.height);
-        let stars: Vec<Star> = blobs
+        blobs
             .par_iter()
             .filter(|blob| accept(blob, &values, self.width, self.height, saturation, opts))
             .filter_map(|blob| measure(blob, &values, self.width, bg.median))
-            .collect();
+            .collect()
+    }
 
-        aggregate(&stars)
+    /// Detects the stars on this image and aggregates their shapes into
+    /// per-frame HFR, FWHM and eccentricity.
+    pub fn detect_stars(&self, opts: &StarDetectOptions) -> StarStats {
+        aggregate(&self.detect_star_list(opts))
     }
 
     /// Detects stars on this image's detection plane and returns their
     /// per-frame HFR, FWHM and eccentricity.
     pub fn star_stats(&self, opts: &StarDetectOptions) -> Result<StarStats> {
         Ok(self.detection_plane()?.detect_stars(opts))
+    }
+
+    /// Detects stars on this image's detection plane and returns each one's
+    /// centroid and measured shape, for an overlay that marks every detected
+    /// star rather than just reporting the frame's aggregate shape.
+    pub fn star_list(&self, opts: &StarDetectOptions) -> Result<Vec<Star>> {
+        Ok(self.detection_plane()?.detect_star_list(opts))
     }
 }
 
@@ -265,8 +319,11 @@ fn eccentricity_from_ellipticity(e: f64) -> f64 {
 
 /// Reduces per-star measurements to per-frame values: medians for HFR and
 /// FWHM, and a noise-resistant vector average for eccentricity so a handful
-/// of faint, noisy stars can't fabricate elongation that isn't there.
-fn aggregate(stars: &[Star]) -> StarStats {
+/// of faint, noisy stars can't fabricate elongation that isn't there. Public
+/// so a caller that already has a [`Star`] list (e.g. from
+/// [`Image::detect_star_list`], to draw an overlay) can derive the same
+/// [`StarStats`] without detecting twice.
+pub fn aggregate(stars: &[Star]) -> StarStats {
     let median_of = |f: fn(&Star) -> f64| {
         (!stars.is_empty()).then(|| median_in_place(&mut stars.iter().map(f).collect::<Vec<_>>()))
     };
@@ -542,15 +599,23 @@ pub(crate) mod tests {
         let mono = plane_of(&mono_path);
         assert_eq!((mono.width, mono.height), (8, 6));
 
-        // An RGB cube detects on its green channel, also at full resolution.
+        // An RGB cube detects on a weighted luminance of its channels, also
+        // at full resolution.
         let cube_path = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&cube_path, 8, 6);
         let cube = plane_of(&cube_path);
         assert_eq!((cube.width, cube.height), (8, 6));
-        // `write_rgb_cube_fits` fills plane `c` with `c*n + i`, so the green
-        // plane is the middle run — the check that it took the right channel.
+        // `write_rgb_cube_fits` fills plane `c` with `c*n + i`, so the
+        // per-pixel R/G/B triple is `(i, n+i, 2n+i)` — the check that
+        // `luminance()`'s (3R + 10G + B) / 14 weighting was applied, not a
+        // raw channel extraction.
         let n = 8 * 6;
-        let expected: Vec<f64> = (0..n).map(|i| (n + i) as f64).collect();
+        let expected: Vec<f64> = (0..n)
+            .map(|i| {
+                let (r, g, b) = (i as u32, (n + i) as u32, (2 * n + i) as u32);
+                ((3 * r + 10 * g + b) / 14) as f64
+            })
+            .collect();
         assert_eq!(samples(&cube.pixels), expected);
     }
 

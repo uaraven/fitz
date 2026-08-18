@@ -17,6 +17,7 @@ mod controller;
 mod doc;
 mod files;
 mod image;
+mod overlay;
 mod view;
 
 use std::path::PathBuf;

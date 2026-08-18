@@ -13,7 +13,7 @@
 
 use libfitz::data::Image;
 use libfitz::fitskit::{HeaderValue, Keyword};
-use libfitz::stars::{StarDetectOptions, StarStats};
+use libfitz::stars::{Star, StarDetectOptions, StarStats};
 use libfitz::stats::ImageStats;
 use libfitz::summary::SummaryField;
 
@@ -38,6 +38,11 @@ pub struct FileMeta {
     /// The frame's star metrics. `None` only when [`Image::detection_plane`]
     /// can't build a detection plane from this image.
     pub stars: Option<StarStats>,
+    /// Every detected star's centroid and shape, for the View ▸ Show stars
+    /// overlay. Empty exactly when `stars` is `None` or reports zero stars.
+    /// Derived from the same detection pass as `stars` (via
+    /// [`libfitz::stars::aggregate`]) rather than a second one.
+    pub star_list: Vec<Star>,
 }
 
 impl FileMeta {
@@ -47,12 +52,14 @@ impl FileMeta {
         let headers = img.header.iter().map(header_card).collect();
         let info = libfitz::summary::info_summary(img);
         let stats = img.stats();
-        let stars = img.star_stats(&StarDetectOptions::default()).ok();
+        let star_list = img.star_list(&StarDetectOptions::default()).ok();
+        let stars = star_list.as_ref().map(|s| libfitz::stars::aggregate(s));
         FileMeta {
             headers,
             info,
             stats,
             stars,
+            star_list: star_list.unwrap_or_default(),
         }
     }
 }

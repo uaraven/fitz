@@ -504,8 +504,8 @@ mod tests {
     #[test]
     fn info_file_reads_pixels_and_stars_on_an_rgb_cube() {
         // The bundled debayered frame is a 3-plane RGB cube: `--pixel`/`--stars`
-        // now succeed on it (measuring the green channel) rather than printing
-        // an "unsupported" notice.
+        // now succeed on it (measuring a weighted luminance) rather than
+        // printing an "unsupported" notice.
         let input = test_data("uncompressed_debayer.fits");
         info_file(
             &input,
@@ -523,7 +523,7 @@ mod tests {
         // `Image::detect_stars` is documented as requiring
         // `Image::detection_plane()` first: on this debayered RGB cube,
         // detecting directly on the raw interleaved samples finds nothing at
-        // all (the interleaving reads as noise), while the green-channel
+        // all (the interleaving reads as noise), while the luminance
         // detection plane finds the frame's actual stars. `info --stars`
         // (`info_file` above) must go through the plane, not the raw image.
         let image = libfitz::fits_file::load_fits(&test_data("uncompressed_debayer.fits")).unwrap();
