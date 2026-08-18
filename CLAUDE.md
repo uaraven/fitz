@@ -80,12 +80,13 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
   `fitskit::FitsFile` directly rather than on `Image` (`load_raw`/`save_raw` with a chosen
   `CompressionSettings`, `copy_headers_raw`), since they must round-trip pixel data and
   headers untouched.
-- **`stars.rs`** — `detection_plane(&Image) -> MonoPlane` (green super-pixel plane for a
-  mosaic, green channel for RGB, the frame itself for mono), then detection and shape
-  measurement against the plane's own `Background` (threshold, flood-fill blobs, reject
-  non-stars, measure HFR/FWHM/eccentricity — HFR/FWHM as medians, eccentricity as a vector
-  median of the signed ellipticity components, since a per-star eccentricity is rectified
-  and noise can only inflate it).
+- **`stars.rs`** — `detection_plane(&Image) -> MonoPlane` (a CFA mosaic's own raw pixels at
+  full resolution — no debayering or green-channel extraction, green channel for RGB, the
+  frame itself for mono), then detection and shape measurement against the plane's own
+  `Background` (threshold, flood-fill blobs, reject non-stars, measure HFR/FWHM/eccentricity
+  — HFR/FWHM as medians, eccentricity as a vector median of the signed ellipticity
+  components, since a per-star eccentricity is rectified and noise can only inflate it).
+  `star_stats` is the one-call `detection_plane` + `detect_stars` convenience wrapper.
 - **`keywords.rs`** — header keyword policy: which names are structural/reserved, and the
   `copy_metadata`/`copy_missing_metadata`/`carry_over_metadata`/`add_history` helpers.
 - **`preview.rs`** — `render_preview`: an `Image` to an `image::DynamicImage`.
