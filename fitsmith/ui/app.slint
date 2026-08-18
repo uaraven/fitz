@@ -177,6 +177,9 @@ export component AppWindow inherits Window {
     callback open();
     callback open-directory();
     callback clear-files();
+    // Re-read the highlighted file from disk, recomputing its headers,
+    // statistics and star analytics.
+    callback reload-current();
     // Remove the checked rows (or the highlighted one when none are checked).
     callback remove-selected();
     // Check / uncheck every row in the working set.
@@ -282,6 +285,14 @@ export component AppWindow inherits Window {
                 title: "Add Folder…";
                 activated => {
                     root.open-directory();
+                }
+            }
+            MenuItem {
+                title: "Reload Current File";
+                enabled: root.selected-index >= 0;
+                shortcut: @keys(R);
+                activated => {
+                    root.reload-current();
                 }
             }
             MenuItem {

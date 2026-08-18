@@ -1,7 +1,8 @@
 //! Star detection and per-star shape measurement on a grayscale [`Image`]:
 //! threshold against the image's own background, flood-fill the blobs above
 //! it, reject anything that isn't a usable star, and measure what survives —
-//! HFR, FWHM and eccentricity, aggregated across the frame.
+//! HFR, FWHM and eccentricity over a circular aperture wide enough to keep
+//! the star's sub-threshold wings, aggregated across the frame.
 
 use rayon::prelude::*;
 
@@ -119,7 +120,7 @@ impl Image {
         blobs
             .par_iter()
             .filter(|blob| accept(blob, &values, self.width, self.height, saturation, opts))
-            .filter_map(|blob| measure(blob, &values, self.width, bg.median))
+            .filter_map(|blob| measure(blob, &values, self.width, self.height, bg.median))
             .collect()
     }
 
@@ -263,16 +264,36 @@ fn accept(
     })
 }
 
+/// How many HFR estimates the aperture is widened to. 3 × HFR is ≈ 3.8σ for
+/// a Gaussian and contains >99.9% of its flux, so the aperture measurement
+/// converges to the untruncated shape.
+const APERTURE_PER_HFR: f64 = 3.0;
+
 /// Measure one blob's centroid and shape from its background-subtracted flux.
 /// `None` for a blob with no positive flux, which has no centroid to speak of.
-fn measure(blob: &[usize], values: &[f64], width: usize, background: f64) -> Option<Star> {
-    let w = width;
-    let flux_at = |i: usize| values[i] - background;
-    let position = |i: usize| ((i % w) as f64, (i / w) as f64);
+///
+/// The thresholded blob only supplies the centroid and a seed size: measuring
+/// on it alone truncates the star at the detection threshold and reads HFR and
+/// FWHM up to ~2× low for a star barely above it. The shape is instead
+/// measured over a circular aperture around the centroid, widened iteratively
+/// to [`APERTURE_PER_HFR`] × the HFR it measures, with negative flux clamped
+/// to zero so background noise can't cancel the wings — the same aperture
+/// approach (and the same flux-weighted mean-radius HFR) as NINA.
+fn measure(
+    blob: &[usize],
+    values: &[f64],
+    width: usize,
+    height: usize,
+    background: f64,
+) -> Option<Star> {
+    let position = |i: usize| ((i % width) as f64, (i / width) as f64);
 
+    // Flux-weighted centroid of the thresholded pixels: they are the star's
+    // bright core, so the centroid is stable against background noise.
     let (mut sum_f, mut sum_fx, mut sum_fy) = (0.0, 0.0, 0.0);
     for &i in blob {
-        let (f, (x, y)) = (flux_at(i), position(i));
+        let (x, y) = position(i);
+        let f = values[i] - background;
         sum_f += f;
         sum_fx += f * x;
         sum_fy += f * y;
@@ -282,16 +303,69 @@ fn measure(blob: &[usize], values: &[f64], width: usize, background: f64) -> Opt
     }
     let (cx, cy) = (sum_fx / sum_f, sum_fy / sum_f);
 
-    // Second pass, now that the centroid is known: the flux-weighted mean
-    // radius (HFR) and the second moments around the centroid.
-    let (mut sum_fr, mut mxx, mut myy, mut mxy) = (0.0, 0.0, 0.0, 0.0);
+    // Seed the aperture from the blob itself: its own flux-weighted mean
+    // radius, and its extent as a floor so a tiny blob still gets a sane
+    // aperture.
+    let (mut sum_fr, mut extent) = (0.0, 0.0f64);
     for &i in blob {
-        let (f, (x, y)) = (flux_at(i), position(i));
-        let (dx, dy) = (x - cx, y - cy);
-        sum_fr += f * dx.hypot(dy);
-        mxx += f * dx * dx;
-        myy += f * dy * dy;
-        mxy += f * dx * dy;
+        let (x, y) = position(i);
+        let r = (x - cx).hypot(y - cy);
+        sum_fr += (values[i] - background) * r;
+        extent = extent.max(r);
+    }
+    let floor = extent + 2.0;
+    let mut radius = (APERTURE_PER_HFR * sum_fr / sum_f).max(floor);
+
+    // Widen until the radius stabilizes: each pass measures over the current
+    // circle, the next circle follows the HFR it found.
+    let mut star = None;
+    for _ in 0..3 {
+        let measured = measure_aperture(values, width, height, cx, cy, radius, background)?;
+        let next = (APERTURE_PER_HFR * measured.hfr).max(floor);
+        let converged = (next - radius).abs() <= 0.05 * radius;
+        star = Some(measured);
+        radius = next;
+        if converged {
+            break;
+        }
+    }
+    star
+}
+
+/// Measure HFR and second moments over every frame pixel within `radius` of
+/// the centroid, with negative background-subtracted flux clamped to zero.
+fn measure_aperture(
+    values: &[f64],
+    width: usize,
+    height: usize,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    background: f64,
+) -> Option<Star> {
+    let x_lo = ((cx - radius).floor().max(0.0)) as usize;
+    let y_lo = ((cy - radius).floor().max(0.0)) as usize;
+    let x_hi = ((cx + radius).ceil() as usize + 1).min(width);
+    let y_hi = ((cy + radius).ceil() as usize + 1).min(height);
+
+    let (mut sum_f, mut sum_fr, mut mxx, mut myy, mut mxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for y in y_lo..y_hi {
+        for x in x_lo..x_hi {
+            let (dx, dy) = (x as f64 - cx, y as f64 - cy);
+            let r = dx.hypot(dy);
+            if r > radius {
+                continue;
+            }
+            let f = (values[y * width + x] - background).max(0.0);
+            sum_f += f;
+            sum_fr += f * r;
+            mxx += f * dx * dx;
+            myy += f * dy * dy;
+            mxy += f * dx * dy;
+        }
+    }
+    if sum_f <= 0.0 {
+        return None;
     }
     let (mxx, myy, mxy) = (mxx / sum_f, myy / sum_f, mxy / sum_f);
     let trace = mxx + myy;
@@ -398,7 +472,7 @@ pub(crate) mod tests {
         blobs_above_threshold(&mut mask, plane.width, plane.height)
             .iter()
             .filter(|b| accept(b, &values, plane.width, plane.height, saturation, &opts))
-            .filter_map(|b| measure(b, &values, plane.width, bg.median))
+            .filter_map(|b| measure(b, &values, plane.width, plane.height, bg.median))
             .collect()
     }
 
@@ -443,18 +517,56 @@ pub(crate) mod tests {
         assert_eq!(stats.count, 1);
 
         // A 2D Gaussian's FWHM is 2.3548σ and its flux-weighted mean radius is
-        // sqrt(π/2)σ ≈ 1.2533σ.
+        // sqrt(π/2)σ ≈ 1.2533σ. The aperture keeps the sub-threshold wings, so
+        // the tolerance is tight — the old blob-only measurement truncated the
+        // star at the detection threshold and read ~15% low even on a star
+        // this bright.
         let (fwhm, hfr) = (stats.fwhm.unwrap(), stats.hfr.unwrap());
         let (true_fwhm, true_hfr) = (FWHM_PER_SIGMA * SIGMA, 1.2533 * SIGMA);
-        assert!((fwhm - true_fwhm).abs() < 0.15 * true_fwhm, "fwhm {fwhm}");
-        assert!((hfr - true_hfr).abs() < 0.15 * true_hfr, "hfr {hfr}");
+        assert!((fwhm - true_fwhm).abs() < 0.05 * true_fwhm, "fwhm {fwhm}");
+        assert!((hfr - true_hfr).abs() < 0.05 * true_hfr, "hfr {hfr}");
+    }
 
-        // Both are biased *low*, and the direction is a property of the method,
-        // not slop: thresholding truncates the wings, and the flux this drops
-        // is all at large radius. A bound on |error| alone would hide the bias
-        // flipping sign.
-        assert!(fwhm < true_fwhm, "fwhm {fwhm} should be biased low");
-        assert!(hfr < true_hfr, "hfr {hfr} should be biased low");
+    /// A faint star must measure the same HFR as a bright one of the same σ.
+    ///
+    /// This is the regression test for HFR/FWHM reading 2–2.5× smaller than
+    /// NINA: measuring only the pixels above the detection threshold truncates
+    /// a star barely above it at ~1σ, so a frame whose median star is faint
+    /// reported roughly half the true value. The aperture measurement must be
+    /// brightness-invariant.
+    #[test]
+    fn faint_and_bright_stars_measure_the_same_hfr() {
+        const SIGMA: f64 = 2.0;
+        // Background 1000 with no noise floor still yields a small MAD from
+        // the stars' own wings; the faint star's peak is a few hundred ADU —
+        // far below the bright star's 5000, near the detection limit.
+        let plane = star_field_plane(
+            120,
+            60,
+            1000.0,
+            &[
+                (30.0, 30.0, SIGMA, SIGMA, 5000.0),
+                (90.0, 30.0, SIGMA, SIGMA, 300.0),
+            ],
+        );
+        let stars = stars_of(&plane);
+        assert_eq!(stars.len(), 2, "both stars must be detected");
+
+        let true_hfr = 1.2533 * SIGMA;
+        for s in &stars {
+            assert!(
+                (s.hfr - true_hfr).abs() < 0.15 * true_hfr,
+                "hfr {} at ({}, {}) is not within 15% of {true_hfr}",
+                s.hfr,
+                s.x,
+                s.y
+            );
+        }
+        let ratio = stars[0].hfr / stars[1].hfr;
+        assert!(
+            (0.87..1.15).contains(&ratio),
+            "bright/faint HFR ratio {ratio} should be ~1"
+        );
     }
 
     #[test]
@@ -640,7 +752,7 @@ pub(crate) mod tests {
         assert!((0.5..10.0).contains(&hfr), "implausible HFR {hfr}");
         // A tracked sub is not made of streaks. Pinned rather than bounded.
         let ecc = stats.eccentricity.unwrap();
-        assert!((ecc - 0.134).abs() < 0.02, "eccentricity {ecc}");
+        assert!((ecc - 0.080).abs() < 0.02, "eccentricity {ecc}");
     }
 
     /// `star_stats` is just the `detection_plane` + `detect_stars` pipeline

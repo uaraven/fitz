@@ -63,7 +63,7 @@ impl Image {
                 &debayered
             }
             ImageType::Grayscale => {
-                bail!("no BAYERPAT header and image is not a an RGB image")
+                bail!("no BAYERPAT header and not a 3-plane RGB cube — no colour channels to split")
             }
         };
 

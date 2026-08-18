@@ -41,7 +41,8 @@ pub fn open_aberration_dialog(app: &AppWindow) {
             stretch,
         };
         let cached_preview = st.previews.get(&key).cloned();
-        let cached_meta = st.meta.get(&path).cloned();
+        // Same rule as the viewer: metadata is resident per debayer state.
+        let cached_meta = super::meta_lookup(&st.meta, &path, debayer);
         Some((path, cached_preview, cached_meta))
     });
     let Some((path, cached_preview, cached_meta)) = selected else {
@@ -82,7 +83,7 @@ fn finish_open(
             STATE.with(|s| {
                 let mut st = s.borrow_mut();
                 if let Some(m) = meta {
-                    st.meta.insert(path.clone(), Rc::new(m));
+                    super::meta_store(&mut st.meta, &path, Rc::new(m));
                 }
                 st.previews.put(
                     PreviewKey {
