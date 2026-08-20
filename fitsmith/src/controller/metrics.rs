@@ -137,21 +137,16 @@ pub struct FileMetrics {
     pub time: Option<f64>,
     pub time_str: String,
     pub stats: Vec<Stats>,
-    pub stars: Option<StarStats>,
-}
-
-/// Tuning for [`analyze_file`]: whether to pay for star detection, which only
-/// the Star-metrics family needs.
-pub struct AnalyzeOptions {
-    pub detect_stars: bool,
+    pub stars: StarStats,
 }
 
 /// Measure one file: its acquisition time (`DATE-LOC`, else `DATE-OBS`),
-/// pixel statistics, and — when requested — star metrics on its detection
-/// plane. A frame with no acquisition time still measures — it has nothing to
-/// plot a time axis against, but its statistics are as good as anyone's — so
-/// `time` comes back `None` rather than the whole file being skipped.
-pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileMetrics> {
+/// pixel statistics, and star metrics on its detection plane — always both,
+/// so one measured file answers every dialog. A frame with no acquisition
+/// time still measures — it has nothing to plot a time axis against, but its
+/// statistics are as good as anyone's — so `time` comes back `None` rather
+/// than the whole file being skipped.
+pub fn analyze_file(path: &Path) -> Result<FileMetrics> {
     let image = libfitz::fits_file::load_fits(path)?;
     let time_str = image
         .header
@@ -163,10 +158,7 @@ pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileMetrics> {
         .and_then(libfitz::fits_file::parse_date_obs);
 
     let stats = image.stats().channels;
-    let stars = opts
-        .detect_stars
-        .then(|| image.star_stats(&StarDetectOptions::default()).ok())
-        .flatten();
+    let stars = image.star_stats(&StarDetectOptions::default())?;
 
     Ok(FileMetrics {
         path: path.to_path_buf(),
@@ -237,7 +229,7 @@ pub fn build_series(files: &[FileMetrics], metric: Metric) -> Series {
             let mut points = Vec::new();
             let mut unavailable = 0;
             for (f, time) in &sorted {
-                match f.stars.as_ref().and_then(|s| metric.star_value(s)) {
+                match metric.star_value(&f.stars) {
                     Some(value) => points.push(SamplePoint {
                         time: *time,
                         time_str: f.time_str.clone(),
@@ -313,7 +305,18 @@ mod tests {
         }
     }
 
-    fn metrics(path: &str, time: f64, stats: Vec<Stats>, stars: Option<StarStats>) -> FileMetrics {
+    /// A frame where detection ran and found nothing — the sentinel used by
+    /// tests that don't care about star metrics.
+    fn no_stars() -> StarStats {
+        StarStats {
+            count: 0,
+            hfr: None,
+            fwhm: None,
+            eccentricity: None,
+        }
+    }
+
+    fn metrics(path: &str, time: f64, stats: Vec<Stats>, stars: StarStats) -> FileMetrics {
         FileMetrics {
             path: PathBuf::from(path),
             time: Some(time),
@@ -343,7 +346,7 @@ mod tests {
                     stats_fixture(20.0),
                     stats_fixture(30.0),
                 ],
-                None,
+                no_stars(),
             ),
             metrics(
                 "b.fits",
@@ -353,7 +356,7 @@ mod tests {
                     stats_fixture(21.0),
                     stats_fixture(31.0),
                 ],
-                None,
+                no_stars(),
             ),
         ];
         let series = build_series(&files, Metric::Mean);
@@ -392,7 +395,7 @@ mod tests {
 
     #[test]
     fn build_series_keeps_a_mono_batch_as_one_unlabeled_line() {
-        let files = vec![metrics("a.fits", 100.0, vec![stats_fixture(10.0)], None)];
+        let files = vec![metrics("a.fits", 100.0, vec![stats_fixture(10.0)], no_stars())];
         let series = build_series(&files, Metric::Mean);
 
         assert_eq!(series.channels.len(), 1);
@@ -414,9 +417,9 @@ mod tests {
                     stats_fixture(20.0),
                     stats_fixture(30.0),
                 ],
-                None,
+                no_stars(),
             ),
-            metrics("mono.fits", 200.0, vec![stats_fixture(15.0)], None),
+            metrics("mono.fits", 200.0, vec![stats_fixture(15.0)], no_stars()),
         ];
         let series = build_series(&files, Metric::Mean);
 
@@ -432,24 +435,14 @@ mod tests {
                 "a.fits",
                 100.0,
                 vec![],
-                Some(StarStats {
+                StarStats {
                     count: 5,
                     hfr: Some(2.0),
                     fwhm: Some(3.0),
                     eccentricity: Some(0.1),
-                }),
+                },
             ),
-            metrics(
-                "b.fits",
-                200.0,
-                vec![],
-                Some(StarStats {
-                    count: 0,
-                    hfr: None,
-                    fwhm: None,
-                    eccentricity: None,
-                }),
-            ),
+            metrics("b.fits", 200.0, vec![], no_stars()),
         ];
         let series = build_series(&files, Metric::Hfr);
 
@@ -463,8 +456,8 @@ mod tests {
     #[test]
     fn build_series_sorts_by_acquisition_time() {
         let files = vec![
-            metrics("late.fits", 200.0, vec![stats_fixture(2.0)], None),
-            metrics("early.fits", 100.0, vec![stats_fixture(1.0)], None),
+            metrics("late.fits", 200.0, vec![stats_fixture(2.0)], no_stars()),
+            metrics("early.fits", 100.0, vec![stats_fixture(1.0)], no_stars()),
         ];
         let series = build_series(&files, Metric::Mean);
         assert_eq!(
@@ -481,10 +474,10 @@ mod tests {
     fn build_series_leaves_an_undated_file_off_the_plot() {
         let undated = FileMetrics {
             time: None,
-            ..metrics("undated.fits", 0.0, vec![stats_fixture(5.0)], None)
+            ..metrics("undated.fits", 0.0, vec![stats_fixture(5.0)], no_stars())
         };
         let files = vec![
-            metrics("dated.fits", 100.0, vec![stats_fixture(10.0)], None),
+            metrics("dated.fits", 100.0, vec![stats_fixture(10.0)], no_stars()),
             undated,
         ];
         let series = build_series(&files, Metric::Mean);
@@ -501,31 +494,15 @@ mod tests {
 
     #[test]
     fn analyze_file_reads_the_acquisition_time_when_present() {
-        let m = analyze_file(
-            &test_data("uncompressed.fit"),
-            &AnalyzeOptions {
-                detect_stars: false,
-            },
-        )
-        .unwrap();
+        let m = analyze_file(&test_data("uncompressed.fit")).unwrap();
         // The bundled fixture carries a real DATE-LOC/DATE-OBS.
         assert!(m.time.is_some());
     }
 
     #[test]
-    fn analyze_file_measures_pixel_stats_and_optional_stars() {
-        let path = test_data("uncompressed.fit");
-        let m = analyze_file(
-            &path,
-            &AnalyzeOptions {
-                detect_stars: false,
-            },
-        )
-        .unwrap();
+    fn analyze_file_measures_pixel_stats_and_stars() {
+        let m = analyze_file(&test_data("uncompressed.fit")).unwrap();
         assert!(!m.stats.is_empty());
-        assert!(m.stars.is_none(), "star detection wasn't requested");
-
-        let m = analyze_file(&path, &AnalyzeOptions { detect_stars: true }).unwrap();
-        assert!(m.stars.is_some());
+        assert!(m.stars.count > 0);
     }
 }

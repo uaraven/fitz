@@ -412,7 +412,7 @@ pub fn aggregate(stars: &[Star]) -> StarStats {
 }
 
 /// The median of `values`, computed in place. Panics on an empty slice.
-fn median_in_place(values: &mut [f64]) -> f64 {
+pub fn median_in_place(values: &mut [f64]) -> f64 {
     let mid = values.len() / 2;
     values.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
     if values.len() % 2 == 1 {

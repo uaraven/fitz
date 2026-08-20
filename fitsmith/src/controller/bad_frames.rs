@@ -13,9 +13,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use rayon::prelude::*;
 use slint::{ModelRc, VecModel};
+use libfitz::stars::median_in_place;
 use libfitz::stats::Stats;
 use super::analytics::{self, Plan};
-use super::metrics::{FileMetrics, MetricFamily};
+use super::metrics::FileMetrics;
 use super::{STATE, set_checked_paths, update_checked_count, update_exposure};
 use crate::files::display_name;
 use crate::{AppWindow, BadFrameRow};
@@ -26,12 +27,15 @@ use crate::{AppWindow, BadFrameRow};
 // starts warning (and gets removed) the moment the algorithm lands.
 #[expect(dead_code)]
 pub struct BadFrameParams {
-    /// Factor 1 — transparency: background floor rising, or star count dropping.
+    /// Factor 1 — transparency: background floor rising.
     pub floor: bool,
     /// Factor 2 — focus: median star FWHM rising.
     pub fwhm: bool,
     /// Factor 3 — tracking: median star eccentricity rising.
     pub eccentricity: bool,
+    /// Factor 4 — transparency: star count dropping. Shares the dialog's
+    /// "Transparency" checkbox with `floor`.
+    pub star_count: bool,
     /// The rejection threshold in robust sigmas (3 conservative … 1 aggressive).
     pub sigma: f32,
 }
@@ -47,13 +51,6 @@ pub fn sigma_for_index(index: i32) -> f32 {
     }
 }
 
-/// One flagged frame: its path and a short human-readable account of which
-/// factor(s) tripped and by how much (e.g. `"FWHM z=2.4 · Ecc z=3.2"`).
-pub struct BadFrame {
-    pub path: PathBuf,
-    pub reason: String,
-}
-
 /// Decide which of the session's frames are bad under `params`.
 ///
 /// Intended algorithm (see `.plan/bad-frame-detector.md`): for each enabled
@@ -67,25 +64,50 @@ pub struct BadFrame {
 /// star metric is excluded from that metric's baseline and can't trip it.
 ///
 /// Returns the flagged frames in `files` order.
-pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<BadFrame> {
-    // TODO: detection algorithm — see the doc comment above.
-    let _ = (files, params);
-    Vec::new()
+pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> {
+    let mut bad_frames: HashSet<PathBuf> = HashSet::new();
+    if params.floor {
+        bad_frames.extend(estimate_frame_for_noise_floor(files, params));
+    }
+    if params.star_count {
+        let bads = estimate_frame_for_star_count(files, params);
+        bad_frames.extend(bads);
+    }
+    // ensure the list is returned in the original order
+    files
+        .iter()
+        .map(|m| &m.path)
+        .filter(|p| bad_frames.contains(*p))
+        .cloned()
+        .collect()
 }
 
-fn estimate_frame_for_star_count(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<BadFrame> {
-    let meta = calculate_meta_stats(metrics, |s| s.stars.as_ref().map(|s| s.count as f32).unwrap_or(0f32));
+fn estimate_frame_for_star_count(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+    let meta = calculate_meta_stats(metrics, |s| s.stars.count as f64);
+    if meta.mad == 0.0 {
+        return vec![]
+    }
     metrics.iter().flat_map(|m| {
-        if let Some(stars) = &m.stars {
-            let delta = meta.mean - stars.count as f32;
-            if delta >= meta.sigma * param.sigma {
-                Some(BadFrame{
-                    path: m.path.clone(),
-                    reason: format!("star count below {}σ", param.sigma),
-                })
-            } else {
-                None
-            }
+        let stars = &m.stars;
+        let z = (stars.count as f32 - meta.median) / meta.mad;
+        if z <= -param.sigma {
+            Some(m.path.clone())
+        } else {
+            None
+        }
+    }).collect()
+}
+
+fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+    let meta = calculate_meta_stats(metrics, stats_extractor(|st| st.median as f64));
+    if meta.mad == 0.0 {
+        return vec![]
+    }
+    let data: Vec<f64> = metrics.iter().map(stats_extractor(|st| st.median as f64)).collect();
+    data.iter().enumerate().flat_map(|(idx,d)| {
+        let z = (*d as f32 - meta.median) / meta.mad;
+        if z >= param.sigma {
+            Some(metrics[idx].path.clone())
         } else {
             None
         }
@@ -99,36 +121,34 @@ struct MetaStats {
     mad: f32
 }
 
-fn stats_extractor(extractor: fn(Stats) -> f32) -> impl Fn(&FileMetrics) -> f32 + Sync {
+fn stats_extractor(extractor: fn(Stats) -> f64) -> impl Fn(&FileMetrics) -> f64 + Sync {
     move |m: &FileMetrics| {
         if m.stats.len() == 1 { extractor(m.stats[0]) } else { extractor(m.stats[1]) }
     }
 }
-fn calculate_meta_stats(files: &[FileMetrics], extractor: impl Fn(&FileMetrics) -> f32 + Sync) -> MetaStats {
-    let n = files.len() as f32;
-    let mut data: Vec<f32> = files.par_iter().map(|m| extractor(m)).collect();
-    data.sort_by(|a, b| a.total_cmp(b));
-
-    let calc_median = |d: &[f32]| {
-        let median = match data.len() % 2 == 0 {
-            true => data[data.len() / 2 - 1] + data[data.len() / 2],
-            false => data[data.len() / 2],
-        };
-        median
-    };
-    let median = calc_median(&data);
-    let mut mad_data: Vec<f32> = data.iter().map(|d| (d - median).abs()).collect();
+fn calculate_meta_stats(files: &[FileMetrics], extractor: impl Fn(&FileMetrics) -> f64 + Sync) -> MetaStats {
+    if files.is_empty() {
+        return MetaStats{
+            mean: 0.0,
+            sigma: 0.0,
+            median: 0.0,
+            mad: 0.0,
+        }
+    }
+    let n = files.len() as f64;
+    let mut data: Vec<f64> = files.par_iter().map(|m| extractor(m)).collect();
+    let median = median_in_place(&mut data);
+    let mut mad_data: Vec<f64> = data.iter().map(|d| (d - median).abs()).collect();
     mad_data.sort_by(|a, b| a.total_cmp(b));
 
-
-    let mean: f32 = data.iter().sum::<f32>()/n;
-    let std_dev: f32 = (data.iter().map(|m| (m - mean).powf(2.0)).sum::<f32>() / n).sqrt();
-    let mad = calc_median(&mad_data) * 1.4826;
+    let mean: f64 = data.iter().sum::<f64>()/n;
+    let std_dev: f64 = (data.iter().map(|m| (m - mean).powf(2.0)).sum::<f64>() / n).sqrt();
+    let mad = median_in_place(&mut mad_data) * 1.4826;
     MetaStats{
-        mean,
-        sigma: std_dev,
-        median,
-        mad,
+        mean: mean as f32,
+        sigma: std_dev as f32,
+        median: median as f32,
+        mad: mad as f32,
     }
 }
 
@@ -140,7 +160,7 @@ fn calculate_meta_stats(files: &[FileMetrics], extractor: impl Fn(&FileMetrics) 
 /// analysis cache is reused, so a reopen (or an open after Star metrics…)
 /// reads no file.
 pub fn open_bad_frames_dialog(app: &AppWindow) {
-    analytics::start_batch(app, MetricFamily::Star, show_bad_frames);
+    analytics::start_batch(app, show_bad_frames);
 }
 
 /// Land the finished batch: keep the measured frames for live re-evaluation,
@@ -162,6 +182,9 @@ pub fn recompute_bad_frames(app: &AppWindow) {
         floor: app.get_bad_floor_enabled(),
         fwhm: app.get_bad_fwhm_enabled(),
         eccentricity: app.get_bad_ecc_enabled(),
+        // The "Transparency (floor / star count)" checkbox drives both
+        // transparency factors.
+        star_count: app.get_bad_floor_enabled(),
         sigma: sigma_for_index(app.get_bad_sigma_index()),
     };
     let (rows, flagged, total) = STATE.with(|s| {
@@ -169,12 +192,11 @@ pub fn recompute_bad_frames(app: &AppWindow) {
         let bad = evaluate(&st.bad_frames, &params);
         let rows: Vec<BadFrameRow> = bad
             .iter()
-            .map(|b| BadFrameRow {
-                name: display_name(&b.path).into(),
-                reason: b.reason.clone().into(),
+            .map(|b| BadFrameRow {   
+                name: display_name(&b).into(),
             })
             .collect();
-        let flagged: Vec<PathBuf> = bad.into_iter().map(|b| b.path).collect();
+        let flagged: Vec<PathBuf> = bad.clone();
         let total = st.bad_frames.len();
         st.bad_frame_flagged = flagged.clone();
         (rows, flagged, total)
@@ -216,7 +238,7 @@ pub fn close_bad_frames(app: &AppWindow) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller::metrics::{AnalyzeOptions, analyze_file};
+    use crate::controller::metrics::analyze_file;
     use crate::controller::test_data;
     use libfitz::stars::StarStats;
     use libfitz::stats::Stats;
@@ -226,11 +248,12 @@ mod tests {
             floor: true,
             fwhm: true,
             eccentricity: true,
+            star_count: true,
             sigma,
         }
     }
 
-    fn frame(path: &str, median: f32, stars: Option<StarStats>) -> FileMetrics {
+    fn frame(path: &str, median: f32, stars: StarStats) -> FileMetrics {
         FileMetrics {
             path: PathBuf::from(path),
             time: None,
@@ -257,7 +280,16 @@ mod tests {
     fn evaluate_stub_flags_nothing() {
         // Locks the scaffold behavior until the detection algorithm lands: no
         // parameter combination flags a frame.
-        let files = vec![frame("a.fits", 100.0, None), frame("b.fits", 30000.0, None)];
+        let no_stars = StarStats {
+            count: 0,
+            hfr: None,
+            fwhm: None,
+            eccentricity: None,
+        };
+        let files = vec![
+            frame("a.fits", 100.0, no_stars.clone()),
+            frame("b.fits", 30000.0, no_stars),
+        ];
         assert!(evaluate(&files, &all_factors(1.0)).is_empty());
         assert!(evaluate(&[], &all_factors(3.0)).is_empty());
     }
@@ -282,18 +314,14 @@ mod tests {
         names
             .iter()
             .map(|name| {
-                analyze_file(
-                    &test_data(&format!("bad-image/{name}")),
-                    &AnalyzeOptions { detect_stars: true },
-                )
-                .unwrap()
+                analyze_file(&test_data(&format!("bad-image/{name}"))).unwrap()
             })
             .collect()
     }
 
-    fn flagged_names(bad: &[BadFrame]) -> Vec<String> {
+    fn flagged_names(bad: &[PathBuf]) -> Vec<String> {
         bad.iter()
-            .map(|b| b.path.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|b| b.file_name().unwrap().to_string_lossy().into_owned())
             .collect()
     }
 
@@ -334,6 +362,7 @@ mod tests {
             floor: true,
             fwhm: false,
             eccentricity: false,
+            star_count: true,
             sigma: 2.0,
         };
         let flagged = flagged_names(&evaluate(&files, &params));
@@ -361,6 +390,7 @@ mod tests {
             floor: false,
             fwhm: false,
             eccentricity: true,
+            star_count: false,
             sigma: 2.0,
         };
         let flagged = flagged_names(&evaluate(&files, &params));

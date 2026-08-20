@@ -6,7 +6,6 @@ import { BadFrameRow } from "types.slint";
 // One flagged frame: its name over the controller-worded reason it tripped.
 component BadFrameLine inherits Rectangle {
     in property <string> name;
-    in property <string> reason;
 
     height: 38px;
 
@@ -18,12 +17,6 @@ component BadFrameLine inherits Rectangle {
         Text {
             text: root.name;
             color: white;
-            overflow: elide;
-        }
-        Text {
-            text: root.reason;
-            color: #a0a0a0;
-            font-size: 11px;
             overflow: elide;
         }
     }
@@ -136,7 +129,6 @@ export component BadFramesDialog inherits DialogCard {
                         y: idx * self.height;
                         width: list.content-width;
                         name: row.name;
-                        reason: row.reason;
                         background: mod(idx, 2) == 0 ? transparent : #ffffff08;
                     }
                 }
