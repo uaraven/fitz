@@ -126,29 +126,18 @@ impl Metric {
     }
 }
 
-/// Why a file was skipped rather than measured.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SkipReason {
-    NoDateObs,
-}
-
-/// One file's measured metrics: its acquisition time and the numbers a chart
-/// might plot. `stats` is straight from `Image::stats().channels` — one entry
-/// for grayscale/CFA, three (R, G, B) for an already-debayered RGB cube.
+/// One file's measured metrics: its acquisition time (when the frame carries
+/// one — a chart can't plot a file without it, but bad-frame detection doesn't
+/// care) and the numbers a chart might plot. `stats` is straight from
+/// `Image::stats().channels` — one entry for grayscale/CFA, three (R, G, B)
+/// for an already-debayered RGB cube.
 #[derive(Clone)]
 pub struct FileMetrics {
     pub path: PathBuf,
-    pub time: f64,
+    pub time: Option<f64>,
     pub time_str: String,
     pub stats: Vec<Stats>,
     pub stars: Option<StarStats>,
-}
-
-/// The outcome of analyzing one file.
-#[derive(Clone)]
-pub enum FileAnalysis {
-    Analyzed(FileMetrics),
-    Skipped(SkipReason),
 }
 
 /// Tuning for [`analyze_file`]: whether to pay for star detection, which only
@@ -159,22 +148,19 @@ pub struct AnalyzeOptions {
 
 /// Measure one file: its acquisition time (`DATE-LOC`, else `DATE-OBS`),
 /// pixel statistics, and — when requested — star metrics on its detection
-/// plane. A frame with no acquisition time is [`FileAnalysis::Skipped`]
-/// rather than an error, since it simply has nothing to plot a time axis
-/// against.
-pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> {
+/// plane. A frame with no acquisition time still measures — it has nothing to
+/// plot a time axis against, but its statistics are as good as anyone's — so
+/// `time` comes back `None` rather than the whole file being skipped.
+pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileMetrics> {
     let image = libfitz::fits_file::load_fits(path)?;
     let time_str = image
         .header
         .get_string("DATE-LOC")
         .or_else(|| image.header.get_string("DATE-OBS"))
         .map(str::to_string);
-    let Some(time) = time_str
+    let time = time_str
         .as_deref()
-        .and_then(libfitz::fits_file::parse_date_obs)
-    else {
-        return Ok(FileAnalysis::Skipped(SkipReason::NoDateObs));
-    };
+        .and_then(libfitz::fits_file::parse_date_obs);
 
     let stats = image.stats().channels;
     let stars = opts
@@ -182,13 +168,13 @@ pub fn analyze_file(path: &Path, opts: &AnalyzeOptions) -> Result<FileAnalysis> 
         .then(|| image.star_stats(&StarDetectOptions::default()).ok())
         .flatten();
 
-    Ok(FileAnalysis::Analyzed(FileMetrics {
+    Ok(FileMetrics {
         path: path.to_path_buf(),
         time,
         time_str: time_str.unwrap_or_default(),
         stats,
         stars,
-    }))
+    })
 }
 
 /// One sample on a chart line.
@@ -236,19 +222,24 @@ fn channel_label(count: usize, index: usize) -> Option<&'static str> {
 }
 
 /// Build the plotted series for `metric` from a batch's measured files,
-/// sorted by acquisition time.
+/// sorted by acquisition time. A file with no acquisition time has nowhere on
+/// the X axis to go, so it is left off the plot entirely (the dialog reports
+/// those separately as "skipped (no DATE-OBS)" — see `plan_batch`).
 pub fn build_series(files: &[FileMetrics], metric: Metric) -> Series {
-    let mut sorted: Vec<&FileMetrics> = files.iter().collect();
-    sorted.sort_by(|a, b| a.time.total_cmp(&b.time));
+    let mut sorted: Vec<(&FileMetrics, f64)> = files
+        .iter()
+        .filter_map(|f| f.time.map(|t| (f, t)))
+        .collect();
+    sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
 
     match metric.family() {
         MetricFamily::Star => {
             let mut points = Vec::new();
             let mut unavailable = 0;
-            for f in &sorted {
+            for (f, time) in &sorted {
                 match f.stars.as_ref().and_then(|s| metric.star_value(s)) {
                     Some(value) => points.push(SamplePoint {
-                        time: f.time,
+                        time: *time,
                         time_str: f.time_str.clone(),
                         value,
                         path: f.path.clone(),
@@ -271,7 +262,7 @@ pub fn build_series(files: &[FileMetrics], metric: Metric) -> Series {
             // batch) contributes to `unavailable` instead of a mismatched point.
             let Some(expected) = sorted
                 .iter()
-                .find_map(|f| (!f.stats.is_empty()).then_some(f.stats.len()))
+                .find_map(|(f, _)| (!f.stats.is_empty()).then_some(f.stats.len()))
             else {
                 return Series {
                     metric,
@@ -286,14 +277,14 @@ pub fn build_series(files: &[FileMetrics], metric: Metric) -> Series {
                 })
                 .collect();
             let mut unavailable = 0;
-            for f in &sorted {
+            for (f, time) in &sorted {
                 if f.stats.len() != expected {
                     unavailable += 1;
                     continue;
                 }
                 for (i, s) in f.stats.iter().enumerate() {
                     channels[i].points.push(SamplePoint {
-                        time: f.time,
+                        time: *time,
                         time_str: f.time_str.clone(),
                         value: metric.pixel_value(s),
                         path: f.path.clone(),
@@ -325,7 +316,7 @@ mod tests {
     fn metrics(path: &str, time: f64, stats: Vec<Stats>, stars: Option<StarStats>) -> FileMetrics {
         FileMetrics {
             path: PathBuf::from(path),
-            time,
+            time: Some(time),
             time_str: String::new(),
             stats,
             stars,
@@ -487,37 +478,54 @@ mod tests {
     }
 
     #[test]
-    fn analyze_file_skips_a_frame_with_no_acquisition_time() {
-        let outcome = analyze_file(
+    fn build_series_leaves_an_undated_file_off_the_plot() {
+        let undated = FileMetrics {
+            time: None,
+            ..metrics("undated.fits", 0.0, vec![stats_fixture(5.0)], None)
+        };
+        let files = vec![
+            metrics("dated.fits", 100.0, vec![stats_fixture(10.0)], None),
+            undated,
+        ];
+        let series = build_series(&files, Metric::Mean);
+        // The undated frame has nowhere on the time axis to go; it is neither
+        // plotted nor counted `unavailable` (the dialog reports it as skipped).
+        assert_eq!(series.channels.len(), 1);
+        assert_eq!(series.channels[0].points.len(), 1);
+        assert_eq!(
+            series.channels[0].points[0].path,
+            PathBuf::from("dated.fits")
+        );
+        assert_eq!(series.unavailable, 0);
+    }
+
+    #[test]
+    fn analyze_file_reads_the_acquisition_time_when_present() {
+        let m = analyze_file(
             &test_data("uncompressed.fit"),
             &AnalyzeOptions {
                 detect_stars: false,
             },
-        );
-        // The bundled fixture carries a real DATE-LOC/DATE-OBS, so it measures.
-        assert!(matches!(outcome.unwrap(), FileAnalysis::Analyzed(_)));
+        )
+        .unwrap();
+        // The bundled fixture carries a real DATE-LOC/DATE-OBS.
+        assert!(m.time.is_some());
     }
 
     #[test]
     fn analyze_file_measures_pixel_stats_and_optional_stars() {
         let path = test_data("uncompressed.fit");
-        let FileAnalysis::Analyzed(m) = analyze_file(
+        let m = analyze_file(
             &path,
             &AnalyzeOptions {
                 detect_stars: false,
             },
         )
-        .unwrap() else {
-            panic!("expected the bundled frame to measure");
-        };
+        .unwrap();
         assert!(!m.stats.is_empty());
         assert!(m.stars.is_none(), "star detection wasn't requested");
 
-        let FileAnalysis::Analyzed(m) =
-            analyze_file(&path, &AnalyzeOptions { detect_stars: true }).unwrap()
-        else {
-            panic!("expected the bundled frame to measure");
-        };
+        let m = analyze_file(&path, &AnalyzeOptions { detect_stars: true }).unwrap();
         assert!(m.stars.is_some());
     }
 }

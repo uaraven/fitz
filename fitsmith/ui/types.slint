@@ -67,3 +67,11 @@ export struct StatLine {
     pos: float,
     label: string,
 }
+
+// One flagged frame in the "Detect bad frames" dialog: its display name and a
+// short controller-worded account of which factor(s) tripped (e.g.
+// "FWHM z=2.4 · Ecc z=3.2").
+export struct BadFrameRow {
+    name: string,
+    reason: string,
+}

@@ -131,6 +131,18 @@ fn main() -> Result<()> {
         controller::analytics_export_csv(&app)
     });
     forward!(on_close_analytics, |app| controller::close_analytics(&app));
+    forward!(on_open_bad_frames_dialog, |app| {
+        controller::open_bad_frames_dialog(&app)
+    });
+    forward!(on_bad_frames_params_changed, |app| {
+        controller::recompute_bad_frames(&app)
+    });
+    forward!(on_select_bad_frames, |app| controller::select_bad_frames(
+        &app
+    ));
+    forward!(on_close_bad_frames, |app| controller::close_bad_frames(
+        &app
+    ));
     forward!(on_open_aberration_dialog, |app| {
         controller::open_aberration_dialog(&app)
     });

@@ -1,0 +1,176 @@
+import { Button, ComboBox, CheckBox } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+import { VScrollArea } from "scrolling.slint";
+import { BadFrameRow } from "types.slint";
+
+// One flagged frame: its name over the controller-worded reason it tripped.
+component BadFrameLine inherits Rectangle {
+    in property <string> name;
+    in property <string> reason;
+
+    height: 38px;
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 3px;
+        spacing: 1px;
+        Text {
+            text: root.name;
+            color: white;
+            overflow: elide;
+        }
+        Text {
+            text: root.reason;
+            color: #a0a0a0;
+            font-size: 11px;
+            overflow: elide;
+        }
+    }
+}
+
+// The modal behind Tools ▸ Detect Bad Frames…: rejection knobs on the left
+// (three independent failure-mode factors and one aggressiveness threshold),
+// the live list of flagged frames on the right. Purely presentational — every
+// knob change reports `params-changed` and Rust re-evaluates the measured
+// frames in memory, re-filling `bad-frames` and `summary`; Select hands the
+// verdict to Rust to turn into the file list's checkbox selection.
+export component BadFramesDialog inherits DialogCard {
+    in property <[BadFrameRow]> bad-frames;
+    // "N of M frames flagged", worded by the controller.
+    in property <string> summary;
+    in-out property <bool> floor-enabled;
+    in-out property <bool> fwhm-enabled;
+    in-out property <bool> ecc-enabled;
+    // Index into the aggressiveness dropdown: 0 = 3σ, 1 = 2σ, 2 = 1σ.
+    in-out property <int> sigma-index;
+
+    callback params-changed();
+    callback select();
+
+    // Resizable like the Analytics dialog: a long session flags many frames,
+    // and the list is the point. The parent owns `card-width`/`card-height`
+    // so a resize outlives a close/reopen.
+    resizable: true;
+    min-card-width: 620px;
+    min-card-height: 400px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: "Detect bad frames";
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 16px;
+
+            // Left pane: the rejection knobs.
+            VerticalLayout {
+                width: 250px;
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "Reject frames on:";
+                    color: #c8c8c8;
+                }
+                CheckBox {
+                    text: "Transparency (floor / star count)";
+                    checked <=> root.floor-enabled;
+                    toggled => {
+                        root.params-changed();
+                    }
+                }
+                CheckBox {
+                    text: "Focus (star FWHM)";
+                    checked <=> root.fwhm-enabled;
+                    toggled => {
+                        root.params-changed();
+                    }
+                }
+                CheckBox {
+                    text: "Tracking (star eccentricity)";
+                    checked <=> root.ecc-enabled;
+                    toggled => {
+                        root.params-changed();
+                    }
+                }
+
+                Text {
+                    text: "Aggressiveness:";
+                    color: #c8c8c8;
+                }
+                ComboBox {
+                    model: ["Conservative (3σ)", "Moderate (2σ)", "Aggressive (1σ)"];
+                    current-index <=> root.sigma-index;
+                    selected => {
+                        root.params-changed();
+                    }
+                }
+            }
+
+            // Right pane: the live list of flagged frames.
+            Rectangle {
+                horizontal-stretch: 1;
+                background: #1b1b1b;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+                clip: true;
+
+                if root.bad-frames.length == 0: Text {
+                    text: "No bad frames";
+                    color: #808080;
+                }
+                list := VScrollArea {
+                    width: 100%;
+                    height: 100%;
+                    content-height: root.bad-frames.length * 38px;
+                    for row[idx] in root.bad-frames: BadFrameLine {
+                        y: idx * self.height;
+                        width: list.content-width;
+                        name: row.name;
+                        reason: row.reason;
+                        background: mod(idx, 2) == 0 ? transparent : #ffffff08;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.summary;
+                color: #a0a0a0;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "Select";
+                primary: true;
+                enabled: root.bad-frames.length > 0;
+                clicked => {
+                    root.select();
+                }
+            }
+
+            Button {
+                text: "Close";
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}
