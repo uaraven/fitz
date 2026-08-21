@@ -22,10 +22,9 @@ use crate::files::display_name;
 use crate::{AppWindow, BadFrameRow};
 
 /// The dialog's knobs: which failure modes to look for, and how far from the
-/// session baseline a frame must stray to be flagged.
-// The `expect` covers the fields only [`evaluate`]'s stub leaves unread; it
-// starts warning (and gets removed) the moment the algorithm lands.
-#[expect(dead_code)]
+/// session baseline a frame must stray to be flagged. Each factor has its
+/// own threshold; `star_count` shares `floor_sigma` since it shares the
+/// dialog's "Transparency" checkbox with the floor factor.
 pub struct BadFrameParams {
     /// Factor 1 — transparency: background floor rising.
     pub floor: bool,
@@ -34,21 +33,15 @@ pub struct BadFrameParams {
     /// Factor 3 — tracking: median star eccentricity rising.
     pub eccentricity: bool,
     /// Factor 4 — transparency: star count dropping. Shares the dialog's
-    /// "Transparency" checkbox with `floor`.
+    /// "Transparency" checkbox (and its threshold) with `floor`.
     pub star_count: bool,
-    /// The rejection threshold in robust sigmas (3 conservative … 1 aggressive).
-    pub sigma: f32,
-}
-
-/// Map the aggressiveness dropdown index to its sigma threshold —
-/// Conservative (3σ) / Moderate (2σ) / Aggressive (1σ). Out-of-range (and
-/// Slint's -1 "no selection") falls back to conservative.
-pub fn sigma_for_index(index: i32) -> f32 {
-    match index {
-        1 => 2.0,
-        2 => 1.0,
-        _ => 3.0,
-    }
+    /// Transparency's rejection threshold, in robust sigmas (3 conservative
+    /// … 1 aggressive). Governs both `floor` and `star_count`.
+    pub floor_sigma: f32,
+    /// Focus's rejection threshold, in robust sigmas.
+    pub fwhm_sigma: f32,
+    /// Tracking's rejection threshold, in robust sigmas.
+    pub eccentricity_sigma: f32,
 }
 
 /// Decide which of the session's frames are bad under `params`.
@@ -58,26 +51,27 @@ pub fn sigma_for_index(index: i32) -> f32 {
 /// each frame's robust z-score `z = (value − median) / (1.4826 × MAD)`,
 /// one-tailed — only the direction that means "worse" counts (background,
 /// FWHM and eccentricity rising; star count dropping). A frame is flagged
-/// when any enabled factor's |z| crosses `params.sigma` in its bad direction
-/// (OR across factors — the failure modes are physically distinct). A zero
-/// MAD means the metric has no dispersion and never trips; a frame missing a
-/// star metric is excluded from that metric's baseline and can't trip it.
+/// when any enabled factor's |z| crosses that factor's own sigma threshold
+/// in its bad direction (OR across factors — the failure modes are
+/// physically distinct). A zero MAD means the metric has no dispersion and
+/// never trips; a frame missing a star metric is excluded from that
+/// metric's baseline and can't trip it.
 ///
 /// Returns the flagged frames in `files` order.
 pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> {
     let mut bad_frames: HashSet<PathBuf> = HashSet::new();
     if params.floor {
-        bad_frames.extend(estimate_frame_for_noise_floor(files, params));
+        bad_frames.extend(estimate_frame_for_noise_floor(files, params.floor_sigma));
     }
     if params.star_count {
-        let bads = estimate_frame_for_star_count(files, params);
+        let bads = estimate_frame_for_star_count(files, params.floor_sigma);
         bad_frames.extend(bads);
     }
     if params.fwhm {
-        bad_frames.extend(estimate_frame_for_focus(files, params));
+        bad_frames.extend(estimate_frame_for_focus(files, params.fwhm_sigma));
     }
     if params.eccentricity {
-        bad_frames.extend(estimate_frame_for_eccentricity(files, params));
+        bad_frames.extend(estimate_frame_for_eccentricity(files, params.eccentricity_sigma));
     }
     // ensure the list is returned in the original order
     files
@@ -88,7 +82,7 @@ pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> 
         .collect()
 }
 
-fn estimate_frame_for_star_count(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+fn estimate_frame_for_star_count(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, |s| Some(s.stars.count as f64));
     if meta.mad == 0.0 {
         return vec![]
@@ -96,7 +90,7 @@ fn estimate_frame_for_star_count(metrics: &[FileMetrics], param: &BadFrameParams
     metrics.iter().flat_map(|m| {
         let stars = &m.stars;
         let z = (stars.count as f32 - meta.median) / meta.mad;
-        if z <= -param.sigma {
+        if z <= -sigma {
             Some(m.path.clone())
         } else {
             None
@@ -104,7 +98,7 @@ fn estimate_frame_for_star_count(metrics: &[FileMetrics], param: &BadFrameParams
     }).collect()
 }
 
-fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, stats_extractor(|st| Some(st.median as f64)));
     if meta.mad == 0.0 {
         return vec![]
@@ -112,7 +106,7 @@ fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], param: &BadFrameParam
     let data: Vec<f64> = metrics.iter().flat_map(stats_extractor(|st| Some(st.median as f64))).collect();
     data.iter().enumerate().flat_map(|(idx,d)| {
         let z = (*d as f32 - meta.median) / meta.mad;
-        if z >= param.sigma {
+        if z >= sigma {
             Some(metrics[idx].path.clone())
         } else {
             None
@@ -121,7 +115,7 @@ fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], param: &BadFrameParam
 }
 
 
-fn estimate_frame_for_focus(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+fn estimate_frame_for_focus(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, |s| s.stars.fwhm);
     if meta.mad == 0.0 {
         return vec![]
@@ -129,7 +123,7 @@ fn estimate_frame_for_focus(metrics: &[FileMetrics], param: &BadFrameParams) -> 
     metrics.iter().flat_map(|m| {
         let stars = &m.stars;
         let z = (stars.fwhm.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
-        if z >= param.sigma {
+        if z >= sigma {
             Some(m.path.clone())
         } else {
             None
@@ -138,7 +132,7 @@ fn estimate_frame_for_focus(metrics: &[FileMetrics], param: &BadFrameParams) -> 
 }
 
 
-fn estimate_frame_for_eccentricity(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+fn estimate_frame_for_eccentricity(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, |s| s.stars.eccentricity);
     if meta.mad == 0.0 {
         return vec![]
@@ -146,7 +140,7 @@ fn estimate_frame_for_eccentricity(metrics: &[FileMetrics], param: &BadFramePara
     metrics.iter().flat_map(|m| {
         let stars = &m.stars;
         let z = (stars.eccentricity.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
-        if z >= param.sigma {
+        if z >= sigma {
             Some(m.path.clone())
         } else {
             None
@@ -206,7 +200,7 @@ fn show_bad_frames(app: &AppWindow, plan: Plan, failures: usize) {
 }
 
 /// Re-evaluate with the knobs currently on the dialog and re-fill its list.
-/// Called on every checkbox/dropdown change; pure in-memory work over the
+/// Called on every checkbox/slider change; pure in-memory work over the
 /// frames measured at open, so it is instant.
 pub fn recompute_bad_frames(app: &AppWindow) {
     let params = BadFrameParams {
@@ -216,7 +210,9 @@ pub fn recompute_bad_frames(app: &AppWindow) {
         // The "Transparency (floor / star count)" checkbox drives both
         // transparency factors.
         star_count: app.get_bad_floor_enabled(),
-        sigma: sigma_for_index(app.get_bad_sigma_index()),
+        floor_sigma: app.get_bad_floor_sigma(),
+        fwhm_sigma: app.get_bad_fwhm_sigma(),
+        eccentricity_sigma: app.get_bad_ecc_sigma(),
     };
     let (rows, flagged, total) = STATE.with(|s| {
         let mut st = s.borrow_mut();
@@ -280,7 +276,9 @@ mod tests {
             fwhm: true,
             eccentricity: true,
             star_count: true,
-            sigma,
+            floor_sigma: sigma,
+            fwhm_sigma: sigma,
+            eccentricity_sigma: sigma,
         }
     }
 
@@ -295,16 +293,6 @@ mod tests {
             }],
             stars,
         }
-    }
-
-    #[test]
-    fn sigma_index_maps_to_the_dropdown_order() {
-        assert_eq!(sigma_for_index(0), 3.0);
-        assert_eq!(sigma_for_index(1), 2.0);
-        assert_eq!(sigma_for_index(2), 1.0);
-        // Out-of-range (and Slint's -1 "no selection") stays conservative.
-        assert_eq!(sigma_for_index(-1), 3.0);
-        assert_eq!(sigma_for_index(99), 3.0);
     }
 
     #[test]
@@ -427,7 +415,9 @@ mod tests {
             fwhm: false,
             eccentricity: false,
             star_count: true,
-            sigma: 2.0,
+            floor_sigma: 2.0,
+            fwhm_sigma: 2.0,
+            eccentricity_sigma: 2.0,
         };
         let flagged = flagged_names(&evaluate(&files, &params));
         for bad in [
@@ -454,7 +444,9 @@ mod tests {
             fwhm: false,
             eccentricity: true,
             star_count: false,
-            sigma: 2.0,
+            floor_sigma: 2.0,
+            fwhm_sigma: 2.0,
+            eccentricity_sigma: 2.0,
         };
         let flagged = flagged_names(&evaluate(&files, &params));
         for bad in ["bad_tracking1.fits", "bad_eccentricity.fits"] {
