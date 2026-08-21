@@ -8,6 +8,8 @@ It allows preview of multiple FITS files with debayering and screen stretch, if 
 
  - View FITS file. duh.
  - Blink through the working set of the FITS files.
+ - Reload the current file from disk (File ▸ Reload Current File, or `R`), recomputing its
+   headers, statistics and star analytics.
  - Batch export FITS to JPG, PNG or TIFF
  - Batch compression or decompression of FITS files
  - View headers
@@ -15,6 +17,11 @@ It allows preview of multiple FITS files with debayering and screen stretch, if 
  - Estimate real bit depth of the file
  - View star metrics (HFR, FWHM, Eccentricity)
  - Aberration inspector
+ - Detect bad frames (Tools ▸ Detect Bad Frames…): flag frames that are outliers against
+   the session's own baseline — low transparency (background floor / star count), focus
+   drift (FWHM) or tracking failure (eccentricity), each factor toggleable, with a
+   3σ/2σ/1σ aggressiveness setting — then select exactly those frames in the file list
+   with one click. (The detection algorithm itself is not implemented yet.)
  - Charts: 
    - draw a chart of a statistics metrics for the whole working set - see how star count or noise levels changed during the session
    - show the mean value of the chart metrics and ±1, 2 and 3σ to quickly see which images are outliers 
@@ -45,8 +52,8 @@ CI, since Slint's per-OS windowing/font dependencies mean each package has to be
 that OS:
 
 ```shell
-./fitsmith/scripts/package-unix.sh       # macOS -> .dmg, Linux -> .deb + .rpm
-./fitsmith/scripts/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset on PATH)
+./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb + .rpm
+./build/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset on PATH)
 ```
 
 On Linux, building the `.rpm` needs `rpmbuild` on `PATH` (`sudo dnf install rpm-build` on

@@ -80,12 +80,13 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
   `fitskit::FitsFile` directly rather than on `Image` (`load_raw`/`save_raw` with a chosen
   `CompressionSettings`, `copy_headers_raw`), since they must round-trip pixel data and
   headers untouched.
-- **`stars.rs`** — `detection_plane(&Image) -> MonoPlane` (green super-pixel plane for a
-  mosaic, green channel for RGB, the frame itself for mono), then detection and shape
-  measurement against the plane's own `Background` (threshold, flood-fill blobs, reject
-  non-stars, measure HFR/FWHM/eccentricity — HFR/FWHM as medians, eccentricity as a vector
-  median of the signed ellipticity components, since a per-star eccentricity is rectified
-  and noise can only inflate it).
+- **`stars.rs`** — `detection_plane(&Image) -> MonoPlane` (a CFA mosaic's own raw pixels at
+  full resolution — no debayering or green-channel extraction, green channel for RGB, the
+  frame itself for mono), then detection and shape measurement against the plane's own
+  `Background` (threshold, flood-fill blobs, reject non-stars, measure HFR/FWHM/eccentricity
+  — HFR/FWHM as medians, eccentricity as a vector median of the signed ellipticity
+  components, since a per-star eccentricity is rectified and noise can only inflate it).
+  `star_stats` is the one-call `detection_plane` + `detect_stars` convenience wrapper.
 - **`keywords.rs`** — header keyword policy: which names are structural/reserved, and the
   `copy_metadata`/`copy_missing_metadata`/`carry_over_metadata`/`add_history` helpers.
 - **`preview.rs`** — `render_preview`: an `Image` to an `image::DynamicImage`.
@@ -143,9 +144,12 @@ side, split by concern:
   staleness, and are cancellable between files.
 - **`doc.rs`** / **`view.rs`** — `doc::FileMeta` (headers, curated info, `libfitz::stats::
   ImageStats`, `Option<libfitz::stars::StarStats>` — reused as-is, not copied into a
-  parallel type) is built once per file on the worker and kept resident for the life of the
-  working set; `view.rs` maps it, plus the currently-rendered `image::RgbaImage` preview,
-  onto Slint properties. Both are free of threading; `doc.rs` is free of Slint types.
+  parallel type) is built on the worker and kept resident for the life of the working set,
+  keyed by path and debayer state (stats/stars are computed on what's displayed, so a CFA
+  source is measured once per state — a toggle flip with a cached preview recomputes only
+  the statistics off-thread, never re-rendering; see `meta_store`/`spawn_meta_recalc` in
+  the controller). File ▸ Reload drops and rebuilds all of it; `view.rs` maps it,
+  plus the currently-rendered `image::RgbaImage` preview, onto Slint properties. Both are free of threading; `doc.rs` is free of Slint types.
 - **`cache.rs`** — a small byte-budgeted LRU (used only for rendered previews, keyed on
   `(path, debayer, stretch)` — see `controller::PreviewKey` — so a toggle flip is a plain
   reload rather than a cache invalidation; `FileMeta` is separately kept in a plain

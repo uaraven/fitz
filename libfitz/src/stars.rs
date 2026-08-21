@@ -1,15 +1,14 @@
 //! Star detection and per-star shape measurement on a grayscale [`Image`]:
 //! threshold against the image's own background, flood-fill the blobs above
 //! it, reject anything that isn't a usable star, and measure what survives —
-//! HFR, FWHM and eccentricity, aggregated across the frame.
+//! HFR, FWHM and eccentricity over a circular aperture wide enough to keep
+//! the star's sub-threshold wings, aggregated across the frame.
 
 use rayon::prelude::*;
 
 use crate::data::{Image, ImageType, PixelBuffer};
-use crate::debayer::green_sites;
 use crate::stats::{Stats, full_scale};
-use anyhow::{Result, bail};
-use bayer::CFA;
+use anyhow::Result;
 use fitskit::Header;
 
 /// Multiplier converting a Gaussian's standard deviation into its full width
@@ -40,43 +39,75 @@ impl Background {
 }
 
 impl Image {
-    /// Builds the plane star detection should run on: the green super-pixel
-    /// plane of a CFA mosaic (half resolution), the green channel of an
-    /// already-debayered RGB image, or the frame itself if it's grayscale.
+    /// Builds the plane star detection should run on: the raw CFA mosaic
+    /// pixels treated directly as a mono frame (no debayering or channel
+    /// extraction — a Bayer pixel only samples one colour, so the flux
+    /// profile carries a checkerboard modulation, but that washes out of the
+    /// flux-weighted centroid/moments and keeps HFR/FWHM at full sensor
+    /// resolution, comparable to other tools that measure raw OSC frames the
+    /// same way), a weighted luminance of an already-debayered RGB image, or
+    /// the frame itself if it's grayscale.
     pub fn detection_plane(&self) -> Result<Image> {
         match self.image_type {
-            ImageType::RGB => Ok(self
-                .plane(1)
-                .expect("an RGB image always has three colour planes")),
-            ImageType::Grayscale => Ok(Image::new(
+            ImageType::RGB => Ok(self.luminance()),
+            ImageType::Grayscale | ImageType::CFA(_) => Ok(Image::new(
                 ImageType::Grayscale,
                 Header::new(),
                 self.width,
                 self.height,
                 self.pixels.clone(),
             )),
-            ImageType::CFA(cfa) => {
-                if self.pixels.len() != self.width * self.height {
-                    bail!("mosaic pixel count does not match its declared size");
-                }
-                let (width, height, values) =
-                    green_super_pixels(&samples(&self.pixels), self.width, self.height, cfa);
-                let pixels =
-                    PixelBuffer::F32(values.iter().map(|&v| (v / 65535.0) as f32).collect());
-                Ok(Image::new(
+        }
+    }
+
+    /// Converts the image to grayscale luminance image
+    /// CFA and Grayscale images are returned as-is
+    /// For RGB images the luminance is calculated from R,G,B values and returned as a single-channel image
+    fn luminance(&self) -> Image {
+        match self.image_type {
+            ImageType::CFA(_) | ImageType::Grayscale => Image::new(
+                self.image_type,
+                self.header.clone(),
+                self.width,
+                self.height,
+                self.pixels.clone(),
+            ),
+            ImageType::RGB => {
+                let pixels = match &self.pixels {
+                    PixelBuffer::U16(ipixels) => {
+                        let pxl = ipixels
+                            .par_chunks(3)
+                            .map(|rgb| {
+                                ((3 * rgb[0] as u32 + 10 * rgb[1] as u32 + rgb[2] as u32) / 14)
+                                    .clamp(0, 65535) as u16
+                            })
+                            .collect();
+                        PixelBuffer::U16(pxl)
+                    }
+                    PixelBuffer::F32(fpixels) => {
+                        let pxl = fpixels
+                            .par_chunks(3)
+                            .map(|rgb| 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
+                            .collect();
+                        PixelBuffer::F32(pxl)
+
+                    }
+                };
+                Image::new(
                     ImageType::Grayscale,
-                    Header::new(),
-                    width,
-                    height,
+                    self.header.clone(),
+                    self.width,
+                    self.height,
                     pixels,
-                ))
+                )
             }
         }
     }
 
-    /// Detects the stars on this image and aggregates their shapes into
-    /// per-frame HFR, FWHM and eccentricity.
-    pub fn detect_stars(&self, opts: &StarDetectOptions) -> StarStats {
+    /// Detects the stars on this image, returning each one's centroid and
+    /// measured shape. The basis for both [`Image::detect_stars`]'s
+    /// per-frame aggregate and a GUI overlay that needs each star's position.
+    pub fn detect_star_list(&self, opts: &StarDetectOptions) -> Vec<Star> {
         let stats = &self.stats().channels[0];
         let bg = Background::from_stats(stats);
         let saturation = full_scale(stats.estimated_bit_depth) as f64;
@@ -86,13 +117,30 @@ impl Image {
         let mut mask: Vec<bool> = values.par_iter().map(|&v| v > threshold).collect();
 
         let blobs = blobs_above_threshold(&mut mask, self.width, self.height);
-        let stars: Vec<Star> = blobs
+        blobs
             .par_iter()
             .filter(|blob| accept(blob, &values, self.width, self.height, saturation, opts))
-            .filter_map(|blob| measure(blob, &values, self.width, bg.median))
-            .collect();
+            .filter_map(|blob| measure(blob, &values, self.width, self.height, bg.median))
+            .collect()
+    }
 
-        aggregate(&stars)
+    /// Detects the stars on this image and aggregates their shapes into
+    /// per-frame HFR, FWHM and eccentricity.
+    pub fn detect_stars(&self, opts: &StarDetectOptions) -> StarStats {
+        aggregate(&self.detect_star_list(opts))
+    }
+
+    /// Detects stars on this image's detection plane and returns their
+    /// per-frame HFR, FWHM and eccentricity.
+    pub fn star_stats(&self, opts: &StarDetectOptions) -> Result<StarStats> {
+        Ok(self.detection_plane()?.detect_stars(opts))
+    }
+
+    /// Detects stars on this image's detection plane and returns each one's
+    /// centroid and measured shape, for an overlay that marks every detected
+    /// star rather than just reporting the frame's aggregate shape.
+    pub fn star_list(&self, opts: &StarDetectOptions) -> Result<Vec<Star>> {
+        Ok(self.detection_plane()?.detect_star_list(opts))
     }
 }
 
@@ -105,29 +153,6 @@ fn samples(pixels: &PixelBuffer) -> Vec<f64> {
             .map(|&x| (x as f64 * 65535.0).clamp(0.0, 65535.0).trunc())
             .collect(),
     }
-}
-
-/// Reduces a raw mosaic to its green super-pixel plane: one output pixel per
-/// 2x2 CFA cell, the mean of that cell's two green sites.
-pub(crate) fn green_super_pixels(
-    values: &[f64],
-    width: usize,
-    height: usize,
-    cfa: CFA,
-) -> (usize, usize, Vec<f64>) {
-    let (pw, ph) = (width / 2, height / 2);
-    let green_offsets = green_sites(cfa);
-    let (ax, ay) = green_offsets[0];
-    let (bx, by) = green_offsets[1];
-    let plane = (0..ph)
-        .into_par_iter()
-        .flat_map_iter(|cy| {
-            let site =
-                move |gx: usize, gy: usize, cx: usize| values[(2 * cy + gy) * width + 2 * cx + gx];
-            (0..pw).map(move |cx| (site(ax, ay, cx) + site(bx, by, cx)) / 2.0)
-        })
-        .collect();
-    (pw, ph, plane)
 }
 
 /// Tuning parameters for star detection.
@@ -144,8 +169,8 @@ pub struct StarDetectOptions {
 
 impl Default for StarDetectOptions {
     fn default() -> Self {
-        // Sized for full-resolution frames; a CFA mosaic's half-resolution
-        // plane still clears these bounds in practice.
+        // Sized for full-resolution frames; every detection plane (mono,
+        // raw CFA, or an RGB cube's green channel) is now full resolution.
         Self {
             sigma_k: 5.0,
             min_pixels: 5,
@@ -239,16 +264,36 @@ fn accept(
     })
 }
 
+/// How many HFR estimates the aperture is widened to. 3 × HFR is ≈ 3.8σ for
+/// a Gaussian and contains >99.9% of its flux, so the aperture measurement
+/// converges to the untruncated shape.
+const APERTURE_PER_HFR: f64 = 3.0;
+
 /// Measure one blob's centroid and shape from its background-subtracted flux.
 /// `None` for a blob with no positive flux, which has no centroid to speak of.
-fn measure(blob: &[usize], values: &[f64], width: usize, background: f64) -> Option<Star> {
-    let w = width;
-    let flux_at = |i: usize| values[i] - background;
-    let position = |i: usize| ((i % w) as f64, (i / w) as f64);
+///
+/// The thresholded blob only supplies the centroid and a seed size: measuring
+/// on it alone truncates the star at the detection threshold and reads HFR and
+/// FWHM up to ~2× low for a star barely above it. The shape is instead
+/// measured over a circular aperture around the centroid, widened iteratively
+/// to [`APERTURE_PER_HFR`] × the HFR it measures, with negative flux clamped
+/// to zero so background noise can't cancel the wings — the same aperture
+/// approach (and the same flux-weighted mean-radius HFR) as NINA.
+fn measure(
+    blob: &[usize],
+    values: &[f64],
+    width: usize,
+    height: usize,
+    background: f64,
+) -> Option<Star> {
+    let position = |i: usize| ((i % width) as f64, (i / width) as f64);
 
+    // Flux-weighted centroid of the thresholded pixels: they are the star's
+    // bright core, so the centroid is stable against background noise.
     let (mut sum_f, mut sum_fx, mut sum_fy) = (0.0, 0.0, 0.0);
     for &i in blob {
-        let (f, (x, y)) = (flux_at(i), position(i));
+        let (x, y) = position(i);
+        let f = values[i] - background;
         sum_f += f;
         sum_fx += f * x;
         sum_fy += f * y;
@@ -258,16 +303,69 @@ fn measure(blob: &[usize], values: &[f64], width: usize, background: f64) -> Opt
     }
     let (cx, cy) = (sum_fx / sum_f, sum_fy / sum_f);
 
-    // Second pass, now that the centroid is known: the flux-weighted mean
-    // radius (HFR) and the second moments around the centroid.
-    let (mut sum_fr, mut mxx, mut myy, mut mxy) = (0.0, 0.0, 0.0, 0.0);
+    // Seed the aperture from the blob itself: its own flux-weighted mean
+    // radius, and its extent as a floor so a tiny blob still gets a sane
+    // aperture.
+    let (mut sum_fr, mut extent) = (0.0, 0.0f64);
     for &i in blob {
-        let (f, (x, y)) = (flux_at(i), position(i));
-        let (dx, dy) = (x - cx, y - cy);
-        sum_fr += f * dx.hypot(dy);
-        mxx += f * dx * dx;
-        myy += f * dy * dy;
-        mxy += f * dx * dy;
+        let (x, y) = position(i);
+        let r = (x - cx).hypot(y - cy);
+        sum_fr += (values[i] - background) * r;
+        extent = extent.max(r);
+    }
+    let floor = extent + 2.0;
+    let mut radius = (APERTURE_PER_HFR * sum_fr / sum_f).max(floor);
+
+    // Widen until the radius stabilizes: each pass measures over the current
+    // circle, the next circle follows the HFR it found.
+    let mut star = None;
+    for _ in 0..3 {
+        let measured = measure_aperture(values, width, height, cx, cy, radius, background)?;
+        let next = (APERTURE_PER_HFR * measured.hfr).max(floor);
+        let converged = (next - radius).abs() <= 0.05 * radius;
+        star = Some(measured);
+        radius = next;
+        if converged {
+            break;
+        }
+    }
+    star
+}
+
+/// Measure HFR and second moments over every frame pixel within `radius` of
+/// the centroid, with negative background-subtracted flux clamped to zero.
+fn measure_aperture(
+    values: &[f64],
+    width: usize,
+    height: usize,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    background: f64,
+) -> Option<Star> {
+    let x_lo = ((cx - radius).floor().max(0.0)) as usize;
+    let y_lo = ((cy - radius).floor().max(0.0)) as usize;
+    let x_hi = ((cx + radius).ceil() as usize + 1).min(width);
+    let y_hi = ((cy + radius).ceil() as usize + 1).min(height);
+
+    let (mut sum_f, mut sum_fr, mut mxx, mut myy, mut mxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for y in y_lo..y_hi {
+        for x in x_lo..x_hi {
+            let (dx, dy) = (x as f64 - cx, y as f64 - cy);
+            let r = dx.hypot(dy);
+            if r > radius {
+                continue;
+            }
+            let f = (values[y * width + x] - background).max(0.0);
+            sum_f += f;
+            sum_fr += f * r;
+            mxx += f * dx * dx;
+            myy += f * dy * dy;
+            mxy += f * dx * dy;
+        }
+    }
+    if sum_f <= 0.0 {
+        return None;
     }
     let (mxx, myy, mxy) = (mxx / sum_f, myy / sum_f, mxy / sum_f);
     let trace = mxx + myy;
@@ -295,8 +393,11 @@ fn eccentricity_from_ellipticity(e: f64) -> f64 {
 
 /// Reduces per-star measurements to per-frame values: medians for HFR and
 /// FWHM, and a noise-resistant vector average for eccentricity so a handful
-/// of faint, noisy stars can't fabricate elongation that isn't there.
-fn aggregate(stars: &[Star]) -> StarStats {
+/// of faint, noisy stars can't fabricate elongation that isn't there. Public
+/// so a caller that already has a [`Star`] list (e.g. from
+/// [`Image::detect_star_list`], to draw an overlay) can derive the same
+/// [`StarStats`] without detecting twice.
+pub fn aggregate(stars: &[Star]) -> StarStats {
     let median_of = |f: fn(&Star) -> f64| {
         (!stars.is_empty()).then(|| median_in_place(&mut stars.iter().map(f).collect::<Vec<_>>()))
     };
@@ -311,7 +412,7 @@ fn aggregate(stars: &[Star]) -> StarStats {
 }
 
 /// The median of `values`, computed in place. Panics on an empty slice.
-fn median_in_place(values: &mut [f64]) -> f64 {
+pub fn median_in_place(values: &mut [f64]) -> f64 {
     let mid = values.len() / 2;
     values.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
     if values.len() % 2 == 1 {
@@ -371,7 +472,7 @@ pub(crate) mod tests {
         blobs_above_threshold(&mut mask, plane.width, plane.height)
             .iter()
             .filter(|b| accept(b, &values, plane.width, plane.height, saturation, &opts))
-            .filter_map(|b| measure(b, &values, plane.width, bg.median))
+            .filter_map(|b| measure(b, &values, plane.width, plane.height, bg.median))
             .collect()
     }
 
@@ -416,18 +517,56 @@ pub(crate) mod tests {
         assert_eq!(stats.count, 1);
 
         // A 2D Gaussian's FWHM is 2.3548σ and its flux-weighted mean radius is
-        // sqrt(π/2)σ ≈ 1.2533σ.
+        // sqrt(π/2)σ ≈ 1.2533σ. The aperture keeps the sub-threshold wings, so
+        // the tolerance is tight — the old blob-only measurement truncated the
+        // star at the detection threshold and read ~15% low even on a star
+        // this bright.
         let (fwhm, hfr) = (stats.fwhm.unwrap(), stats.hfr.unwrap());
         let (true_fwhm, true_hfr) = (FWHM_PER_SIGMA * SIGMA, 1.2533 * SIGMA);
-        assert!((fwhm - true_fwhm).abs() < 0.15 * true_fwhm, "fwhm {fwhm}");
-        assert!((hfr - true_hfr).abs() < 0.15 * true_hfr, "hfr {hfr}");
+        assert!((fwhm - true_fwhm).abs() < 0.05 * true_fwhm, "fwhm {fwhm}");
+        assert!((hfr - true_hfr).abs() < 0.05 * true_hfr, "hfr {hfr}");
+    }
 
-        // Both are biased *low*, and the direction is a property of the method,
-        // not slop: thresholding truncates the wings, and the flux this drops
-        // is all at large radius. A bound on |error| alone would hide the bias
-        // flipping sign.
-        assert!(fwhm < true_fwhm, "fwhm {fwhm} should be biased low");
-        assert!(hfr < true_hfr, "hfr {hfr} should be biased low");
+    /// A faint star must measure the same HFR as a bright one of the same σ.
+    ///
+    /// This is the regression test for HFR/FWHM reading 2–2.5× smaller than
+    /// NINA: measuring only the pixels above the detection threshold truncates
+    /// a star barely above it at ~1σ, so a frame whose median star is faint
+    /// reported roughly half the true value. The aperture measurement must be
+    /// brightness-invariant.
+    #[test]
+    fn faint_and_bright_stars_measure_the_same_hfr() {
+        const SIGMA: f64 = 2.0;
+        // Background 1000 with no noise floor still yields a small MAD from
+        // the stars' own wings; the faint star's peak is a few hundred ADU —
+        // far below the bright star's 5000, near the detection limit.
+        let plane = star_field_plane(
+            120,
+            60,
+            1000.0,
+            &[
+                (30.0, 30.0, SIGMA, SIGMA, 5000.0),
+                (90.0, 30.0, SIGMA, SIGMA, 300.0),
+            ],
+        );
+        let stars = stars_of(&plane);
+        assert_eq!(stars.len(), 2, "both stars must be detected");
+
+        let true_hfr = 1.2533 * SIGMA;
+        for s in &stars {
+            assert!(
+                (s.hfr - true_hfr).abs() < 0.15 * true_hfr,
+                "hfr {} at ({}, {}) is not within 15% of {true_hfr}",
+                s.hfr,
+                s.x,
+                s.y
+            );
+        }
+        let ratio = stars[0].hfr / stars[1].hfr;
+        assert!(
+            (0.87..1.15).contains(&ratio),
+            "bright/faint HFR ratio {ratio} should be ~1"
+        );
     }
 
     #[test]
@@ -559,9 +698,12 @@ pub(crate) mod tests {
     fn detection_plane_shape_follows_the_image_type() {
         let tmp = TempDir::new().unwrap();
 
-        // A CFA mosaic halves in both directions: one super-pixel per 2x2 cell.
+        // A CFA mosaic detects on its own raw pixels, at full resolution —
+        // no debayering or channel extraction.
+        let raw = load_fits(&test_data("uncompressed.fit")).unwrap();
         let mosaic = plane_of(&test_data("uncompressed.fit"));
-        assert_eq!((mosaic.width, mosaic.height), (1504, 1504));
+        assert_eq!((mosaic.width, mosaic.height), (raw.width, raw.height));
+        assert_eq!(samples(&mosaic.pixels), samples(&raw.pixels));
 
         // A mono frame detects on itself, at full resolution.
         let mono_path = tmp.path().join("mono.fits");
@@ -569,15 +711,23 @@ pub(crate) mod tests {
         let mono = plane_of(&mono_path);
         assert_eq!((mono.width, mono.height), (8, 6));
 
-        // An RGB cube detects on its green channel, also at full resolution.
+        // An RGB cube detects on a weighted luminance of its channels, also
+        // at full resolution.
         let cube_path = tmp.path().join("rgb.fits");
         write_rgb_cube_fits(&cube_path, 8, 6);
         let cube = plane_of(&cube_path);
         assert_eq!((cube.width, cube.height), (8, 6));
-        // `write_rgb_cube_fits` fills plane `c` with `c*n + i`, so the green
-        // plane is the middle run — the check that it took the right channel.
+        // `write_rgb_cube_fits` fills plane `c` with `c*n + i`, so the
+        // per-pixel R/G/B triple is `(i, n+i, 2n+i)` — the check that
+        // `luminance()`'s (3R + 10G + B) / 14 weighting was applied, not a
+        // raw channel extraction.
         let n = 8 * 6;
-        let expected: Vec<f64> = (0..n).map(|i| (n + i) as f64).collect();
+        let expected: Vec<f64> = (0..n)
+            .map(|i| {
+                let (r, g, b) = (i as u32, (n + i) as u32, (2 * n + i) as u32);
+                ((3 * r + 10 * g + b) / 14) as f64
+            })
+            .collect();
         assert_eq!(samples(&cube.pixels), expected);
     }
 
@@ -596,28 +746,55 @@ pub(crate) mod tests {
         let plane = plane_of(&test_data("uncompressed.fit"));
         let stats = detect(&plane);
 
-        // Pinned as a regression value: it is also the evidence that the
-        // full-resolution area floor is not eating stars on a half-resolution
-        // green plane.
+        // Pinned as a regression value.
         assert_eq!(stats.count, REAL_MOSAIC_STAR_COUNT);
         let hfr = stats.hfr.unwrap();
         assert!((0.5..10.0).contains(&hfr), "implausible HFR {hfr}");
-        // A tracked sub is not made of streaks. Pinned rather than bounded:
-        // this frame's elongation is *coherent* — every star's major axis
-        // points the same way — so the vector aggregation barely moves it,
-        // which is the evidence it suppresses only noise and not real shape.
+        // A tracked sub is not made of streaks. Pinned rather than bounded.
         let ecc = stats.eccentricity.unwrap();
-        assert!((ecc - 0.278).abs() < 0.02, "eccentricity {ecc}");
+        assert!((ecc - 0.080).abs() < 0.02, "eccentricity {ecc}");
     }
 
-    /// Stars detected on `uncompressed.fit`'s green super-pixel plane with the
-    /// default options. Shared with `info`'s test of the same frame reached
-    /// through `header_info_with`.
-    ///
-    /// The evidence that the full-resolution area floor is safe on a half-
-    /// resolution plane: of the 6513 blobs over the threshold, 6116 are smaller
-    /// than 5 px and half are a *single* pixel — the floor is rejecting a noise
-    /// population, not stars. Dropping it to 1 admits all of them and drives the
-    /// median HFR to 0, which is what a one-pixel "star" measures.
-    pub(crate) const REAL_MOSAIC_STAR_COUNT: usize = 395;
+    /// `star_stats` is just the `detection_plane` + `detect_stars` pipeline
+    /// in one call — check it agrees with calling the two steps directly, on
+    /// both a raw CFA mosaic and a synthetic mono field.
+    #[test]
+    fn star_stats_matches_the_detection_plane_pipeline() {
+        let assert_matches_plane = |image: &Image| {
+            let via_plane = image
+                .detection_plane()
+                .unwrap()
+                .detect_stars(&StarDetectOptions::default());
+            let via_star_stats = image.star_stats(&StarDetectOptions::default()).unwrap();
+            assert_eq!(via_star_stats.count, via_plane.count);
+            assert_eq!(via_star_stats.hfr, via_plane.hfr);
+            assert_eq!(via_star_stats.fwhm, via_plane.fwhm);
+            assert_eq!(via_star_stats.eccentricity, via_plane.eccentricity);
+        };
+
+        assert_matches_plane(&load_fits(&test_data("uncompressed.fit")).unwrap());
+
+        let truth: Vec<(f64, f64, f64, f64, f64)> = (0..3)
+            .flat_map(|r| {
+                (0..3).map(move |c| {
+                    (
+                        20.0 + 30.0 * c as f64,
+                        20.0 + 30.0 * r as f64,
+                        2.0,
+                        2.0,
+                        5000.0,
+                    )
+                })
+            })
+            .collect();
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("mono_field.fits");
+        write_star_field_fits(&path, 100, 100, 1000.0, &truth);
+        assert_matches_plane(&load_fits(&path).unwrap());
+    }
+
+    /// Stars detected directly on `uncompressed.fit`'s raw CFA pixels (no
+    /// green-plane extraction) with the default options. Shared with `info`'s
+    /// test of the same frame reached through `header_info_with`.
+    pub(crate) const REAL_MOSAIC_STAR_COUNT: usize = 352;
 }
