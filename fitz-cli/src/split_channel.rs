@@ -57,7 +57,7 @@ pub fn split_channel_file(input: &Path, opts: &SplitChannelOptions) -> Result<()
     }
 
     for (output, image, channel) in outputs {
-        print_progress(opts.verbose, input, &output);
+        print_progress(input, &output);
         print_step(opts.verbose, "writing");
         write_channel_fits(&output, image, opts.format, channel)?;
     }

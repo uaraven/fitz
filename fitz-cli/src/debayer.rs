@@ -39,7 +39,7 @@ pub(crate) fn parse_output_format(s: &str) -> Result<OutputFormat, String> {
 
 pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Result<()> {
     ensure_can_write(output, opts.yes)?;
-    print_progress(opts.verbose, input, output);
+    print_progress(input, output);
 
     print_step(opts.verbose, "reading");
     let image = load_fits(input)?;
