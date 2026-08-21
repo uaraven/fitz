@@ -73,6 +73,12 @@ pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> 
         let bads = estimate_frame_for_star_count(files, params);
         bad_frames.extend(bads);
     }
+    if params.fwhm {
+        bad_frames.extend(estimate_frame_for_focus(files, params));
+    }
+    if params.eccentricity {
+        bad_frames.extend(estimate_frame_for_eccentricity(files, params));
+    }
     // ensure the list is returned in the original order
     files
         .iter()
@@ -83,7 +89,7 @@ pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> 
 }
 
 fn estimate_frame_for_star_count(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
-    let meta = calculate_meta_stats(metrics, |s| s.stars.count as f64);
+    let meta = calculate_meta_stats(metrics, |s| Some(s.stars.count as f64));
     if meta.mad == 0.0 {
         return vec![]
     }
@@ -99,11 +105,11 @@ fn estimate_frame_for_star_count(metrics: &[FileMetrics], param: &BadFrameParams
 }
 
 fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
-    let meta = calculate_meta_stats(metrics, stats_extractor(|st| st.median as f64));
+    let meta = calculate_meta_stats(metrics, stats_extractor(|st| Some(st.median as f64)));
     if meta.mad == 0.0 {
         return vec![]
     }
-    let data: Vec<f64> = metrics.iter().map(stats_extractor(|st| st.median as f64)).collect();
+    let data: Vec<f64> = metrics.iter().flat_map(stats_extractor(|st| Some(st.median as f64))).collect();
     data.iter().enumerate().flat_map(|(idx,d)| {
         let z = (*d as f32 - meta.median) / meta.mad;
         if z >= param.sigma {
@@ -114,39 +120,64 @@ fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], param: &BadFrameParam
     }).collect()
 }
 
+
+fn estimate_frame_for_focus(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+    let meta = calculate_meta_stats(metrics, |s| s.stars.fwhm);
+    if meta.mad == 0.0 {
+        return vec![]
+    }
+    metrics.iter().flat_map(|m| {
+        let stars = &m.stars;
+        let z = (stars.fwhm.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
+        if z >= param.sigma {
+            Some(m.path.clone())
+        } else {
+            None
+        }
+    }).collect()
+}
+
+
+fn estimate_frame_for_eccentricity(metrics: &[FileMetrics], param: &BadFrameParams) -> Vec<PathBuf> {
+    let meta = calculate_meta_stats(metrics, |s| s.stars.eccentricity);
+    if meta.mad == 0.0 {
+        return vec![]
+    }
+    metrics.iter().flat_map(|m| {
+        let stars = &m.stars;
+        let z = (stars.eccentricity.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
+        if z >= param.sigma {
+            Some(m.path.clone())
+        } else {
+            None
+        }
+    }).collect()
+}
+
 struct MetaStats {
-    mean: f32,
-    sigma: f32,
     median: f32,
     mad: f32
 }
 
-fn stats_extractor(extractor: fn(Stats) -> f64) -> impl Fn(&FileMetrics) -> f64 + Sync {
+fn stats_extractor(extractor: fn(Stats) -> Option<f64>) -> impl Fn(&FileMetrics) -> Option<f64> + Sync {
     move |m: &FileMetrics| {
         if m.stats.len() == 1 { extractor(m.stats[0]) } else { extractor(m.stats[1]) }
     }
 }
-fn calculate_meta_stats(files: &[FileMetrics], extractor: impl Fn(&FileMetrics) -> f64 + Sync) -> MetaStats {
-    if files.is_empty() {
+fn calculate_meta_stats(files: &[FileMetrics], extractor: impl Fn(&FileMetrics) -> Option<f64> + Sync) -> MetaStats {
+    let mut data: Vec<f64> = files.par_iter().flat_map(|m| extractor(m)).collect();
+    if data.is_empty() {
         return MetaStats{
-            mean: 0.0,
-            sigma: 0.0,
             median: 0.0,
             mad: 0.0,
         }
     }
-    let n = files.len() as f64;
-    let mut data: Vec<f64> = files.par_iter().map(|m| extractor(m)).collect();
     let median = median_in_place(&mut data);
     let mut mad_data: Vec<f64> = data.iter().map(|d| (d - median).abs()).collect();
     mad_data.sort_by(|a, b| a.total_cmp(b));
 
-    let mean: f64 = data.iter().sum::<f64>()/n;
-    let std_dev: f64 = (data.iter().map(|m| (m - mean).powf(2.0)).sum::<f64>() / n).sqrt();
     let mad = median_in_place(&mut mad_data) * 1.4826;
     MetaStats{
-        mean: mean as f32,
-        sigma: std_dev as f32,
         median: median as f32,
         mad: mad as f32,
     }
@@ -277,9 +308,16 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_stub_flags_nothing() {
-        // Locks the scaffold behavior until the detection algorithm lands: no
-        // parameter combination flags a frame.
+    fn evaluate_on_empty_input_returns_empty() {
+        assert!(evaluate(&[], &all_factors(3.0)).is_empty());
+    }
+
+    #[test]
+    fn frames_missing_every_star_metric_do_not_panic_and_are_not_flagged() {
+        // Regression test: when every frame lacks fwhm/eccentricity, that
+        // metric's baseline population is empty. calculate_meta_stats must
+        // fall back to a zero MAD (never trips) instead of calling
+        // median_in_place on an empty slice, which panics.
         let no_stars = StarStats {
             count: 0,
             hfr: None,
@@ -291,7 +329,36 @@ mod tests {
             frame("b.fits", 30000.0, no_stars),
         ];
         assert!(evaluate(&files, &all_factors(1.0)).is_empty());
-        assert!(evaluate(&[], &all_factors(3.0)).is_empty());
+    }
+
+    #[test]
+    fn calculate_meta_stats_excludes_missing_metric_frames_from_the_baseline() {
+        // Regression test: a frame with no detected stars (eccentricity
+        // None) must not be folded into the baseline as a substituted 0.0 —
+        // that pulls the median/MAD toward zero and can mask a genuinely bad
+        // frame's z-score (this previously caused bad_eccentricity.fits to
+        // slip under threshold in the fixture test below).
+        let files = vec![
+            frame(
+                "a.fits",
+                0.0,
+                StarStats { count: 1, hfr: None, fwhm: None, eccentricity: Some(1.0) },
+            ),
+            frame(
+                "b.fits",
+                0.0,
+                StarStats { count: 1, hfr: None, fwhm: None, eccentricity: Some(3.0) },
+            ),
+            frame(
+                "c.fits",
+                0.0,
+                StarStats { count: 0, hfr: None, fwhm: None, eccentricity: None },
+            ),
+        ];
+        let meta = calculate_meta_stats(&files, |m| m.stars.eccentricity);
+        // Median of {1.0, 3.0} is 2.0; including the None frame as 0.0 would
+        // pull it down to 1.0.
+        assert_eq!(meta.median, 2.0);
     }
 
     /// Measure the eleven `test-data/bad-image/` fixtures — six good frames
@@ -326,11 +393,9 @@ mod tests {
     }
 
     // The acceptance tests for the detection algorithm, against real frames
-    // whose file names describe their defect. Un-ignore when `evaluate` is
-    // implemented.
+    // whose file names describe their defect.
 
     #[test]
-    #[ignore = "detection not implemented yet"]
     fn all_factors_flag_exactly_the_bad_fixtures() {
         let files = measure_bad_image_fixtures();
         let flagged = flagged_names(&evaluate(&files, &all_factors(2.0)));
@@ -355,7 +420,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "detection not implemented yet"]
     fn the_floor_factor_alone_catches_the_starless_frames() {
         let files = measure_bad_image_fixtures();
         let params = BadFrameParams {
@@ -383,7 +447,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "detection not implemented yet"]
     fn the_eccentricity_factor_alone_catches_the_trailed_frames() {
         let files = measure_bad_image_fixtures();
         let params = BadFrameParams {
