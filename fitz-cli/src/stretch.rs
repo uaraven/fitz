@@ -12,7 +12,7 @@ use libfitz::export::{ExportFormat, FitsOptions, TiffOptions};
 
 pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Result<()> {
     ensure_can_write(output, opts.yes)?;
-    print_progress(opts.verbose, input, output);
+    print_progress(input, output);
 
     print_step(opts.verbose, "reading");
     let image = libfitz::fits_file::load_fits(input)?;
