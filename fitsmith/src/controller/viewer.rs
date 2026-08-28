@@ -340,7 +340,12 @@ fn apply_debayer(image: Image, debayer: bool, report: &dyn Fn(&'static str)) -> 
 
 /// The pipeline's stretch/invert stage: auto-stretch when the toggle is on,
 /// then invert regardless of the stretch state.
-fn apply_stretch(image: Image, stretch: bool, invert: bool, report: &dyn Fn(&'static str)) -> Image {
+fn apply_stretch(
+    image: Image,
+    stretch: bool,
+    invert: bool,
+    report: &dyn Fn(&'static str),
+) -> Image {
     let image = if stretch {
         report("Stretching");
         image.stretch(false, libfitz::stretch::DEFAULT_BRIGHTNESS)
