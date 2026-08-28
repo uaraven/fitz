@@ -1,5 +1,5 @@
 import { Button, ComboBox, LineEdit, CheckBox, SpinBox } from "std-widgets.slint";
-import { DialogCard } from "dialog.slint";
+import { DialogCard, DialogPalette } from "dialog.slint";
 
 // The View ▸ Export… modal. Picks a destination folder and an output format
 // (FITS / TIFF / JPEG / PNG), each with its own options block. Purely
@@ -14,7 +14,7 @@ component LabeledRow inherits HorizontalLayout {
     spacing: 8px;
     Text {
         text: root.label;
-        color: #c8c8c8;
+        color: DialogPalette.body;
         vertical-alignment: center;
         width: 96px;
     }
@@ -49,13 +49,13 @@ export component ExportDialog inherits DialogCard {
             text: "Export";
             font-size: 20px;
             font-weight: 700;
-            color: white;
+            color: DialogPalette.title;
         }
         Text {
             text: root.file-count == 1
                 ? "1 file will be exported."
                 : root.file-count + " files will be exported.";
-            color: #c8c8c8;
+            color: DialogPalette.body;
         }
 
         // Destination folder (required).

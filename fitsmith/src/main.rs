@@ -153,6 +153,12 @@ fn main() -> Result<()> {
     forward!(on_close_aberration, |app| controller::close_aberration(
         &app
     ));
+    forward!(on_open_delete_files_dialog, |app| {
+        controller::open_delete_files_dialog(&app)
+    });
+    forward!(on_run_delete_files, |app| controller::run_delete_files(
+        &app
+    ));
 
     app.on_request_exit(|| {
         let _ = slint::quit_event_loop();

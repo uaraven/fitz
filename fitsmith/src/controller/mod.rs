@@ -17,11 +17,13 @@
 //! - [`viewer`] — selecting, navigating, loading/rendering off-thread, and blink;
 //! - [`convert`] — the compress / decompress batch operations;
 //! - [`export`] — the export dialog and its batch;
-//! - [`analytics`] — the analytics batch and its time-series chart.
+//! - [`analytics`] — the analytics batch and its time-series chart;
+//! - [`delete_files`] — Tools ▸ Delete Files…: delete or rename the checked files.
 
 mod analytics;
 mod bad_frames;
 mod convert;
+mod delete_files;
 mod export;
 mod inspect;
 pub(crate) mod metrics;
@@ -31,6 +33,7 @@ mod viewer;
 pub use analytics::*;
 pub use bad_frames::*;
 pub use convert::*;
+pub use delete_files::*;
 pub use export::*;
 pub use inspect::*;
 pub use viewer::*;
@@ -488,26 +491,24 @@ fn next_selection(
     }
 }
 
-/// Remove the checked rows from the working set — or, when nothing is checked,
-/// the highlighted row. Dropped rows shift the indices below them, so this
-/// evicts each removed file's cached preview, rebuilds the model, and re-homes
-/// the highlight to a surviving row (or clears the view when the set empties).
-pub fn remove_selected(app: &AppWindow) {
-    let reselect = STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        let checked = (0..st.files_model.row_count())
-            .filter(|&i| st.files_model.row_data(i).is_some_and(|r| r.checked));
-        let targets = removal_targets(checked, st.selected);
-        if targets.is_empty() {
-            return None;
-        }
+/// Drop the given row indices from the working set (order and duplicates
+/// don't matter — sorted and de-duplicated first, then removed
+/// high-index-first so earlier indices stay valid), evicting each removed
+/// file's cached preview. Any in-flight load is orphaned by the generation
+/// bump. Returns the row to reselect afterward, or `None` if `targets` was
+/// empty (nothing removed).
+fn drop_rows(mut targets: Vec<usize>) -> Option<Option<usize>> {
+    if targets.is_empty() {
+        return None;
+    }
+    targets.sort_unstable();
+    targets.dedup();
 
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
         let old_index = st.selected;
         let selected_path = st.selected.and_then(|i| st.paths.get(i).cloned());
 
-        // Drop rows high-index-first so earlier indices stay valid, evicting
-        // each removed file's cached preview. Any in-flight load is orphaned by
-        // the generation bump below.
         st.blink_timer.stop();
         for &i in targets.iter().rev() {
             let path = st.paths.remove(i);
@@ -524,11 +525,13 @@ pub fn remove_selected(app: &AppWindow) {
         let len = st.paths.len();
         let survived = selected_path.and_then(|p| st.paths.iter().position(|q| q == &p));
         Some(next_selection(len, survived, old_index))
-    });
+    })
+}
 
-    let Some(target) = reselect else {
-        return; // nothing was checked or highlighted
-    };
+/// The shared epilogue after [`drop_rows`] actually removed something:
+/// refresh the memory/exposure/checked readouts and re-home the highlight to
+/// the row it resolved on (or show the empty state when the set emptied).
+fn finish_removal(app: &AppWindow, target: Option<usize>) {
     update_memory(app);
     update_exposure(app);
     update_checked_count(app);
@@ -537,6 +540,21 @@ pub fn remove_selected(app: &AppWindow) {
         Some(index) => select_file(app, index as i32),
         None => show_empty(app),
     }
+}
+
+/// Remove the checked rows from the working set — or, when nothing is checked,
+/// the highlighted row.
+pub fn remove_selected(app: &AppWindow) {
+    let targets = STATE.with(|s| {
+        let st = s.borrow();
+        let checked = (0..st.files_model.row_count())
+            .filter(|&i| st.files_model.row_data(i).is_some_and(|r| r.checked));
+        removal_targets(checked, st.selected)
+    });
+    let Some(target) = drop_rows(targets) else {
+        return; // nothing was checked or highlighted
+    };
+    finish_removal(app, target);
 }
 
 // --- checkbox selection --------------------------------------------------
