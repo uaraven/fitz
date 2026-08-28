@@ -1,4 +1,5 @@
 use crate::convert::{float_to_u16, u16_to_float};
+use anyhow::bail;
 use bayer::CFA;
 use fitskit::Header;
 use rayon::prelude::*;
@@ -298,6 +299,25 @@ impl Image {
             }
         }
         result
+    }
+
+    /// Creates an image with the same type, header and size as current, but
+    /// with a new pixel payload.
+    /// New pixel buffer must have the same payload type and dimensions as the current one
+    pub(crate) fn with_pixels(&self, pixels: PixelBuffer) -> anyhow::Result<Self> {
+        if std::mem::discriminant(&self.pixels) != std::mem::discriminant(&pixels) {
+            bail!("New pixel buffer format doesn't match the current one")
+        }
+        if pixels.len() != self.pixels.len() {
+            bail!("New pixel buffer size doesn't match the current one")
+        }
+        Ok(Image {
+            image_type: self.image_type,
+            header: self.header.clone(),
+            width: self.width,
+            height: self.height,
+            pixels,
+        })
     }
 }
 

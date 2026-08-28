@@ -115,8 +115,16 @@ pub fn run_export(app: &AppWindow) {
     }
     // The current view settings (debayer/stretch) are exported, so the file
     // matches what the viewer shows.
-    let (debayer, stretch) = view_toggles(app);
-    spawn_export(app.as_weak(), targets, dir, format, debayer, stretch);
+    let (debayer, stretch, invert) = view_toggles(app);
+    spawn_export(
+        app.as_weak(),
+        targets,
+        dir,
+        format,
+        debayer,
+        stretch,
+        invert,
+    );
 }
 
 /// Cancel the running export batch from its progress overlay: take the overlay
@@ -137,9 +145,10 @@ fn export_one(
     format: ExportFormat,
     debayer: bool,
     stretch: bool,
+    invert: bool,
 ) -> anyhow::Result<()> {
     let image = libfitz::fits_file::load_fits(input)?;
-    let image = apply_pipeline(image, debayer, stretch, &|_| {})?;
+    let image = apply_pipeline(image, debayer, stretch, invert, &|_| {})?;
     image.export(output, format)
 }
 
@@ -154,6 +163,7 @@ fn spawn_export(
     format: ExportFormat,
     debayer: bool,
     stretch: bool,
+    invert: bool,
 ) {
     let ext = export_extension(&format);
     let (generation, cancel) = begin_file_batch();
@@ -186,7 +196,7 @@ fn spawn_export(
             });
 
             let output = export_output_path(input, &dir, ext);
-            match export_one(input, &output, format, debayer, stretch) {
+            match export_one(input, &output, format, debayer, stretch, invert) {
                 Ok(()) => ok += 1,
                 Err(e) => {
                     failed += 1;

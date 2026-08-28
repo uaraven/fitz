@@ -62,6 +62,7 @@ pub(crate) struct PreviewKey {
     pub path: PathBuf,
     pub debayer: bool,
     pub stretch: bool,
+    pub invert: bool,
 }
 
 /// All UI-thread application state. Lives in a thread-local because Slint is
@@ -240,11 +241,13 @@ fn meta_store(meta: &mut HashMap<(PathBuf, bool), Rc<FileMeta>>, path: &Path, m:
 }
 
 /// Snapshot the debayer/stretch toggle state from the UI as `(debayer,
-/// stretch)`. Shared by the [`viewer`] load path, the [`inspect`] dialog and
-/// the [`export`] batch, so an exported file matches what the viewer is
-/// showing.
-fn view_toggles(app: &AppWindow) -> (bool, bool) {
-    (app.get_debayer_enabled(), app.get_stretch_enabled())
+/// stretch, invert)`
+fn view_toggles(app: &AppWindow) -> (bool, bool, bool) {
+    (
+        app.get_debayer_enabled(),
+        app.get_stretch_enabled(),
+        app.get_invert_enabled(),
+    )
 }
 
 /// Build the list row for a path: base name plus a "compressed" badge for `.fz`.
@@ -437,18 +440,21 @@ pub fn clear_files(app: &AppWindow) {
 }
 
 /// Drop a path's resident metadata (both debayer states) and every cached
-/// rendered preview for it (all four debayer/stretch combinations) — e.g.
-/// when it leaves the working set, or is rewritten in place by
+/// rendered preview for it (all eight debayer/stretch/invert combinations) —
+/// e.g. when it leaves the working set, or is rewritten in place by
 /// compress/decompress.
 fn forget_path(st: &mut AppState, path: &Path) {
     for debayer in [false, true] {
         st.meta.remove(&(path.to_path_buf(), debayer));
         for stretch in [false, true] {
-            st.previews.remove(&PreviewKey {
-                path: path.to_path_buf(),
-                debayer,
-                stretch,
-            });
+            for invert in [false, true] {
+                st.previews.remove(&PreviewKey {
+                    path: path.to_path_buf(),
+                    debayer,
+                    stretch,
+                    invert,
+                });
+            }
         }
     }
 }

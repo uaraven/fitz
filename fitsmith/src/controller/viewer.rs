@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use libfitz::data::Image;
+use rayon::prelude::*;
 use slint::{ComponentHandle, TimerMode, Weak};
 
 use crate::doc::FileMeta;
@@ -32,7 +33,7 @@ const BLINK_DWELL: Duration = Duration::from_millis(400);
 /// Any pending blink advance is cancelled here; the newly shown frame schedules
 /// the next one, so blink continues from whatever the user just selected.
 pub fn select_file(app: &AppWindow, index: i32) {
-    let (debayer, stretch) = view_toggles(app);
+    let (debayer, stretch, invert) = view_toggles(app);
     let action = STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.blink_timer.stop();
@@ -45,6 +46,7 @@ pub fn select_file(app: &AppWindow, index: i32) {
             path: path.clone(),
             debayer,
             stretch,
+            invert,
         };
         let cached_preview = st.previews.get(&key).cloned();
         let cached_meta = super::meta_lookup(&st.meta, &path, debayer);
@@ -55,9 +57,31 @@ pub fn select_file(app: &AppWindow, index: i32) {
             .is_none()
             .then(|| super::meta_lookup(&st.meta, &path, !debayer))
             .flatten();
-        Some((index, path, cached_preview, cached_meta, other_meta, req))
+        // The preview rendered for the same debayer/stretch state but the
+        // opposite invert flag: an invert-only toggle is then a cheap byte
+        // complement of an already-rendered buffer, not a reload.
+        let invert_source = cached_preview.is_none().then(|| {
+            st.previews
+                .get(&PreviewKey {
+                    path: path.clone(),
+                    debayer,
+                    stretch,
+                    invert: !invert,
+                })
+                .cloned()
+        });
+        Some((
+            index,
+            path,
+            cached_preview,
+            cached_meta,
+            other_meta,
+            invert_source.flatten(),
+            req,
+        ))
     });
-    let Some((index, path, cached_preview, cached_meta, other_meta, req)) = action else {
+    let Some((index, path, cached_preview, cached_meta, other_meta, invert_source, req)) = action
+    else {
         return;
     };
 
@@ -73,9 +97,28 @@ pub fn select_file(app: &AppWindow, index: i32) {
         if let Some(placeholder) = &other_meta {
             display_doc(app, &path, placeholder, preview);
             app.set_stage_text("Measuring".into());
-            spawn_meta_recalc(app.as_weak(), path, debayer, stretch, req);
+            spawn_meta_recalc(app.as_weak(), path, debayer, stretch, invert, req);
             return;
         }
+    }
+    if let (Some(source), Some(meta)) = (&invert_source, &cached_meta) {
+        let inverted = Rc::new(invert_rgb8(source));
+        let cost = inverted.as_raw().len();
+        STATE.with(|s| {
+            s.borrow_mut().previews.put(
+                PreviewKey {
+                    path: path.clone(),
+                    debayer,
+                    stretch,
+                    invert,
+                },
+                inverted.clone(),
+                cost,
+            )
+        });
+        update_memory(app);
+        display_doc(app, &path, meta, &inverted);
+        return;
     }
     app.set_busy(true);
     // Left half: the high-level activity; the worker fills the right half with
@@ -91,9 +134,21 @@ pub fn select_file(app: &AppWindow, index: i32) {
         path,
         debayer,
         stretch,
+        invert,
         cached_meta.is_none(),
         req,
     );
+}
+
+/// Complement every channel byte (`255 - b`) of an already-rendered preview.
+/// This is exactly what re-rendering with the invert toggle flipped would
+/// produce — the pixel-level invert (`Image::invert`) is a full-range
+/// complement too — but without re-reading the file or redoing debayer/stretch.
+fn invert_rgb8(preview: &image::RgbImage) -> image::RgbImage {
+    let mut raw = preview.as_raw().clone();
+    raw.par_iter_mut().for_each(|b| *b = 255 - *b);
+    image::RgbImage::from_raw(preview.width(), preview.height(), raw)
+        .expect("same dimensions as source")
 }
 
 /// Move the selection by `delta` rows (arrow / page / space keys), clamped to
@@ -180,6 +235,7 @@ fn spawn_load(
     path: PathBuf,
     debayer: bool,
     stretch: bool,
+    invert: bool,
     need_meta: bool,
     req: u64,
 ) {
@@ -197,9 +253,9 @@ fn spawn_load(
                 });
             }
         };
-        let outcome = load_and_render(&path, debayer, stretch, need_meta, &report);
+        let outcome = load_and_render(&path, debayer, stretch, invert, need_meta, &report);
         let _ = weak.upgrade_in_event_loop(move |app| {
-            finish_load(&app, path, debayer, stretch, outcome, req)
+            finish_load(&app, path, debayer, stretch, invert, outcome, req)
         });
     });
 }
@@ -230,12 +286,13 @@ pub(super) fn load_and_render(
     path: &Path,
     debayer: bool,
     stretch: bool,
+    invert: bool,
     need_meta: bool,
     report: &dyn Fn(&'static str),
 ) -> Result<(Option<FileMeta>, image::RgbImage)> {
     let (image, debayered) = load_debayered(path, debayer, report)?;
     let meta = need_meta.then(|| FileMeta::build(&image, debayered));
-    let processed = apply_stretch(image, stretch, report);
+    let processed = apply_stretch(image, stretch, invert, report);
     report("Rendering");
     let rgb = libfitz::preview::render_preview(&processed)?.to_rgb8();
     Ok((meta, rgb))
@@ -257,11 +314,13 @@ pub(super) fn apply_pipeline(
     image: Image,
     debayer: bool,
     stretch: bool,
+    invert: bool,
     report: &dyn Fn(&'static str),
 ) -> Result<Image> {
     Ok(apply_stretch(
         apply_debayer(image, debayer, report)?,
         stretch,
+        invert,
         report,
     ))
 }
@@ -279,11 +338,23 @@ fn apply_debayer(image: Image, debayer: bool, report: &dyn Fn(&'static str)) -> 
     }
 }
 
-/// The pipeline's stretch stage: auto-stretch when the toggle is on.
-fn apply_stretch(image: Image, stretch: bool, report: &dyn Fn(&'static str)) -> Image {
-    if stretch {
+/// The pipeline's stretch/invert stage: auto-stretch when the toggle is on,
+/// then invert regardless of the stretch state.
+fn apply_stretch(
+    image: Image,
+    stretch: bool,
+    invert: bool,
+    report: &dyn Fn(&'static str),
+) -> Image {
+    let image = if stretch {
         report("Stretching");
         image.stretch(false, libfitz::stretch::DEFAULT_BRIGHTNESS)
+    } else {
+        image
+    };
+    if invert {
+        report("Inverting");
+        image.invert().unwrap()
     } else {
         image
     }
@@ -300,11 +371,18 @@ fn is_current(req: u64) -> bool {
 /// not kept resident, so this re-reads the file — but the displayed image is
 /// never reloaded or re-rendered, and the result is cached under its state,
 /// so each rendering of a CFA source is measured at most once.
-fn spawn_meta_recalc(weak: Weak<AppWindow>, path: PathBuf, debayer: bool, stretch: bool, req: u64) {
+fn spawn_meta_recalc(
+    weak: Weak<AppWindow>,
+    path: PathBuf,
+    debayer: bool,
+    stretch: bool,
+    invert: bool,
+    req: u64,
+) {
     std::thread::spawn(move || {
         let outcome = load_meta(&path, debayer, &|_| {});
         let _ = weak.upgrade_in_event_loop(move |app| {
-            finish_meta_recalc(&app, path, debayer, stretch, outcome, req)
+            finish_meta_recalc(&app, path, debayer, stretch, invert, outcome, req)
         });
     });
 }
@@ -319,6 +397,7 @@ fn finish_meta_recalc(
     path: PathBuf,
     debayer: bool,
     stretch: bool,
+    invert: bool,
     outcome: Result<FileMeta>,
     req: u64,
 ) {
@@ -333,6 +412,7 @@ fn finish_meta_recalc(
                         path: path.clone(),
                         debayer,
                         stretch,
+                        invert,
                     })
                     .cloned()
             });
@@ -366,6 +446,7 @@ fn finish_load(
     path: PathBuf,
     debayer: bool,
     stretch: bool,
+    invert: bool,
     outcome: Result<(Option<FileMeta>, image::RgbImage)>,
     req: u64,
 ) {
@@ -391,6 +472,7 @@ fn finish_load(
                         path: path.clone(),
                         debayer,
                         stretch,
+                        invert,
                     },
                     rgb.clone(),
                     cost,
@@ -485,14 +567,14 @@ mod tests {
         let path = test_data("cfa_orion.fits");
 
         // Toggle off: the statistics describe the raw mosaic (one channel).
-        let (meta, _) = load_and_render(&path, false, false, true, &|_| {}).unwrap();
+        let (meta, _) = load_and_render(&path, false, false, false, true, &|_| {}).unwrap();
         let meta = meta.unwrap();
         assert_eq!(meta.stats.channels.len(), 1);
         assert_eq!(meta.debayered, Some(false));
 
         // Toggle on: the demosaiced RGB (three channels), recorded under its
         // own state so both measurements can be cached side by side.
-        let (meta, _) = load_and_render(&path, true, false, true, &|_| {}).unwrap();
+        let (meta, _) = load_and_render(&path, true, false, false, true, &|_| {}).unwrap();
         let meta = meta.unwrap();
         assert_eq!(meta.stats.channels.len(), 3);
         assert_eq!(meta.debayered, Some(true));
@@ -503,7 +585,7 @@ mod tests {
         // An already-debayered RGB cube: the toggle is a no-op, so one
         // measurement serves both states.
         let (meta, _) =
-            load_and_render(&test_data("rgb.fits"), true, false, true, &|_| {}).unwrap();
+            load_and_render(&test_data("rgb.fits"), true, false, false, true, &|_| {}).unwrap();
         let meta = meta.unwrap();
         assert_eq!(meta.debayered, None);
     }

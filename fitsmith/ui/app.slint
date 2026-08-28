@@ -27,6 +27,7 @@ export component AppWindow inherits Window {
     in property <int> selected-index: -1;
     in-out property <bool> debayer-enabled: false;
     in-out property <bool> stretch-enabled: true;
+    in-out property <bool> invert-enabled: false;
     in-out property <bool> blinking: false;
     // Overlays a green ring over every detected star on the preview; runs
     // detection (if it hasn't already run for this file) rather than
@@ -275,6 +276,9 @@ export component AppWindow inherits Window {
     changed stretch-enabled => {
         root.toggles-changed();
     }
+    changed invert-enabled => {
+        root.toggles-changed();
+    }
     changed show-stars => {
         root.toggles-changed();
     }
@@ -359,6 +363,12 @@ export component AppWindow inherits Window {
                 title: "Stretch preview";
                 checkable: true;
                 checked <=> root.stretch-enabled;
+            }
+            MenuItem {
+                title: "Invert image";
+                checkable: true;
+                checked <=> root.invert-enabled;
+                shortcut: @keys(Control + N);
             }
             MenuItem {
                 title: "Show image stats";
