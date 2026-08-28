@@ -27,7 +27,7 @@ pub fn copy_header_file(source: &Path, target: &Path, opts: &CopyHeaderOptions) 
     if output != target {
         ensure_can_write(&output, opts.yes)?;
     }
-    print_progress(opts.verbose, source, &output);
+    print_progress(source, &output);
 
     print_step(opts.verbose, "writing");
     target_fits

@@ -13,7 +13,7 @@ pub fn decompress_file(input: &Path, output: &Path, opts: &Options) -> Result<()
     if output != input {
         ensure_can_write(output, opts.yes)?;
     }
-    print_progress(opts.verbose, input, output);
+    print_progress(input, output);
 
     print_step(opts.verbose, "reading");
     let img = libfitz::raw_fits::load_raw(input)?;

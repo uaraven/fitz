@@ -15,8 +15,8 @@
       <array>
         <string>fit</string>
         <string>fits</string>
-        <string>fit.fz</string>
-        <string>fits.fz</string>
+        <string>fts</string>
+        <string>fz</string>
       </array>
     </dict>
   </array>
@@ -37,8 +37,8 @@
         <array>
           <string>fit</string>
           <string>fits</string>
-          <string>fit.fz</string>
-          <string>fits.fz</string>
+          <string>fts</string>
+          <string>fz</string>
         </array>
       </dict>
     </dict>

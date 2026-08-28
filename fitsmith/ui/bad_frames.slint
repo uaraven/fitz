@@ -1,0 +1,214 @@
+import { Button, CheckBox, Slider } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+import { VScrollArea } from "scrolling.slint";
+import { BadFrameRow } from "types.slint";
+
+// One flagged frame: its name over the controller-worded reason it tripped.
+component BadFrameLine inherits Rectangle {
+    in property <string> name;
+
+    height: 38px;
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 3px;
+        spacing: 1px;
+        Text {
+            text: root.name;
+            color: white;
+            overflow: elide;
+        }
+    }
+}
+
+// One factor's own rejection threshold: a continuous 1σ (aggressive) … 3σ
+// (conservative) slider with its current value read out beside it.
+component FactorSlider inherits HorizontalLayout {
+    in-out property <float> sigma;
+    in property <bool> enabled: true;
+    callback changed();
+
+    spacing: 8px;
+    Slider {
+        horizontal-stretch: 1;
+        minimum: 1.0;
+        maximum: 3.0;
+        step: 0.1;
+        enabled: root.enabled;
+        value <=> root.sigma;
+        changed => {
+            root.changed();
+        }
+    }
+    Text {
+        text: (round(root.sigma * 10) / 10) + "σ";
+        color: root.enabled ? #c8c8c8 : #808080;
+        width: 30px;
+        vertical-alignment: center;
+    }
+}
+
+// The modal behind Tools ▸ Detect Bad Frames…: rejection knobs on the left
+// (three independent failure-mode factors, each with its own aggressiveness
+// slider), the live list of flagged frames on the right. Purely
+// presentational — every knob change reports `params-changed` and Rust
+// re-evaluates the measured frames in memory, re-filling `bad-frames` and
+// `summary`; Select hands the verdict to Rust to turn into the file list's
+// checkbox selection.
+export component BadFramesDialog inherits DialogCard {
+    in property <[BadFrameRow]> bad-frames;
+    // "N of M frames flagged", worded by the controller.
+    in property <string> summary;
+    in-out property <bool> floor-enabled;
+    in-out property <bool> fwhm-enabled;
+    in-out property <bool> ecc-enabled;
+    // Each factor's own rejection threshold, in robust sigmas (1 aggressive
+    // … 3 conservative). The transparency slider also governs star count,
+    // since they share the "Transparency" checkbox.
+    in-out property <float> floor-sigma;
+    in-out property <float> fwhm-sigma;
+    in-out property <float> ecc-sigma;
+
+    callback params-changed();
+    callback select();
+
+    // Resizable like the Analytics dialog: a long session flags many frames,
+    // and the list is the point. The parent owns `card-width`/`card-height`
+    // so a resize outlives a close/reopen.
+    resizable: true;
+    min-card-width: 620px;
+    min-card-height: 400px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: "Detect bad frames";
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 16px;
+
+            // Left pane: the rejection knobs.
+            VerticalLayout {
+                width: 250px;
+                spacing: 12px;
+                alignment: start;
+
+                Text {
+                    text: "Reject frames on:";
+                    color: #c8c8c8;
+                }
+                Text {
+                    text: "Aggressiveness: 1σ aggressive … 3σ conservative";
+                    color: #808080;
+                    font-size: 10px;
+                }
+                CheckBox {
+                    text: "Transparency (floor / star count)";
+                    checked <=> root.floor-enabled;
+                    toggled => {
+                        root.params-changed();
+                    }
+                }
+                FactorSlider {
+                    sigma <=> root.floor-sigma;
+                    enabled: root.floor-enabled;
+                    changed => {
+                        root.params-changed();
+                    }
+                }
+                CheckBox {
+                    text: "Focus (star FWHM)";
+                    checked <=> root.fwhm-enabled;
+                    toggled => {
+                        root.params-changed();
+                    }
+                }
+                FactorSlider {
+                    sigma <=> root.fwhm-sigma;
+                    enabled: root.fwhm-enabled;
+                    changed => {
+                        root.params-changed();
+                    }
+                }
+                CheckBox {
+                    text: "Tracking (star eccentricity)";
+                    checked <=> root.ecc-enabled;
+                    toggled => {
+                        root.params-changed();
+                    }
+                }
+                FactorSlider {
+                    sigma <=> root.ecc-sigma;
+                    enabled: root.ecc-enabled;
+                    changed => {
+                        root.params-changed();
+                    }
+                }
+            }
+
+            // Right pane: the live list of flagged frames.
+            Rectangle {
+                horizontal-stretch: 1;
+                background: #1b1b1b;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+                clip: true;
+
+                if root.bad-frames.length == 0: Text {
+                    text: "No bad frames";
+                    color: #808080;
+                }
+                list := VScrollArea {
+                    width: 100%;
+                    height: 100%;
+                    content-height: root.bad-frames.length * 38px;
+                    for row[idx] in root.bad-frames: BadFrameLine {
+                        y: idx * self.height;
+                        width: list.content-width;
+                        name: row.name;
+                        background: mod(idx, 2) == 0 ? transparent : #ffffff08;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.summary;
+                color: #a0a0a0;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "Select";
+                primary: true;
+                enabled: root.bad-frames.length > 0;
+                clicked => {
+                    root.select();
+                }
+            }
+
+            Button {
+                text: "Close";
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}

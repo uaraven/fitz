@@ -20,6 +20,7 @@
 //! - [`analytics`] — the analytics batch and its time-series chart.
 
 mod analytics;
+mod bad_frames;
 mod convert;
 mod export;
 mod inspect;
@@ -28,6 +29,7 @@ mod support;
 mod viewer;
 
 pub use analytics::*;
+pub use bad_frames::*;
 pub use convert::*;
 pub use export::*;
 pub use inspect::*;
@@ -115,6 +117,13 @@ struct AppState {
     /// menu entries opened it. Decides the dropdown's metrics, whether the
     /// batch detects stars, and the export file-name prefix.
     analytics_family: MetricFamily,
+    /// Every measured frame behind the open "Detect bad frames" dialog, so a
+    /// knob change re-evaluates in memory with no file re-read. Cleared when
+    /// the dialog closes.
+    bad_frames: Vec<FileMetrics>,
+    /// The paths the bad-frame dialog currently flags, in working-set order —
+    /// what its Select button checks in the file list.
+    bad_frame_flagged: Vec<PathBuf>,
     /// Raised to ask the running export / compress / decompress batch worker to
     /// stop between files. Each batch gets a fresh flag so cancelling one can't
     /// silence the next; the batches are modal (each runs behind a blocking
@@ -152,6 +161,8 @@ impl AppState {
             analytics_generation: 0,
             analytics_cancel: Arc::new(AtomicBool::new(false)),
             analytics_family: MetricFamily::Pixel,
+            bad_frames: Vec::new(),
+            bad_frame_flagged: Vec::new(),
             batch_cancel: Arc::new(AtomicBool::new(false)),
             batch_generation: 0,
         }
@@ -601,6 +612,22 @@ fn set_all_checked(model: &VecModel<FileRow>, checked: bool) {
     }
 }
 
+/// Check exactly the rows whose path is in `paths` and uncheck every other
+/// row, only rewriting rows that actually change (like [`set_all_checked`]).
+/// The bad-frame dialog's Select button uses this to turn its verdict into the
+/// file-list selection.
+fn set_checked_paths(model: &VecModel<FileRow>, paths: &std::collections::HashSet<String>) {
+    for i in 0..model.row_count() {
+        if let Some(mut row) = model.row_data(i) {
+            let want = paths.contains(row.path.as_str());
+            if row.checked != want {
+                row.checked = want;
+                model.set_row_data(i, row);
+            }
+        }
+    }
+}
+
 // --- shared batch helpers ------------------------------------------------
 
 /// Map a compress-dialog algorithm index (the ComboBox order) to a fitskit
@@ -775,6 +802,23 @@ mod tests {
         assert!((0..3).all(|i| model.row_data(i).unwrap().checked));
 
         set_all_checked(&model, false);
+        assert!((0..3).all(|i| !model.row_data(i).unwrap().checked));
+    }
+
+    #[test]
+    fn set_checked_paths_checks_exactly_the_named_rows() {
+        let model = VecModel::from(vec![row("a"), row("b"), row("c")]);
+        toggle_check_row(&model, 0); // "a" starts checked and must be cleared
+
+        let paths: std::collections::HashSet<String> =
+            ["b".to_string(), "missing".to_string()].into();
+        set_checked_paths(&model, &paths);
+        assert!(!model.row_data(0).unwrap().checked);
+        assert!(model.row_data(1).unwrap().checked);
+        assert!(!model.row_data(2).unwrap().checked);
+
+        // An empty set clears everything.
+        set_checked_paths(&model, &std::collections::HashSet::new());
         assert!((0..3).all(|i| !model.row_data(i).unwrap().checked));
     }
 

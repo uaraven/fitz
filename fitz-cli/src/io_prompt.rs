@@ -5,7 +5,6 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-
 /// Serializes overwrite prompts so parallel batch runs don't interleave their
 /// questions and answers on the shared terminal.
 static PROMPT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -56,10 +55,8 @@ fn parse_overwrite_answer(answer: &str) -> bool {
 }
 
 /// Print the `input -> output` mapping when verbose mode is enabled.
-pub fn print_progress(verbose: bool, input: &Path, output: &Path) {
-    if verbose {
-        println!("{} -> {}", input.display(), output.display());
-    }
+pub fn print_progress(input: &Path, output: &Path) {
+    println!("{} -> {}", input.display(), output.display());
 }
 
 /// Print the name of an operation (reading, debayering, …) when verbose mode is

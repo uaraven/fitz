@@ -1,6 +1,6 @@
 [package]
 name = "fitsmith"
-version = "0.4.2"
+version = "0.5.1"
 edition = "2024"
 license = "MIT"
 description = "A GUI frontend for the fitz FITS toolset."
@@ -30,8 +30,9 @@ icon = [
     "assets/256x256@2x.png",
 ]
 # Registers FitSmith as an "Open With" handler (Alternate rank, not default) for
-# .fit/.fits/.fit.fz/.fits.fz on macOS. cargo-bundle has no first-class field for
-# document-type associations, so this splices raw Info.plist keys in directly.
+# .fit/.fits/.fts/.fz on macOS. 
+# cargo-bundle has no first-class field for document-type associations, so
+# this splices raw Info.plist keys in directly.
 osx_info_plist_exts = ["assets/document-types.plist.xml"]
 linux_mime_types=["image/fits", "application/fits"]
 
@@ -43,7 +44,7 @@ assets = [
     { source = "target/release/fitsmith", dest = "/usr/bin/fitsmith", mode = "755" },
     { source = "target/release/fitz", dest = "/usr/bin/fitz", mode = "755" },
     { source = "assets/fitsmith.desktop", dest = "/usr/share/applications/fitsmith.desktop", mode = "644" },
-#    { source = "assets/fitsmith-icon.png", dest = "/usr/share/icons/hicolor/", mode = "644" }
+    { source = "assets/fitsmith-icon.png", dest = "/usr/share/icons/hicolor/", mode = "644" }
 ]
 
 [dependencies]
@@ -56,10 +57,17 @@ image = { version = "0.25", default-features = false }
 rayon = "1"
 
 # macOS only: used to turn off automatic window tabbing so AppKit stops
-# injecting "Show Tab Bar"/"Show All Tabs" into our View menu. Already in the
-# dependency tree via Slint's winit backend, so this adds no build cost.
+# injecting "Show Tab Bar"/"Show All Tabs" into our View menu, and to hook
+# `application:openURLs:` onto Winit's own NSApplicationDelegate class so
+# Finder-initiated opens reach the working set (see `macos_open.rs` for why
+# that needs a runtime method hook rather than a normal delegate or Apple
+# Event Manager registration). objc2-app-kit/objc2-foundation are already in
+# the dependency tree via Slint's winit backend and rfd, so this adds no real
+# build cost.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
 
 [build-dependencies]
 slint-build = "1"

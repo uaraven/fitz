@@ -2,11 +2,9 @@
 //! every target file off the UI thread, cache each frame's metrics, and turn the
 //! chosen metric's series into the normalized geometry `chart.slint` draws.
 //!
-//! Two menu entries, one dialog. They differ in three things — the title,
-//! which metrics the dropdown lists, and the export file-name prefix — and
-//! share everything else. Every batch measures both pixel statistics and
-//! star metrics regardless of which one opened it, so the two dialogs are
-//! fully interchangeable from the cache's point of view.
+//! Two menu entries, one dialog. They differ in four things — the title, which
+//! metrics the dropdown lists, whether the batch detects stars, and the export
+//! file-name prefix — and share everything else.
 //!
 //! Every metric of the open family is computed in one file read each, so
 //! switching the dropdown re-plots from the cache with no re-read. Zoom needs no
@@ -36,7 +34,7 @@ use std::time::SystemTime;
 use anyhow::{Context, Result};
 use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 
-use super::metrics::{self, FileAnalysis, FileMetrics, Metric, MetricFamily, Series, SkipReason};
+use super::metrics::{self, FileMetrics, Metric, MetricFamily, Series};
 
 use crate::AppWindow;
 use crate::chart::plot;
@@ -73,14 +71,15 @@ fn family_title(family: MetricFamily) -> &'static str {
     }
 }
 
-/// Tools ▸ Analytics…: the pixel metrics.
+/// Tools ▸ Analytics…: the pixel metrics. Never detects stars, so it stays
+/// exactly as fast as it has always been.
 pub fn open_analytics_dialog(app: &AppWindow) {
     open_chart_dialog(app, MetricFamily::Pixel);
 }
 
-/// Tools ▸ Star metrics…: star count, HFR, FWHM and eccentricity. Every batch
-/// measures stars regardless of which dialog opened it, so this is free once
-/// Analytics has already analyzed a file (and vice versa).
+/// Tools ▸ Star metrics…: star count, HFR, FWHM and eccentricity. Detects stars
+/// because that is the entire point of opening it — the menu entry *is* the
+/// opt-in, so there is no checkbox to forget.
 pub fn open_star_metrics_dialog(app: &AppWindow) {
     open_chart_dialog(app, MetricFamily::Star);
 }
@@ -90,7 +89,6 @@ pub fn open_star_metrics_dialog(app: &AppWindow) {
 /// The dialog itself only appears once the metrics are in, so it never shows an
 /// empty chart that then fills in.
 fn open_chart_dialog(app: &AppWindow, family: MetricFamily) {
-    let targets = operation_targets(is_fits_path);
     app.set_analytics_title(family_title(family).into());
     app.set_analytics_metric_model(ModelRc::new(VecModel::from(
         Metric::of_family(family)
@@ -105,15 +103,33 @@ fn open_chart_dialog(app: &AppWindow, family: MetricFamily) {
             .unwrap_or(0) as i32,
     );
     app.set_analytics_zoom(1.0);
-
-    // Starting a batch supersedes any batch still running, and gets its own
-    // cancel flag so stopping this one can't reach back and stop a later one.
-    // The cache is not cleared — it is the whole point, and it outlives every
-    // dialog session.
-    let (generation, cancel, plan) = STATE.with(|s| {
+    STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.analytics.clear();
         st.analytics_family = family;
+    });
+    start_batch(app, show_results);
+}
+
+/// Gather the target FITS files (the checked rows, or all of them when none
+/// are checked), analyze whatever the cache can't already answer, and hand the
+/// finished [`Plan`] to `done` on the UI thread. Shared by the chart dialogs
+/// and the bad-frame detector — they differ only in what they do with the
+/// measured frames.
+///
+/// Starting a batch supersedes any batch still running, and gets its own
+/// cancel flag so stopping this one can't reach back and stop a later one.
+/// The cache is not cleared — it is the whole point, and it outlives every
+/// dialog session. When the cache already answers for the whole selection
+/// there is no worker, no progress overlay, and no file read at all — `done`
+/// runs synchronously and the dialog just appears.
+pub(super) fn start_batch(
+    app: &AppWindow,
+    done: impl FnOnce(&AppWindow, Plan, usize) + Send + 'static,
+) {
+    let targets = operation_targets(is_fits_path);
+    let (generation, cancel, plan) = STATE.with(|s| {
+        let mut st = s.borrow_mut();
         let generation = abort_batch(&mut st);
         st.analytics_cancel = Arc::new(AtomicBool::new(false));
         let plan = plan_batch(&targets, &st.analytics_cache);
@@ -125,13 +141,11 @@ fn open_chart_dialog(app: &AppWindow, family: MetricFamily) {
         return;
     }
 
-    // Reopened over a selection the cache already answers for: no worker, no
-    // progress overlay, no file read at all — the dialog just appears.
     if plan.todo.is_empty() {
-        show_results(app, plan, 0);
+        done(app, plan, 0);
         return;
     }
-    spawn_analysis(app.as_weak(), plan.todo, targets, generation, cancel);
+    spawn_analysis(app.as_weak(), plan.todo, targets, generation, cancel, done);
 }
 
 /// The family the open dialog is showing.
@@ -156,10 +170,7 @@ pub(super) type AnalyticsCache = HashMap<PathBuf, CachedAnalysis>;
 
 /// One cached file analysis and the identity of the bytes it was computed from.
 pub(super) struct CachedAnalysis {
-    /// The outcome, or the reason the frame was skipped. Caching a skip matters
-    /// as much as caching a result: a frame with no DATE-OBS must not be re-read
-    /// on every open just to be skipped again.
-    outcome: FileAnalysis,
+    outcome: FileMetrics,
     stamp: FileStamp,
 }
 
@@ -189,27 +200,30 @@ impl FileStamp {
 /// so the "reopening changes nothing" guarantee is testable without an event
 /// loop — assert on `todo`.
 #[derive(Default)]
-struct Plan {
-    /// The frames to plot, from usable cache entries.
-    metrics: Vec<FileMetrics>,
-    /// Cached frames skipped for want of an acquisition time.
-    no_date: usize,
+pub(super) struct Plan {
+    /// The measured frames, from usable cache entries. Includes frames with no
+    /// acquisition time — `build_series` leaves those off the plot, but the
+    /// bad-frame detector measures them like any other.
+    pub(super) metrics: Vec<FileMetrics>,
+    /// Measured frames with no acquisition time, i.e. nothing to plot a time
+    /// axis against (counted for the chart dialog's "skipped" readout).
+    pub(super) no_date: usize,
     /// Targets with no usable entry, in target order.
-    todo: Vec<PathBuf>,
+    pub(super) todo: Vec<PathBuf>,
 }
 
 /// Partition `targets` into what `cache` already answers and what must be
-/// analyzed. Every analysis measures both pixel statistics and star metrics,
-/// so any cache entry whose stamp still matches the file on disk answers
-/// either dialog — there is nothing family-specific left to check.
+/// analyzed. Every analysis measures both pixel statistics and stars, so an
+/// entry answers any dialog — it is usable as long as its stamp still matches
+/// the file on disk.
 fn plan_batch(targets: &[PathBuf], cache: &AnalyticsCache) -> Plan {
     let mut plan = Plan::default();
     for path in targets {
         match cache.get(path) {
-            Some(entry) if FileStamp::of(path) == Some(entry.stamp) => match &entry.outcome {
-                FileAnalysis::Analyzed(m) => plan.metrics.push(m.clone()),
-                FileAnalysis::Skipped(SkipReason::NoDateObs) => plan.no_date += 1,
-            },
+            Some(entry) if FileStamp::of(path) == Some(entry.stamp) => {
+                plan.no_date += usize::from(entry.outcome.time.is_none());
+                plan.metrics.push(entry.outcome.clone());
+            }
             _ => plan.todo.push(path.clone()),
         }
     }
@@ -221,7 +235,7 @@ fn plan_batch(targets: &[PathBuf], cache: &AnalyticsCache) -> Plan {
 /// out, so a superseded batch's results are still correct and worth keeping.
 /// Only the *plot* is generation-gated — which is what makes a cancelled batch
 /// leave its finished work behind for the next open instead of throwing it away.
-fn cache_outcome(path: PathBuf, outcome: FileAnalysis, stamp: FileStamp) {
+fn cache_outcome(path: PathBuf, outcome: FileMetrics, stamp: FileStamp) {
     STATE.with(|s| {
         s.borrow_mut()
             .analytics_cache
@@ -246,7 +260,7 @@ fn analyze_batch(
     targets: &[PathBuf],
     cancel: &AtomicBool,
     mut progress: impl FnMut(usize, &Path),
-    mut analyzed: impl FnMut(&Path, FileAnalysis),
+    mut analyzed: impl FnMut(&Path, FileMetrics),
     mut failed: impl FnMut(&Path, String),
 ) -> Option<usize> {
     let mut failures = 0;
@@ -283,6 +297,7 @@ fn spawn_analysis(
     all: Vec<PathBuf>,
     generation: u64,
     cancel: Arc<AtomicBool>,
+    done: impl FnOnce(&AppWindow, Plan, usize) + Send + 'static,
 ) {
     let _ = weak.upgrade_in_event_loop(|app| {
         app.set_analytics_in_progress(true);
@@ -342,7 +357,7 @@ fn spawn_analysis(
             // loop before this closure, so the cache now answers for the whole
             // target list bar the files that failed to read.
             let plan = STATE.with(|s| plan_batch(&all, &s.borrow().analytics_cache));
-            show_results(&app, plan, failures);
+            done(&app, plan, failures);
         });
     });
 }
@@ -568,9 +583,9 @@ mod tests {
             targets,
             cancel,
             |_, _| {},
-            |_, outcome| match outcome {
-                FileAnalysis::Analyzed(m) => t.metrics.push(m),
-                FileAnalysis::Skipped(SkipReason::NoDateObs) => t.no_date += 1,
+            |_, m| {
+                t.no_date += usize::from(m.time.is_none());
+                t.metrics.push(m);
             },
             |_, _| {},
         )?;
@@ -628,12 +643,10 @@ mod tests {
         assert_eq!(order.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 1, 2]);
         assert_eq!(order[0].1, targets[0]);
 
-        // The same run, tallied: two measured frames, both carrying star
-        // metrics too, since every batch now measures both.
+        // The same run, tallied: two measured frames.
         let t = tally(&targets, &cancel).unwrap();
         assert_eq!(t.metrics.len(), 2);
         assert_eq!((t.no_date, t.failed), (0, 1));
-        assert!(t.metrics.iter().all(|m| m.stars.is_some()));
     }
 
     #[test]
@@ -666,24 +679,32 @@ mod tests {
         // Already cancelled before the first file: nothing is read at all.
         let cancel = AtomicBool::new(true);
         let mut count = 0;
-        let stopped = analyze_batch(&targets, &cancel, |_, _| count += 1, |_, _| {}, |_, _| {});
+        let stopped = analyze_batch(
+            &targets,
+            &cancel,
+            |_, _| count += 1,
+            |_, _| {},
+            |_, _| {},
+        );
         assert!(stopped.is_none());
         assert_eq!(count, 0);
     }
 
     #[test]
     fn analyze_batch_always_measures_stars() {
+        // Every batch measures stars on a real mosaic — there is no
+        // pixel-only analysis, so one measured file answers every dialog.
         let targets = vec![test_data("uncompressed.fit")];
         let cancel = AtomicBool::new(false);
         let t = tally(&targets, &cancel).unwrap();
 
-        let stars = t.metrics[0].stars.as_ref().expect("stars measured");
+        let stars = &t.metrics[0].stars;
         assert!(stars.count > 0);
         assert!(stars.hfr.is_some());
     }
 
-    /// Write a minimal frame with no acquisition time — the input `analyze_file`
-    /// answers with [`SkipReason::NoDateObs`].
+    /// Write a minimal frame with no acquisition time — it still measures, but
+    /// with `time: None`, so it counts toward a plan's `no_date`.
     fn write_undated_frame(path: &Path) {
         use libfitz::fitskit::{FitsFile, ImageData, PixelData};
         let img = ImageData::new(vec![2, 2], PixelData::I16(vec![7; 4]));
@@ -717,9 +738,9 @@ mod tests {
         let cache = analyzed_cache(&targets);
         let plan = plan_batch(&targets, &cache);
         assert!(plan.todo.is_empty(), "a reopen must read no file");
-        assert_eq!(plan.metrics.len(), 2);
-        // The skipped frame is still counted for the dialog's readout — cached
-        // as a skip rather than re-read to rediscover it.
+        // The undated frame measures like any other — it just also counts
+        // toward the dialog's "skipped (no DATE-OBS)" readout.
+        assert_eq!(plan.metrics.len(), 3);
         assert_eq!(plan.no_date, 1);
 
         // Checking one more file analyzes exactly that one, not the whole set.
@@ -727,29 +748,12 @@ mod tests {
         grown.push(test_data("uncompressed_debayer.fits"));
         let plan = plan_batch(&grown, &cache);
         assert_eq!(plan.todo, [test_data("uncompressed_debayer.fits")]);
-        assert_eq!(plan.metrics.len(), 2);
+        assert_eq!(plan.metrics.len(), 3);
 
         // Deselecting needs no invalidation: the surviving targets still hit.
         let plan = plan_batch(&targets[..1], &cache);
         assert!(plan.todo.is_empty());
         assert_eq!(plan.metrics.len(), 1);
-    }
-
-    #[test]
-    fn switching_between_dialogs_reads_nothing_either_way() {
-        // Every batch measures both pixel statistics and star metrics now, so
-        // a cache built by one dialog answers the other one too, in either
-        // order.
-        let targets = vec![test_data("uncompressed.fit")];
-        let cache = analyzed_cache(&targets);
-
-        let plan = plan_batch(&targets, &cache);
-        assert!(plan.todo.is_empty());
-        assert!(plan.metrics[0].stars.is_some());
-        assert!(!plan.metrics[0].stats.is_empty());
-
-        // Reopening again — either dialog — is still free.
-        assert!(plan_batch(&targets, &cache).todo.is_empty());
     }
 
     #[test]
