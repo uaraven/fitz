@@ -1,5 +1,5 @@
 import { Button } from "std-widgets.slint";
-import { DialogCard } from "dialog.slint";
+import { DialogCard, DialogPalette } from "dialog.slint";
 
 // A generic yes/no confirmation dialog for a destructive action. The parent
 // supplies the title, message and the confirm button's label, and toggles
@@ -22,11 +22,11 @@ export component ConfirmDialog inherits DialogCard {
             text: root.title;
             font-size: 18px;
             font-weight: 700;
-            color: white;
+            color: DialogPalette.title;
         }
         Text {
             text: root.message;
-            color: #c8c8c8;
+            color: DialogPalette.body;
             wrap: word-wrap;
         }
         Rectangle {

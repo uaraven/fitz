@@ -28,9 +28,15 @@ export component FileList inherits Rectangle {
     // Rows that fit in the viewport, for Page Up / Down (at least one).
     property <int> page-size: max(1, floor(self.height / root.row-height));
 
-    // Error-row and tooltip colors, keyed on the active color scheme: a dark
-    // muted red on dark themes, a pale red on light ones.
+    // Panel, row and tooltip colors, keyed on the active color scheme: a dark
+    // muted red on dark themes, a pale red on light ones (and analogously for
+    // the neutral panel/row/text colors).
     property <bool> dark-theme: Palette.color-scheme == ColorScheme.dark;
+    property <color> panel-bg: root.dark-theme ? #262626 : #fafafa;
+    property <color> row-hover: root.dark-theme ? #333333 : #e6e6e6;
+    property <color> row-fg: root.dark-theme ? white : #202020;
+    property <color> status-fg: root.dark-theme ? #a0a0a0 : #707070;
+    property <color> status-err: root.dark-theme ? #ff8080 : #c02020;
     property <color> err-bg: root.dark-theme ? #4d2020 : #f7d6d6;
     property <color> err-hover: root.dark-theme ? #612a2a : #f2bcbc;
     property <color> err-text: root.dark-theme ? white : #601818;
@@ -38,7 +44,7 @@ export component FileList inherits Rectangle {
     property <color> tip-fg: root.dark-theme ? #e0e0e0 : #202020;
     property <color> tip-border: root.dark-theme ? #555555 : #cccccc;
 
-    background: #262626;
+    background: root.panel-bg;
     forward-focus: fs;
 
     // Keep the highlighted row on screen: whenever the selection moves — via
@@ -104,7 +110,7 @@ export component FileList inherits Rectangle {
                     ? #0a5ea8
                     : (self.is-error
                         ? (touch.has-hover ? root.err-hover : root.err-bg)
-                        : (touch.has-hover ? #333333 : transparent));
+                        : (touch.has-hover ? root.row-hover : transparent));
                 touch := TouchArea {
                     clicked => {
                         fs.focus();
@@ -155,9 +161,12 @@ export component FileList inherits Rectangle {
                     }
                     Text {
                         text: row.name;
-                        // Dark text keeps the name legible on the pale-red error
-                        // background used by light themes; white everywhere else.
-                        color: rowrect.is-error && !rowrect.selected ? root.err-text : white;
+                        // White on the selected row's blue background in either
+                        // theme; dark text on the pale-red error background used
+                        // by light themes; the theme's row color otherwise.
+                        color: rowrect.selected
+                            ? white
+                            : (rowrect.is-error ? root.err-text : root.row-fg);
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
@@ -165,7 +174,7 @@ export component FileList inherits Rectangle {
                         text: row.status;
                         visible: row.status != "";
                         font-size: 11px;
-                        color: row.status == "error" ? #ff8080 : #a0a0a0;
+                        color: row.status == "error" ? root.status-err : root.status-fg;
                         vertical-alignment: center;
                     }
                 }

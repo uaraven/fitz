@@ -1,5 +1,5 @@
 import { Button, ComboBox, Slider, CheckBox } from "std-widgets.slint";
-import { DialogCard } from "dialog.slint";
+import { DialogCard, DialogPalette } from "dialog.slint";
 import { AnalyticsChart } from "chart.slint";
 import { ChartPoint, ChartTick, StatLine } from "types.slint";
 
@@ -71,7 +71,7 @@ export component AnalyticsDialog inherits DialogCard {
             text: root.title-text;
             font-size: 20px;
             font-weight: 700;
-            color: white;
+            color: DialogPalette.title;
         }
 
         // Metric selector on the left, zoom control on the right.
@@ -79,7 +79,7 @@ export component AnalyticsDialog inherits DialogCard {
             spacing: 8px;
             Text {
                 text: "Metric:";
-                color: #c8c8c8;
+                color: DialogPalette.body;
                 vertical-alignment: center;
             }
 
@@ -103,7 +103,7 @@ export component AnalyticsDialog inherits DialogCard {
 
             Text {
                 text: "Zoom:";
-                color: #c8c8c8;
+                color: DialogPalette.body;
                 vertical-alignment: center;
             }
 
@@ -116,7 +116,7 @@ export component AnalyticsDialog inherits DialogCard {
 
             Text {
                 text: round(root.zoom * 10) / 10 + "x";
-                color: #c8c8c8;
+                color: DialogPalette.body;
                 width: 34px;
                 vertical-alignment: center;
             }
@@ -146,7 +146,7 @@ export component AnalyticsDialog inherits DialogCard {
                 + (root.skipped-no-date > 0
                 ? ", " + root.skipped-no-date + " skipped (no DATE-OBS)" : "")
                 + (root.unavailable-note != "" ? ", " + root.unavailable-note : "");
-            color: #a0a0a0;
+            color: DialogPalette.muted;
             font-size: 12px;
         }
 

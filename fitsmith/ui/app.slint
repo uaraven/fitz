@@ -1,4 +1,4 @@
-import { VerticalBox, TabWidget } from "std-widgets.slint";
+import { Palette, VerticalBox, TabWidget } from "std-widgets.slint";
 import { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine, BadFrameRow } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
@@ -593,7 +593,11 @@ export component AppWindow inherits Window {
                 y: 0;
                 width: split.handle-w;
                 height: parent.height;
-                background: handle-touch.pressed || handle-touch.has-hover ? #4a4a4a : #333333;
+                // Themed like the file list's own hover/panel colors, keyed on
+                // the active color scheme (same pattern used throughout the UI).
+                background: Palette.color-scheme == ColorScheme.dark
+                    ? (handle-touch.pressed || handle-touch.has-hover ? #4a4a4a : #333333)
+                    : (handle-touch.pressed || handle-touch.has-hover ? #b0b0b0 : #d5d5d5);
                 handle-touch := TouchArea {
                     mouse-cursor: ew-resize;
                     moved => {

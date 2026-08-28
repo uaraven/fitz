@@ -1,5 +1,5 @@
 import { Button, CheckBox, Slider } from "std-widgets.slint";
-import { DialogCard } from "dialog.slint";
+import { DialogCard, DialogPalette } from "dialog.slint";
 import { VScrollArea } from "scrolling.slint";
 import { BadFrameRow } from "types.slint";
 
@@ -16,7 +16,7 @@ component BadFrameLine inherits Rectangle {
         spacing: 1px;
         Text {
             text: root.name;
-            color: white;
+            color: DialogPalette.title;
             overflow: elide;
         }
     }
@@ -43,7 +43,7 @@ component FactorSlider inherits HorizontalLayout {
     }
     Text {
         text: (round(root.sigma * 10) / 10) + "σ";
-        color: root.enabled ? #c8c8c8 : #808080;
+        color: root.enabled ? DialogPalette.body : DialogPalette.muted;
         width: 30px;
         vertical-alignment: center;
     }
@@ -88,7 +88,7 @@ export component BadFramesDialog inherits DialogCard {
             text: "Detect bad frames";
             font-size: 20px;
             font-weight: 700;
-            color: white;
+            color: DialogPalette.title;
         }
 
         HorizontalLayout {
@@ -103,11 +103,11 @@ export component BadFramesDialog inherits DialogCard {
 
                 Text {
                     text: "Reject frames on:";
-                    color: #c8c8c8;
+                    color: DialogPalette.body;
                 }
                 Text {
                     text: "Aggressiveness: 1σ aggressive … 3σ conservative";
-                    color: #808080;
+                    color: DialogPalette.muted;
                     font-size: 10px;
                 }
                 CheckBox {
@@ -157,15 +157,15 @@ export component BadFramesDialog inherits DialogCard {
             // Right pane: the live list of flagged frames.
             Rectangle {
                 horizontal-stretch: 1;
-                background: #1b1b1b;
+                background: DialogPalette.panel-bg;
                 border-radius: 6px;
                 border-width: 1px;
-                border-color: #3a3a3a;
+                border-color: DialogPalette.panel-border;
                 clip: true;
 
                 if root.bad-frames.length == 0: Text {
                     text: "No bad frames";
-                    color: #808080;
+                    color: DialogPalette.muted;
                 }
                 list := VScrollArea {
                     width: 100%;
@@ -175,7 +175,7 @@ export component BadFramesDialog inherits DialogCard {
                         y: idx * self.height;
                         width: list.content-width;
                         name: row.name;
-                        background: mod(idx, 2) == 0 ? transparent : #ffffff08;
+                        background: mod(idx, 2) == 0 ? transparent : DialogPalette.zebra;
                     }
                 }
             }
@@ -185,7 +185,7 @@ export component BadFramesDialog inherits DialogCard {
             spacing: 8px;
             Text {
                 text: root.summary;
-                color: #a0a0a0;
+                color: DialogPalette.muted;
                 font-size: 12px;
                 vertical-alignment: center;
             }
