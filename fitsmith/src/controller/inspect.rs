@@ -30,7 +30,7 @@ use super::{PreviewKey, STATE, view_toggles};
 /// first and opens the dialog on completion. A no-op with nothing selected (the
 /// menu item is already disabled then).
 pub fn open_aberration_dialog(app: &AppWindow) {
-    let (debayer, stretch) = view_toggles(app);
+    let (debayer, stretch, invert) = view_toggles(app);
     let selected = STATE.with(|s| {
         let mut st = s.borrow_mut();
         let index = st.selected?;
@@ -39,6 +39,7 @@ pub fn open_aberration_dialog(app: &AppWindow) {
             path: path.clone(),
             debayer,
             stretch,
+            invert,
         };
         let cached_preview = st.previews.get(&key).cloned();
         // Same rule as the viewer: metadata is resident per debayer state.
@@ -60,9 +61,10 @@ pub fn open_aberration_dialog(app: &AppWindow) {
     app.set_status_text(format!("Inspecting: {}", display_name(&path)).into());
     let need_meta = cached_meta.is_none();
     std::thread::spawn(move || {
-        let outcome = load_and_render(&path, debayer, stretch, need_meta, &|_| {});
-        let _ = weak
-            .upgrade_in_event_loop(move |app| finish_open(&app, path, debayer, stretch, outcome));
+        let outcome = load_and_render(&path, debayer, stretch, invert, need_meta, &|_| {});
+        let _ = weak.upgrade_in_event_loop(move |app| {
+            finish_open(&app, path, debayer, stretch, invert, outcome)
+        });
     });
 }
 
@@ -73,6 +75,7 @@ fn finish_open(
     path: PathBuf,
     debayer: bool,
     stretch: bool,
+    invert: bool,
     outcome: anyhow::Result<(Option<FileMeta>, image::RgbImage)>,
 ) {
     app.set_busy(false);
@@ -90,6 +93,7 @@ fn finish_open(
                         path: path.clone(),
                         debayer,
                         stretch,
+                        invert,
                     },
                     rgb.clone(),
                     cost,
