@@ -17,6 +17,8 @@ mod controller;
 mod doc;
 mod files;
 mod image;
+#[cfg(target_os = "macos")]
+mod macos_open;
 mod overlay;
 mod view;
 
@@ -46,6 +48,8 @@ fn main() -> Result<()> {
     #[cfg(target_os = "macos")]
     diable_macos_auto_menu();
     let app = AppWindow::new()?;
+    #[cfg(target_os = "macos")]
+    macos_open::install(&app);
     app.set_status_text("No image — add files to view".into());
     app.set_app_version(env!("CARGO_PKG_VERSION").into());
     // The native "About FitSmith" app-menu item covers this on macOS

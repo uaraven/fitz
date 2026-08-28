@@ -1526,12 +1526,14 @@ dependencies = [
 
 [[package]]
 name = "fitsmith"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "image",
  "libfitz",
  "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rayon 1.12.0",
  "rfd",
  "slint",
@@ -1542,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "fitz"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -2844,7 +2846,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libfitz"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bayer",
@@ -3494,6 +3496,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.1",
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
