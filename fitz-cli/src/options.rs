@@ -124,6 +124,8 @@ pub struct PreviewOptions {
     /// Skip debayering a raw mosaic, showing it as a stretched grayscale
     /// image instead; ignored (with a warning) if already debayered.
     pub no_debayer: bool,
+    /// invert the image - might be useful to spot problems
+    pub invert: bool,
 }
 
 pub struct SplitChannelOptions {
