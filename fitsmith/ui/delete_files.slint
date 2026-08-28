@@ -1,0 +1,76 @@
+import { Button, ComboBox } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+
+// The Tools ▸ Delete Files… confirmation dialog: acts only on the checked
+// files (never "all files" when nothing is checked, unlike Compress/Export).
+// Purely presentational — the parent feeds the checked count and receives the
+// chosen action back through `action-index`; the actual delete/rename work
+// lives in Rust.
+export component DeleteFilesDialog inherits DialogCard {
+    in property <int> file-count;
+    // 0 = rename to ".ignored" (default, non-destructive), 1 = delete
+    // permanently.
+    in-out property <int> action-index;
+    callback confirm();
+
+    card-width: 420px;
+    card-height: 260px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 14px;
+
+        Text {
+            text: "Delete Files";
+            font-size: 20px;
+            font-weight: 700;
+            color: white;
+        }
+        Text {
+            text: root.file-count == 1
+                ? "1 checked file will be affected."
+                : root.file-count + " checked files will be affected.";
+            color: #c8c8c8;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Action:";
+                color: #c8c8c8;
+                vertical-alignment: center;
+            }
+            ComboBox {
+                model: ["Rename to .ignored", "Delete from disk (permanent, no undo)"];
+                current-index <=> root.action-index;
+                horizontal-stretch: 1;
+            }
+        }
+        if root.action-index == 1: Text {
+            text: "This cannot be undone.";
+            color: #e08080;
+            wrap: word-wrap;
+        }
+        Rectangle {
+            vertical-stretch: 1;
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            Button {
+                text: "Cancel";
+                clicked => {
+                    root.cancel();
+                }
+            }
+            Button {
+                text: root.action-index == 1 ? "Delete" : "Rename";
+                primary: true;
+                enabled: root.file-count > 0;
+                clicked => {
+                    root.confirm();
+                }
+            }
+        }
+    }
+}
