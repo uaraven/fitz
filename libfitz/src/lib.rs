@@ -27,3 +27,4 @@ pub mod summary;
 
 #[cfg(test)]
 pub(crate) mod test_support;
+mod invert;

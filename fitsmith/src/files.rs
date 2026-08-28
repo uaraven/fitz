@@ -115,6 +115,20 @@ pub fn export_output_path(input: &Path, dir: &Path, ext: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// Where an "ignored" copy of `input`'s name lives: `.ignored` appended to the
+/// whole file name (`frame.fits` → `frame.fits.ignored`), matching
+/// [`compressed_output_path`]'s pattern. Tools ▸ Delete Files…'s "Rename to
+/// .ignored" action uses this to take a file out of the working set without
+/// deleting it.
+pub fn ignored_output_path(input: &Path) -> PathBuf {
+    let mut name = input
+        .file_name()
+        .map(|n| n.to_owned())
+        .unwrap_or_else(|| input.as_os_str().to_owned());
+    name.push(".ignored");
+    input.with_file_name(name)
+}
+
 /// Expand command-line arguments into a flat list of input files: directories
 /// are scanned for FITS files, existing files are kept as-is (a file named
 /// explicitly is honored regardless of extension), and missing paths are
@@ -199,6 +213,18 @@ mod tests {
         assert_eq!(
             compressed_output_path(Path::new("/x/frame.fit"), Some(Path::new("/out"))),
             PathBuf::from("/out/frame.fit.fz")
+        );
+    }
+
+    #[test]
+    fn ignored_output_appends_ignored_to_whole_name() {
+        assert_eq!(
+            ignored_output_path(Path::new("/x/frame.fits")),
+            PathBuf::from("/x/frame.fits.ignored")
+        );
+        assert_eq!(
+            ignored_output_path(Path::new("/x/frame.fit.fz")),
+            PathBuf::from("/x/frame.fit.fz.ignored")
         );
     }
 

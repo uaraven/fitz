@@ -374,6 +374,10 @@ struct PreviewArgs {
     #[arg(long)]
     no_debayer: bool,
 
+    /// Invert the image for preview
+    #[arg(long)]
+    invert: bool,
+
     /// FITS file to preview (only a single file is accepted)
     file: PathBuf,
 }
@@ -764,6 +768,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         file,
         fallback,
         no_debayer,
+        invert,
     } = args;
 
     if pattern.is_some() || force_demosaic {
@@ -782,6 +787,7 @@ fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
         force_truecolor: truecolor,
         fallback,
         no_debayer,
+        invert,
     };
 
     if let Err(e) = preview_file(&file, &opts) {

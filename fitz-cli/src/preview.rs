@@ -135,6 +135,8 @@ fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, us
     let linked = opts.core.linked || is_mosaic && opts.no_debayer;
     let stretched = source.stretch(linked, opts.core.brightness);
 
+    let stretched = if opts.invert { stretched.invert()? } else { stretched };
+
     let (width, height, image_type) = (stretched.width, stretched.height, stretched.image_type);
     // `Image::stretch` returns normalized `[0, 1]` f32 samples; narrow to the
     // 16-bit domain the terminal renderers below work in.
