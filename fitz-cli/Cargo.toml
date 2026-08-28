@@ -1,6 +1,6 @@
 [package]
 name = "fitz"
-version = "0.5.3"
+version = "0.5.5"
 edition = "2024"
 license = "MIT"
 
@@ -15,9 +15,9 @@ anyhow = "1"
 rayon = "1"
 terminal_size = "0.4"
 supports-color = "3.0.2"
-base64 = "0.22"
+base64 = "0.23"
 libc = "0.2"
-sha2 = "0.10"
+sha2 = "0.11"
 bayer = "0.1.5"
 
 [dev-dependencies]

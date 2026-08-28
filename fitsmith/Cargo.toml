@@ -1,6 +1,6 @@
 [package]
 name = "fitsmith"
-version = "0.5.3"
+version = "0.5.5"
 edition = "2024"
 license = "MIT"
 description = "A GUI frontend for the fitz FITS toolset."
@@ -39,18 +39,24 @@ linux_mime_types=["image/fits", "application/fits"]
 # Linux RPM build (cargo-bundle has no RPM backend). Unlike cargo-bundle's deb
 # backend, cargo-generate-rpm doesn't synthesize a .desktop entry from the
 # metadata above, so it's listed explicitly as an asset.
+#
+# Icons must land under hicolor/<size>/apps/<name>.png (the freedesktop icon
+# theme lookup path)
 [package.metadata.generate-rpm]
 assets = [
     { source = "target/release/fitsmith", dest = "/usr/bin/fitsmith", mode = "755" },
     { source = "target/release/fitz", dest = "/usr/bin/fitz", mode = "755" },
     { source = "assets/fitsmith.desktop", dest = "/usr/share/applications/fitsmith.desktop", mode = "644" },
-    { source = "assets/fitsmith-icon.png", dest = "/usr/share/icons/hicolor/", mode = "644" }
+    { source = "assets/32x32.png", dest = "/usr/share/icons/hicolor/32x32/apps/fitsmith.png", mode = "644" },
+    { source = "assets/48x48.png", dest = "/usr/share/icons/hicolor/48x48/apps/fitsmith.png", mode = "644" },
+    { source = "assets/128x128.png", dest = "/usr/share/icons/hicolor/128x128/apps/fitsmith.png", mode = "644" },
+    { source = "assets/256x256.png", dest = "/usr/share/icons/hicolor/256x256/apps/fitsmith.png", mode = "644" },
 ]
 
 [dependencies]
 libfitz = { path = "../libfitz" }
 slint = "1"
-rfd = "0.15"
+rfd = "0.17"
 anyhow = "1"
 sysinfo = "0.39.6"
 image = { version = "0.25", default-features = false }
