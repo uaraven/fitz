@@ -10,88 +10,29 @@ what it is now.
 
 ## Components
 
-The project is a Cargo workspace with three crates:
+The project consists for three major parts:
 
  - **[libfitz](libfitz)** — the reusable library: FITS I/O (with transparent
    tile-decompression), debayering, auto-stretch, per-channel splitting, header/pixel-stat
    inspection, header copying, and image resizing. Both frontends depend on it.
  - **[fitz](fitz-cli/readme.md)** — the command-line tool. See its
-   [readme](fitz-cli/readme.md) for the full command and option reference.
+   [readme](fitz-cli/readme.md) for the full command and option reference. ![](docs/cli-stats.png) 
+    ![](docs/cli-preview.png)
  - **[FitSmith](fitsmith/readme.md)** — a desktop GUI frontend built with Slint. See its
-   [readme](fitsmith/readme.md) for details.
+   [readme](fitsmith/readme.md) for details. ![](docs/main-debayered.png)
 
-## Building
-
-```shell
-cargo build --release           # build the whole workspace
-cargo run -p fitz -- --help     # run the CLI
-cargo run -p fitsmith           # run the GUI
-```
-
-The `edition = "2024"` crates need a recent stable Rust toolchain (install via
-[rustup](https://rustup.rs/)).
-
-### System dependencies
-
-The `fitz` and `libfitz` crates are pure Rust and build with no extra system libraries.
-The **FitSmith** GUI, however, pulls in [Slint](https://slint.dev/), which links `fontconfig`
-at build time and uses the platform's windowing/graphics stack at runtime. If you only need
-the CLI, you can skip all of this and build just those crates:
-
-```shell
-cargo build -p fitz             # CLI only — no GUI system deps needed
-```
-
-To build the whole workspace (including FitSmith):
-
-- **macOS** — no extra packages; everything Slint needs ships with the system. Build with the
-  Xcode command-line tools installed (`xcode-select --install`).
-- **Linux** — install the `fontconfig` development package (it provides `fontconfig.pc` for
-  pkg-config, needed at build time). The runtime Wayland/X11/OpenGL libraries are loaded
-  dynamically and are present on any normal desktop install.
-
-  ```shell
-  # Fedora / RHEL
-  sudo dnf install fontconfig-devel
-
-  # Debian / Ubuntu
-  sudo apt install libfontconfig1-dev
-
-  # Arch
-  sudo pacman -S fontconfig
-  ```
-
-- **Windows** — no extra packages; build with the MSVC toolchain (install the "Desktop
-  development with C++" workload from the Visual Studio Build Tools).
-
-If FitSmith fails to build with a `pkg-config ... fontconfig was not found` error, the
-`fontconfig` dev package above is what's missing.
-
-## Packaging
-
-FitSmith can be built into a native installer for the OS you're running on, via
-[`cargo-bundle`](https://github.com/burtonageo/cargo-bundle):
-
-```shell
-./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb + .rpm
-./build/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset)
-```
-
-There's no CI — each package has to be built on its own OS, since Slint's windowing and font
-libraries differ per platform. See [fitsmith/readme.md#packaging](fitsmith/readme.md#packaging)
-for prerequisites, output locations, and the unsigned-binary Gatekeeper/SmartScreen caveat.
 
 ## Note
 
-This is a small personal project and as such it is not thouroughly tested and not optimized in
+This is a small personal project and as such it is not thoroughly tested and not optimized in
 any way. Use at your own risk.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-Note that the FitSmith GUI uses [Slint](https://slint.dev/) under the GPLv3 license; see the
-[FitSmith readme](fitsmith/readme.md#slint-and-licensing) for details.
+Note that the FitSmith GUI uses [Slint](https://slint.dev/) under the GPLv3 license; see
+[fitsmith/building.md#slint-and-licensing](fitsmith/building.md#slint-and-licensing) for details.
 
 ## AI Warning
 
