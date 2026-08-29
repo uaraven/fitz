@@ -117,6 +117,8 @@ impl Pixels {
 
 /// Calculate percentiles of the pixel values
 /// ```rust
+/// # use libfitz::contrast::percentile;
+/// let data = [0.1, 0.2, 0.3, 0.4, 0.5];
 /// let (percentiles, _median) = percentile(&data, &[2, 98]);
 /// println!("2% percentile: {}, 98% percentile: {}", percentiles[0], percentiles[1]);
 /// ```
