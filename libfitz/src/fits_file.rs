@@ -412,12 +412,11 @@ mod tests {
     use super::*;
     use crate::data::{ImageType, PixelBuffer};
     use crate::test_support::{
-        output_header, test_data, write_fits_with_float_keywords, write_mosaic_fits,
+        output_header, sha256_hex, test_data, write_fits_with_float_keywords, write_mosaic_fits,
         write_rgb_cube_f32_fits, write_rgb_cube_fits,
     };
     use bayer::CFA;
     use fitskit::{Bitpix, CompressOptions};
-    use sha2::{Digest, Sha256};
     use tempfile::TempDir;
 
     #[test]
@@ -462,7 +461,7 @@ mod tests {
         )
         .unwrap();
 
-        let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
+        let actual = sha256_hex(std::fs::read(&output).unwrap());
         assert_eq!(
             actual,
             "e5b5ff8800c404719862765593d39857559552120d656f41ac2ea85f85f4f7f3"
@@ -492,7 +491,7 @@ mod tests {
         // copied metadata on the compressed extension's header instead of the
         // empty primary; `compressed_save_round_trips_pixels_and_bayer_pattern`
         // is what vouches for these bytes meaning the right thing.
-        let actual = format!("{:x}", Sha256::digest(std::fs::read(&output).unwrap()));
+        let actual = sha256_hex(std::fs::read(&output).unwrap());
         assert_eq!(
             actual,
             "7bf9f18f351d1c1a1335306dbd5b550c6e6dfc877b9f20bdfdf00eeea1215c1b"

@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use fitskit::{FitsFile, Header, HeaderValue, ImageData, PixelData};
+use sha2::{Digest, Sha256};
 
 use crate::data::round_to_u16;
 use crate::keywords::{BAYERPAT, BZERO};
@@ -14,6 +15,17 @@ pub(crate) fn test_data(filename: &str) -> PathBuf {
         .join("..")
         .join("test-data")
         .join(filename)
+}
+
+/// SHA-256 of `bytes` as a lowercase hex string, for the regression tests that
+/// pin an output against a bundled fixture's known digest.
+pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
+    Sha256::digest(bytes.as_ref())
+        .iter()
+        .fold(String::new(), |mut s, b| {
+            let _ = std::fmt::write(&mut s, format_args!("{b:02x}"));
+            s
+        })
 }
 
 /// Read back the primary HDU's header of a FITS file written by a test, for

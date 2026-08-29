@@ -130,8 +130,7 @@ impl Image {
 mod tests {
     use super::*;
     use crate::fits_file::load_fits;
-    use crate::test_support::{test_data, write_mosaic_fits, write_rgb_cube_fits};
-    use sha2::{Digest, Sha256};
+    use crate::test_support::{sha256_hex, test_data, write_mosaic_fits, write_rgb_cube_fits};
     use tempfile::TempDir;
 
     #[test]
@@ -143,7 +142,7 @@ mod tests {
         assert_eq!(debayered.width, test_img.width);
         assert_eq!(debayered.height, test_img.height);
 
-        let sha = format!("{:x}", Sha256::digest(debayered.pixels.as_u16_bytes()));
+        let sha = sha256_hex(debayered.pixels.as_u16_bytes());
         assert_eq!(
             sha,
             "d4166430a8d94b586bee199d500fe26a25af0dbe65f79f932e786f2f7c8a0beb"
