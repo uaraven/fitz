@@ -1,0 +1,49 @@
+import { Palette } from "std-widgets.slint";
+
+// The single shared color palette for the whole app — main window chrome, every
+// docked panel, and every dialog — keyed on the active color scheme. Every file
+// that needs a themed color imports this rather than hardcoding dark-mode-only
+// literals or deriving its own local `dark-theme` bool, so the whole window
+// stays visually consistent and a light-theme fix only has to happen once.
+export global AppPalette {
+    out property <bool> dark-theme: Palette.color-scheme == ColorScheme.dark;
+
+    // Modal chrome (scrim, floating cards, resize grips).
+    out property <color> scrim: #000000cc;
+    out property <color> card-bg: dark-theme ? #2b2b2b : #f2f2f2;
+    out property <color> card-border: dark-theme ? #444444 : #cccccc;
+    out property <color> grip: dark-theme ? #666666 : #999999;
+    out property <color> grip-hover: dark-theme ? #aaaaaa : #555555;
+
+    // Docked-panel surfaces (file list, image canvas siblings, nested lists).
+    out property <color> panel-bg: dark-theme ? #1b1b1b : #fafafa;
+    out property <color> panel-border: dark-theme ? #3a3a3a : #d5d5d5;
+    out property <color> header-bg: dark-theme ? #2a2a2a : #e6e6e6;
+    out property <color> histogram-bg: dark-theme ? #101010 : #f0f0f0;
+    out property <color> canvas: dark-theme ? #202020 : #d0d0d0;
+
+    // Dialog prose: a bright bold title over softer secondary text.
+    out property <color> title: dark-theme ? white : #1a1a1a;
+    out property <color> body: dark-theme ? #c8c8c8 : #3c3c3c;
+
+    // Docked-panel typography: a muted section label over a bright primary
+    // value — the inverse emphasis of dialog prose, so kept as its own pair
+    // rather than reusing `title`/`body`.
+    out property <color> panel-title: dark-theme ? #d0d0d0 : #202020;
+    out property <color> panel-value: dark-theme ? white : #202020;
+
+    // Shared neutrals.
+    out property <color> muted: dark-theme ? #a0a0a0 : #707070;
+    out property <color> zebra: dark-theme ? #ffffff08 : #00000008;
+    out property <color> accent: dark-theme ? #9ecbff : #0a5ea8;
+    out property <color> danger: dark-theme ? #e08080 : #c02020;
+
+    // Tooltip surface.
+    out property <color> tooltip-bg: dark-theme ? #2b2b2b : #fbfbfb;
+    out property <color> tooltip-fg: dark-theme ? #e0e0e0 : #202020;
+    out property <color> tooltip-border: dark-theme ? #555555 : #cccccc;
+
+    // Main-window splitter handle.
+    out property <color> handle: dark-theme ? #333333 : #d5d5d5;
+    out property <color> handle-active: dark-theme ? #4a4a4a : #b0b0b0;
+}

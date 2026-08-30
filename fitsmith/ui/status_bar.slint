@@ -1,5 +1,6 @@
 import { HorizontalBox, Spinner } from "std-widgets.slint";
 import { Separator } from "widgets.slint";
+import { AppPalette } from "palette.slint";
 
 // The bottom status bar: a spinner and the global activity on the left, the
 // fine-grained pipeline step (only while one is running), and cache memory use
@@ -77,7 +78,7 @@ export component StatusBar inherits HorizontalBox {
     if root.stage-text != "": Separator { }
     if root.stage-text != "": Text {
         text: root.stage-text;
-        color: #a0a0a0;
+        color: AppPalette.muted;
         overflow: elide;
         vertical-alignment: center;
         horizontal-alignment: left;
@@ -89,7 +90,7 @@ export component StatusBar inherits HorizontalBox {
 
     Text {
         text: root.memory-text;
-        color: #a0a0a0;
+        color: AppPalette.muted;
         vertical-alignment: center;
         horizontal-alignment: right;
     }

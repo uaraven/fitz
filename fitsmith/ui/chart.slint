@@ -1,5 +1,6 @@
 import { Palette } from "std-widgets.slint";
 import { ChartPoint, ChartTick, StatLine } from "types.slint";
+import { AppPalette } from "palette.slint";
 
 // One channel's point marks, positioned within its parent's `width`/`height`
 // (the plot area). Factored out so the chart can instantiate it once per
@@ -87,9 +88,6 @@ export component AnalyticsChart inherits Rectangle {
     property <color> color-b: #3b82f6;
     property <color> mark-hover: root.dark-theme ? #ffffff : #063d6e;
     property <color> label-color: root.dark-theme ? #b0b0b0 : #555555;
-    property <color> tip-bg: root.dark-theme ? #2b2b2b : #fbfbfb;
-    property <color> tip-fg: root.dark-theme ? #e0e0e0 : #202020;
-    property <color> tip-border: root.dark-theme ? #555555 : #cccccc;
     property <color> stat-line-color: root.dark-theme ? #857530A0 : #104040A0;
 
     // The currently-hovered point (if any), reported by whichever channel's
@@ -335,23 +333,23 @@ export component AnalyticsChart inherits Rectangle {
             : flick.y + root.tip-point.y * root.area-h - tip-layout.preferred-height - 8.5px;
         width: tip-layout.preferred-width;
         height: tip-layout.preferred-height;
-        background: root.tip-bg;
+        background: AppPalette.tooltip-bg;
         border-width: 1px;
-        border-color: root.tip-border;
+        border-color: AppPalette.tooltip-border;
         border-radius: 4px;
         tip-layout := VerticalLayout {
             padding: 7px;
             spacing: 2px;
             Text {
                 text: root.tip-point.time-label;
-                color: root.tip-fg;
+                color: AppPalette.tooltip-fg;
                 font-size: 11px;
                 font-weight: 700;
             }
 
             Text {
                 text: root.tip-point.value-label;
-                color: root.tip-fg;
+                color: AppPalette.tooltip-fg;
                 font-size: 11px;
             }
         }

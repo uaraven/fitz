@@ -1,6 +1,6 @@
-import { Palette } from "std-widgets.slint";
 import { VScrollArea } from "scrolling.slint";
 import { FileRow } from "types.slint";
+import { AppPalette } from "palette.slint";
 
 // The working-set file list. Rows are click-to-highlight; the highlighted row
 // is drawn with an accent background and drives the preview. Each row also
@@ -28,23 +28,15 @@ export component FileList inherits Rectangle {
     // Rows that fit in the viewport, for Page Up / Down (at least one).
     property <int> page-size: max(1, floor(self.height / root.row-height));
 
-    // Panel, row and tooltip colors, keyed on the active color scheme: a dark
-    // muted red on dark themes, a pale red on light ones (and analogously for
-    // the neutral panel/row/text colors).
-    property <bool> dark-theme: Palette.color-scheme == ColorScheme.dark;
-    property <color> panel-bg: root.dark-theme ? #262626 : #fafafa;
-    property <color> row-hover: root.dark-theme ? #333333 : #e6e6e6;
-    property <color> row-fg: root.dark-theme ? white : #202020;
-    property <color> status-fg: root.dark-theme ? #a0a0a0 : #707070;
-    property <color> status-err: root.dark-theme ? #ff8080 : #c02020;
-    property <color> err-bg: root.dark-theme ? #4d2020 : #f7d6d6;
-    property <color> err-hover: root.dark-theme ? #612a2a : #f2bcbc;
-    property <color> err-text: root.dark-theme ? white : #601818;
-    property <color> tip-bg: root.dark-theme ? #2b2b2b : #fbfbfb;
-    property <color> tip-fg: root.dark-theme ? #e0e0e0 : #202020;
-    property <color> tip-border: root.dark-theme ? #555555 : #cccccc;
+    // Row and error-state colors that have no shared-palette equivalent, keyed
+    // on the active color scheme (same idiom `AppPalette` itself uses): a dark
+    // muted red on dark themes, a pale red on light ones.
+    property <color> row-hover: AppPalette.dark-theme ? #333333 : #e6e6e6;
+    property <color> err-bg: AppPalette.dark-theme ? #4d2020 : #f7d6d6;
+    property <color> err-hover: AppPalette.dark-theme ? #612a2a : #f2bcbc;
+    property <color> err-text: AppPalette.dark-theme ? white : #601818;
 
-    background: root.panel-bg;
+    background: AppPalette.panel-bg;
     forward-focus: fs;
 
     // Keep the highlighted row on screen: whenever the selection moves — via
@@ -107,7 +99,7 @@ export component FileList inherits Rectangle {
                 width: list.content-width;
                 height: root.row-height;
                 background: self.selected
-                    ? #0a5ea8
+                    ? AppPalette.accent
                     : (self.is-error
                         ? (touch.has-hover ? root.err-hover : root.err-bg)
                         : (touch.has-hover ? root.row-hover : transparent));
@@ -142,8 +134,8 @@ export component FileList inherits Rectangle {
                             height: 16px;
                             border-width: 1px;
                             border-radius: 3px;
-                            border-color: row.checked ? #0a5ea8 : #8a8a8a;
-                            background: row.checked ? #0a5ea8 : transparent;
+                            border-color: row.checked ? AppPalette.accent : #8a8a8a;
+                            background: row.checked ? AppPalette.accent : transparent;
                             Text {
                                 text: "✓";
                                 visible: row.checked;
@@ -166,7 +158,7 @@ export component FileList inherits Rectangle {
                         // by light themes; the theme's row color otherwise.
                         color: rowrect.selected
                             ? white
-                            : (rowrect.is-error ? root.err-text : root.row-fg);
+                            : (rowrect.is-error ? root.err-text : AppPalette.panel-value);
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                     }
@@ -174,7 +166,7 @@ export component FileList inherits Rectangle {
                         text: row.status;
                         visible: row.status != "";
                         font-size: 11px;
-                        color: row.status == "error" ? root.status-err : root.status-fg;
+                        color: row.status == "error" ? AppPalette.danger : AppPalette.muted;
                         vertical-alignment: center;
                     }
                 }
@@ -186,9 +178,9 @@ export component FileList inherits Rectangle {
                     y: root.row-height - 2px;
                     Rectangle {
                         width: 280px;
-                        background: root.tip-bg;
+                        background: AppPalette.tooltip-bg;
                         border-width: 1px;
-                        border-color: root.tip-border;
+                        border-color: AppPalette.tooltip-border;
                         border-radius: 4px;
                         VerticalLayout {
                             padding: 8px;
@@ -196,7 +188,7 @@ export component FileList inherits Rectangle {
                                 text: row.error;
                                 wrap: word-wrap;
                                 font-size: 12px;
-                                color: root.tip-fg;
+                                color: AppPalette.tooltip-fg;
                             }
                         }
                     }

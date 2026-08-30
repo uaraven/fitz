@@ -1,5 +1,6 @@
 import { Button, ComboBox, LineEdit, CheckBox } from "std-widgets.slint";
-import { DialogCard, DialogPalette } from "dialog.slint";
+import { DialogCard } from "dialog.slint";
+import { AppPalette } from "palette.slint";
 
 // The Tools ▸ Compress… / Decompress… modal dialogs. Both dim the window
 // with a click-to-dismiss scrim and float a centered card; the parent toggles
@@ -68,19 +69,19 @@ export component CompressDialog inherits DialogCard {
             text: "Compress";
             font-size: 20px;
             font-weight: 700;
-            color: DialogPalette.title;
+            color: AppPalette.title;
         }
         Text {
             text: root.file-count == 1
                 ? "1 file will be compressed."
                 : root.file-count + " files will be compressed.";
-            color: DialogPalette.body;
+            color: AppPalette.body;
         }
         HorizontalLayout {
             spacing: 8px;
             Text {
                 text: "Algorithm:";
-                color: DialogPalette.body;
+                color: AppPalette.body;
                 vertical-alignment: center;
             }
             ComboBox {
@@ -139,13 +140,13 @@ export component DecompressDialog inherits DialogCard {
             text: "Decompress";
             font-size: 20px;
             font-weight: 700;
-            color: DialogPalette.title;
+            color: AppPalette.title;
         }
         Text {
             text: root.file-count == 1
                 ? "1 file will be decompressed."
                 : root.file-count + " files will be decompressed.";
-            color: DialogPalette.body;
+            color: AppPalette.body;
         }
         DestinationOptions {
             keep-source <=> root.keep-source;

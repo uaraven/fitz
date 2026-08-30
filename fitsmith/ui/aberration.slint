@@ -1,5 +1,6 @@
 import { Button, Slider } from "std-widgets.slint";
-import { DialogCard, DialogPalette } from "dialog.slint";
+import { DialogCard } from "dialog.slint";
+import { AppPalette } from "palette.slint";
 import { Scrollbar } from "scrolling.slint";
 
 // The aberration inspector: a 3×3 mosaic of SZ×SZ crops taken from the selected
@@ -99,7 +100,7 @@ export component AberrationDialog inherits DialogCard {
                         width: viewport.cell;
                         height: viewport.cell;
                         border-width: 1px;
-                        border-color: DialogPalette.card-border;
+                        border-color: AppPalette.card-border;
                         Image {
                             width: 100%;
                             height: 100%;
@@ -145,7 +146,7 @@ export component AberrationDialog inherits DialogCard {
             spacing: 8px;
             Text {
                 text: "Zoom:";
-                color: DialogPalette.body;
+                color: AppPalette.body;
                 vertical-alignment: center;
             }
             Slider {
@@ -160,7 +161,7 @@ export component AberrationDialog inherits DialogCard {
             }
             Text {
                 text: round(root.zoom * 10) / 10 + "x";
-                color: DialogPalette.body;
+                color: AppPalette.body;
                 width: 34px;
                 vertical-alignment: center;
             }
