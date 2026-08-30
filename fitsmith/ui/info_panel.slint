@@ -1,5 +1,6 @@
 import { VScrollArea } from "scrolling.slint";
 import { StatItem } from "types.slint";
+import { PanelPalette } from "panel_palette.slint";
 
 // A docked panel showing the curated FITS metadata summary — the same fields
 // the `fitz info` command reports — as label/value lines. Shown below the image
@@ -11,7 +12,7 @@ export component InfoPanel inherits Rectangle {
     property <length> row-height: 22px;
 
     height: 150px;
-    background: #1b1b1b;
+    background: PanelPalette.background;
 
     VerticalLayout {
         padding: 10px;
@@ -19,7 +20,7 @@ export component InfoPanel inherits Rectangle {
 
         Text {
             text: "Image info";
-            color: #d0d0d0;
+            color: PanelPalette.title;
             font-weight: 700;
         }
 
@@ -35,14 +36,14 @@ export component InfoPanel inherits Rectangle {
                     Text {
                         text: item.label;
                         width: 100px;
-                        color: #9ecbff;
+                        color: PanelPalette.accent;
                         overflow: elide;
                         vertical-alignment: center;
                     }
                     Text {
                         text: item.value;
                         horizontal-stretch: 1;
-                        color: white;
+                        color: PanelPalette.body;
                         overflow: elide;
                         vertical-alignment: center;
                     }

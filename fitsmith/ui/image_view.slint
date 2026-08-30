@@ -1,4 +1,5 @@
 import { Scrollbar } from "scrolling.slint";
+import { PanelPalette } from "panel_palette.slint";
 
 // A zoomable, scrollable image surface. The natural (pixel) size is supplied by
 // Rust; the displayed size is that scaled by `zoom`. When the scaled image is
@@ -64,7 +65,7 @@ export component ImageView inherits Rectangle {
         root.zoom = root.fit-zoom;
     }
 
-    background: #202020;
+    background: PanelPalette.canvas;
     clip: true;
 
     flick := Flickable {
