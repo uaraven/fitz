@@ -32,6 +32,7 @@ pub fn show_doc(app: &AppWindow, meta: &FileMeta, preview: &image::RgbImage, sho
     app.set_info(info_items(&meta.info));
     app.set_stats(stat_items(&meta.stats));
     app.set_stat_channels(stat_channels(&meta.stats));
+    app.set_frame_stats(frame_stats(meta));
     app.set_star_stats(star_items(&meta.stars));
     app.set_histogram(histogram(&meta.stats));
 }
@@ -45,6 +46,7 @@ pub fn clear(app: &AppWindow) {
     app.set_info(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_stats(ModelRc::new(VecModel::<StatRow>::default()));
     app.set_stat_channels(ModelRc::new(VecModel::<SharedString>::default()));
+    app.set_frame_stats(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_star_stats(ModelRc::new(VecModel::<StatItem>::default()));
     app.set_histogram(ModelRc::new(VecModel::<f32>::default()));
 }
@@ -99,6 +101,15 @@ fn stat_items(stats: &ImageStats) -> ModelRc<StatRow> {
         row("Saturated", |s| s.saturated_count as f64),
     ];
     ModelRc::new(VecModel::from(items))
+}
+
+/// The whole-frame pixel measurements that aren't per-channel — shown once,
+/// separate from the per-channel grid above (currently just contrast).
+fn frame_stats(meta: &FileMeta) -> ModelRc<StatItem> {
+    ModelRc::new(VecModel::from(vec![stat(
+        "Contrast",
+        format_stat(meta.contrast as f64),
+    )]))
 }
 
 /// The channel headers printed once above the pixel-statistics columns:
@@ -303,6 +314,20 @@ mod tests {
             .map(|c| c.to_string())
             .collect();
         assert_eq!(channels, ["R", "G", "B"]);
+    }
+
+    #[test]
+    fn frame_stats_reports_contrast() {
+        let meta = FileMeta {
+            headers: Vec::new(),
+            info: Vec::new(),
+            stats: mono_stats(0, 65535, 0.0, 0.0, 0.0, 0.0, 0),
+            contrast: 0.4219,
+            stars: None,
+            star_list: Vec::new(),
+            debayered: None,
+        };
+        assert_eq!(rows(&frame_stats(&meta)), ["Contrast: 0.42"]);
     }
 
     #[test]

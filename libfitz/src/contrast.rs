@@ -196,13 +196,10 @@ fn contrast_target_dimensions(width: usize, height: usize) -> (usize, usize) {
 
 impl Image {
 
-    /// Calculates percentile contrast of the image
+    /// Calculates the global percentile contrast of the image
     /// C = (P95 - P5) / median
     /// The image is processed with median filter and gaussian filter before calculating
     /// percentile values and median to minimize the influence of stars and dark patches
-    /// Contrast value can be used to estimate whether the target features are
-    /// in the image.
-    ///
     pub fn contrast(&self) -> f32 {
         let source = self.stretch(true, DEFAULT_BRIGHTNESS);
 

@@ -291,6 +291,7 @@ mod tests {
                 median,
                 ..Stats::default()
             }],
+            contrast: 0.0,
             stars,
         }
     }

@@ -58,6 +58,9 @@ export component AppWindow inherits Window {
     // empty when the frame carries no star metrics.
     in property <[StatRow]> stats;
     in property <[string]> stat-channels;
+    // Whole-frame pixel measurements that aren't per-channel (e.g. contrast),
+    // shown once in the stats panel rather than per R/G/B column.
+    in property <[StatItem]> frame-stats;
     in property <[StatItem]> star-stats;
     in property <[float]> histogram;
     // Curated metadata summary (label/value pairs, as `fitz info` reports) for
@@ -630,6 +633,7 @@ export component AppWindow inherits Window {
                         if root.show-stats: StatsPanel {
                             stats: root.stats;
                             stat-channels: root.stat-channels;
+                            frame-stats: root.frame-stats;
                             star-stats: root.star-stats;
                             histogram: root.histogram;
                         }

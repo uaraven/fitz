@@ -9,6 +9,7 @@ import { StatItem, StatRow } from "types.slint";
 export component StatsPanel inherits Rectangle {
     in property <[StatRow]> stats;
     in property <[string]> stat-channels;
+    in property <[StatItem]> frame-stats;
     in property <[StatItem]> star-stats;
     in property <[float]> histogram;
 
@@ -21,7 +22,7 @@ export component StatsPanel inherits Rectangle {
     property <length> stat-label-width: 100px;
     property <length> stat-value-width: 56px;
 
-    height: 200px;
+    height: 230px;
     background: #1b1b1b;
 
     HorizontalLayout {
@@ -64,6 +65,22 @@ export component StatsPanel inherits Rectangle {
                     color: #a0a0a0;
                     font-size: 12px;
                     horizontal-alignment: right;
+                }
+            }
+            for f in root.frame-stats:
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: f.label;
+                    color: #a0a0a0;
+                    font-size: 12px;
+                    width: stat-label-width;
+                }
+                Text {
+                    text: f.value;
+                    color: #a0a0a0;                                                                                 anels
+                    font-size: 12px;
+                    horizontal-alignment: center;
                 }
             }
         }

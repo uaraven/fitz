@@ -41,6 +41,9 @@ pub struct FileMeta {
     /// Pixel statistics, one channel for grayscale/CFA, three (R, G, B) for an
     /// already-debayered RGB cube — straight from `Image::stats()`.
     pub stats: ImageStats,
+    /// The frame's global percentile contrast — a single whole-frame value,
+    /// unlike `stats`, straight from `Image::contrast()`.
+    pub contrast: f32,
     /// The frame's star metrics. `None` only when [`Image::detection_plane`]
     /// can't build a detection plane from this image.
     pub stars: Option<StarStats>,
@@ -64,12 +67,14 @@ impl FileMeta {
         let headers = img.header.iter().map(header_card).collect();
         let info = libfitz::summary::info_summary(img);
         let stats = img.stats();
+        let contrast = img.contrast()*100.0;
         let star_list = img.star_list(&StarDetectOptions::default()).ok();
         let stars = star_list.as_ref().map(|s| libfitz::stars::aggregate(s));
         FileMeta {
             headers,
             info,
             stats,
+            contrast,
             stars,
             star_list: star_list.unwrap_or_default(),
             debayered,
@@ -184,6 +189,14 @@ mod tests {
         );
         let meta = FileMeta::build(&img, None);
         assert_eq!(meta.stats.channels.len(), 1);
+    }
+
+    #[test]
+    fn build_computes_a_finite_contrast() {
+        let raw =
+            libfitz::fits_file::load_fits(&crate::controller::test_data("cfa_orion.fits")).unwrap();
+        let meta = FileMeta::build(&raw, Some(false));
+        assert!(meta.contrast.is_finite());
     }
 
     #[test]
