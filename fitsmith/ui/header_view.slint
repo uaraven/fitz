@@ -1,5 +1,6 @@
 import { VScrollArea } from "scrolling.slint";
 import { HeaderRow } from "types.slint";
+import { PanelPalette } from "panel_palette.slint";
 
 // One keyword / value / comment line, used for both the column-title bar
 // (`title: true`) and each data row, so the column layout is defined once.
@@ -20,7 +21,7 @@ component HeaderLine inherits Rectangle {
             width: 110px;
             font-family: root.title ? "" : "monospace";
             font-weight: root.title ? 700 : 400;
-            color: root.title ? #d0d0d0 : #9ecbff;
+            color: root.title ? PanelPalette.title : PanelPalette.accent;
             overflow: elide;
             vertical-alignment: center;
         }
@@ -29,7 +30,7 @@ component HeaderLine inherits Rectangle {
             width: 220px;
             font-family: cell.font-family;
             font-weight: cell.font-weight;
-            color: root.title ? #d0d0d0 : white;
+            color: root.title ? PanelPalette.title : PanelPalette.body;
             overflow: elide;
             vertical-alignment: center;
         }
@@ -37,7 +38,7 @@ component HeaderLine inherits Rectangle {
             text: root.comment;
             horizontal-stretch: 1;
             font-weight: cell.font-weight;
-            color: root.title ? #d0d0d0 : #a0a0a0;
+            color: root.title ? PanelPalette.title : PanelPalette.muted;
             overflow: elide;
             vertical-alignment: center;
         }
@@ -50,7 +51,7 @@ component HeaderLine inherits Rectangle {
 export component HeaderView inherits Rectangle {
     in property <[HeaderRow]> rows;
 
-    background: #1b1b1b;
+    background: PanelPalette.background;
 
     VerticalLayout {
         HeaderLine {
@@ -58,7 +59,7 @@ export component HeaderView inherits Rectangle {
             value: "Value";
             comment: "Comment";
             title: true;
-            background: #2a2a2a;
+            background: PanelPalette.header-bg;
         }
         list := VScrollArea {
             vertical-stretch: 1;
@@ -69,7 +70,7 @@ export component HeaderView inherits Rectangle {
                 keyword: row.keyword;
                 value: row.value;
                 comment: row.comment;
-                background: mod(idx, 2) == 0 ? transparent : #ffffff08;
+                background: mod(idx, 2) == 0 ? transparent : PanelPalette.zebra;
             }
         }
     }

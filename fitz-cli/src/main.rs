@@ -2,6 +2,7 @@ mod compress;
 mod copy_header;
 mod debayer;
 mod decompress;
+mod experimental;
 mod hash;
 mod info;
 mod io_prompt;
@@ -30,6 +31,7 @@ use compress::compress_file;
 use copy_header::copy_header_file;
 use debayer::{OutputFormat, debayer_file, parse_output_format};
 use decompress::decompress_file;
+use experimental::contrast_file;
 use hash::{HashTarget, hash_file};
 use info::info_file;
 use options::{
@@ -153,6 +155,27 @@ enum Command {
     /// Calculate SHA-256 hash of a FITS file
     #[command(hide = true)]
     Hash(HashArgs),
+    /// Experimental, unstable features not yet ready for general use
+    #[command(hide = true)]
+    Experimental(ExperimentalArgs),
+}
+
+#[derive(clap::Args)]
+struct ExperimentalArgs {
+    #[command(subcommand)]
+    command: ExperimentalCommand,
+}
+
+#[derive(Subcommand)]
+enum ExperimentalCommand {
+    /// Calculate the percentile contrast of FITS images
+    Contrast(ContrastArgs),
+}
+
+#[derive(clap::Args)]
+struct ContrastArgs {
+    /// FITS files to calculate contrast for
+    files: Vec<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -551,6 +574,7 @@ fn main() -> ExitCode {
         Command::Preview(a) => run_preview(a, verbose),
         Command::CopyHeader(a) => run_copy_header(a, verbose),
         Command::Hash(a) => run_hash(a),
+        Command::Experimental(a) => run_experimental(a),
     }
 }
 
@@ -811,6 +835,12 @@ fn run_hash(args: HashArgs) -> ExitCode {
         HashTarget::File
     };
     process_files(&files, |path| hash_file(path, target))
+}
+
+fn run_experimental(args: ExperimentalArgs) -> ExitCode {
+    match args.command {
+        ExperimentalCommand::Contrast(a) => process_files(&a.files, contrast_file),
+    }
 }
 
 /// Unlike the batch commands, `copy-header` operates on exactly one

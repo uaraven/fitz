@@ -1,0 +1,22 @@
+import { Palette } from "std-widgets.slint";
+
+// Shared color palette for the main window's docked panels — the Headers,
+// Stats and Info tabs, and the image canvas — keyed on the active color
+// scheme (same pattern as `DialogPalette` in dialog.slint and the file
+// list's own per-scheme colors). Every panel imports this rather than
+// hardcoding dark-mode-only literals, so they stay visually consistent with
+// each other and with the file list's light-theme choices.
+export global PanelPalette {
+    out property <bool> dark-theme: Palette.color-scheme == ColorScheme.dark;
+    out property <color> background: dark-theme ? #1b1b1b : #fafafa;
+    out property <color> header-bg: dark-theme ? #2a2a2a : #e6e6e6;
+    out property <color> title: dark-theme ? #d0d0d0 : #202020;
+    out property <color> body: dark-theme ? white : #202020;
+    out property <color> muted: dark-theme ? #a0a0a0 : #707070;
+    out property <color> accent: dark-theme ? #9ecbff : #0a5ea8;
+    out property <color> zebra: dark-theme ? #ffffff08 : #00000008;
+    out property <color> histogram-bg: dark-theme ? #101010 : #f0f0f0;
+    out property <color> histogram-border: dark-theme ? #303030 : #cccccc;
+    // The image viewer's canvas, behind the picture itself.
+    out property <color> canvas: dark-theme ? #202020 : #d0d0d0;
+}

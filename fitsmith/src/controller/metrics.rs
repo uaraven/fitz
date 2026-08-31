@@ -32,13 +32,14 @@ pub enum Metric {
     Mode,
     ZeroCount,
     SaturatedCount,
+    Contrast,
     StarCount,
     Hfr,
     Fwhm,
     Eccentricity,
 }
 
-const PIXEL_METRICS: [Metric; 9] = [
+const PIXEL_METRICS: [Metric; 10] = [
     Metric::Mean,
     Metric::Median,
     Metric::Min,
@@ -48,6 +49,7 @@ const PIXEL_METRICS: [Metric; 9] = [
     Metric::Mode,
     Metric::ZeroCount,
     Metric::SaturatedCount,
+    Metric::Contrast,
 ];
 const STAR_METRICS: [Metric; 4] = [
     Metric::Hfr,
@@ -69,6 +71,7 @@ impl Metric {
             Metric::Mode => "Mode",
             Metric::ZeroCount => "Zero count",
             Metric::SaturatedCount => "Saturated count",
+            Metric::Contrast => "Contrast",
             Metric::StarCount => "Star count",
             Metric::Hfr => "HFR",
             Metric::Fwhm => "FWHM",
@@ -95,7 +98,8 @@ impl Metric {
     }
 
     /// This metric's value for one channel's [`Stats`]. Only meaningful for a
-    /// `Pixel`-family metric.
+    /// per-channel `Pixel`-family metric — `Contrast` is a whole-frame value
+    /// handled separately in [`build_series`], so it never reaches here.
     fn pixel_value(self, s: &Stats) -> f64 {
         match self {
             Metric::Min => s.min as f64,
@@ -107,8 +111,12 @@ impl Metric {
             Metric::Mode => s.mode as f64,
             Metric::ZeroCount => s.zero_count as f64,
             Metric::SaturatedCount => s.saturated_count as f64,
-            Metric::StarCount | Metric::Hfr | Metric::Fwhm | Metric::Eccentricity => {
-                unreachable!("not a pixel metric")
+            Metric::Contrast
+            | Metric::StarCount
+            | Metric::Hfr
+            | Metric::Fwhm
+            | Metric::Eccentricity => {
+                unreachable!("not a per-channel pixel metric")
             }
         }
     }
@@ -137,6 +145,9 @@ pub struct FileMetrics {
     pub time: Option<f64>,
     pub time_str: String,
     pub stats: Vec<Stats>,
+    /// The frame's global percentile contrast — a single whole-frame value,
+    /// unlike `stats`, straight from `Image::contrast()`.
+    pub contrast: f32,
     pub stars: StarStats,
 }
 
@@ -158,6 +169,7 @@ pub fn analyze_file(path: &Path) -> Result<FileMetrics> {
         .and_then(libfitz::fits_file::parse_date_obs);
 
     let stats = image.stats().channels;
+    let contrast = image.contrast();
     let stars = image.star_stats(&StarDetectOptions::default())?;
 
     Ok(FileMetrics {
@@ -165,6 +177,7 @@ pub fn analyze_file(path: &Path) -> Result<FileMetrics> {
         time,
         time_str: time_str.unwrap_or_default(),
         stats,
+        contrast,
         stars,
     })
 }
@@ -213,6 +226,34 @@ fn channel_label(count: usize, index: usize) -> Option<&'static str> {
     }
 }
 
+/// One unlabeled line: `value` applied to every sorted file. Shared by star
+/// metrics and `Contrast` — both are one number per file, not per channel.
+fn single_line_series(
+    sorted: &[(&FileMetrics, f64)],
+    mut value: impl FnMut(&FileMetrics) -> Option<f64>,
+) -> (Vec<ChannelSeries>, usize) {
+    let mut points = Vec::new();
+    let mut unavailable = 0;
+    for (f, time) in sorted {
+        match value(f) {
+            Some(v) => points.push(SamplePoint {
+                time: *time,
+                time_str: f.time_str.clone(),
+                value: v,
+                path: f.path.clone(),
+            }),
+            None => unavailable += 1,
+        }
+    }
+    (
+        vec![ChannelSeries {
+            label: None,
+            points,
+        }],
+        unavailable,
+    )
+}
+
 /// Build the plotted series for `metric` from a batch's measured files,
 /// sorted by acquisition time. A file with no acquisition time has nowhere on
 /// the X axis to go, so it is left off the plot entirely (the dialog reports
@@ -224,27 +265,26 @@ pub fn build_series(files: &[FileMetrics], metric: Metric) -> Series {
         .collect();
     sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
 
+    // `Contrast` reports `MetricFamily::Pixel` (it belongs in the same
+    // dropdown as Mean/Median), but it's a whole-frame value rather than a
+    // per-channel one, so it always plots as one line — the same shape a
+    // star metric uses, and for the same reason.
+    if metric == Metric::Contrast {
+        let (channels, unavailable) = single_line_series(&sorted, |f| Some(f.contrast as f64));
+        return Series {
+            metric,
+            channels,
+            unavailable,
+        };
+    }
+
     match metric.family() {
         MetricFamily::Star => {
-            let mut points = Vec::new();
-            let mut unavailable = 0;
-            for (f, time) in &sorted {
-                match metric.star_value(&f.stars) {
-                    Some(value) => points.push(SamplePoint {
-                        time: *time,
-                        time_str: f.time_str.clone(),
-                        value,
-                        path: f.path.clone(),
-                    }),
-                    None => unavailable += 1,
-                }
-            }
+            let (channels, unavailable) =
+                single_line_series(&sorted, |f| metric.star_value(&f.stars));
             Series {
                 metric,
-                channels: vec![ChannelSeries {
-                    label: None,
-                    points,
-                }],
+                channels,
                 unavailable,
             }
         }
@@ -322,6 +362,7 @@ mod tests {
             time: Some(time),
             time_str: String::new(),
             stats,
+            contrast: 0.0,
             stars,
         }
     }
@@ -395,7 +436,12 @@ mod tests {
 
     #[test]
     fn build_series_keeps_a_mono_batch_as_one_unlabeled_line() {
-        let files = vec![metrics("a.fits", 100.0, vec![stats_fixture(10.0)], no_stars())];
+        let files = vec![metrics(
+            "a.fits",
+            100.0,
+            vec![stats_fixture(10.0)],
+            no_stars(),
+        )];
         let series = build_series(&files, Metric::Mean);
 
         assert_eq!(series.channels.len(), 1);
@@ -504,5 +550,47 @@ mod tests {
         let m = analyze_file(&test_data("uncompressed.fit")).unwrap();
         assert!(!m.stats.is_empty());
         assert!(m.stars.count > 0);
+    }
+
+    #[test]
+    fn analyze_file_measures_contrast() {
+        let m = analyze_file(&test_data("uncompressed.fit")).unwrap();
+        assert!(m.contrast.is_finite());
+    }
+
+    #[test]
+    fn build_series_keeps_contrast_as_one_line_even_for_an_rgb_batch() {
+        // Same 3-channel `stats` shape a debayered RGB source produces, but
+        // `Contrast` is a whole-frame value and must not fan out into R/G/B.
+        let mut a = metrics(
+            "a.fits",
+            100.0,
+            vec![
+                stats_fixture(10.0),
+                stats_fixture(20.0),
+                stats_fixture(30.0),
+            ],
+            no_stars(),
+        );
+        a.contrast = 0.4;
+        let mut b = metrics(
+            "b.fits",
+            200.0,
+            vec![
+                stats_fixture(11.0),
+                stats_fixture(21.0),
+                stats_fixture(31.0),
+            ],
+            no_stars(),
+        );
+        b.contrast = 0.6;
+        let series = build_series(&[a, b], Metric::Contrast);
+
+        assert_eq!(series.channels.len(), 1);
+        assert_eq!(series.channels[0].label, None);
+        let values: Vec<f64> = series.channels[0].points.iter().map(|p| p.value).collect();
+        assert!((values[0] - 0.4).abs() < 1e-6);
+        assert!((values[1] - 0.6).abs() < 1e-6);
+        assert_eq!(series.unavailable, 0);
     }
 }

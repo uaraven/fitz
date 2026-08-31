@@ -1,6 +1,6 @@
 //!! Operations on raw fits files
-//!! These operations do not load the images and convert them into internal format for
-//!! additional processing
+//!! These operations do not process the images on load and do not convert them into internal
+//! format for additional processing
 
 use crate::fits_file::find_image_hdu_index;
 use crate::keywords::{COMPRESSION_KEYWORDS, copy_missing_metadata};

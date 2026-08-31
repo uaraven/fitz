@@ -1,4 +1,5 @@
 import { StatItem, StatRow } from "types.slint";
+import { PanelPalette } from "panel_palette.slint";
 
 // A docked panel of image statistics: the numeric pixel summary and the star
 // metrics in two label columns on the left, a value histogram (normalized bar
@@ -9,6 +10,7 @@ import { StatItem, StatRow } from "types.slint";
 export component StatsPanel inherits Rectangle {
     in property <[StatRow]> stats;
     in property <[string]> stat-channels;
+    in property <[StatItem]> frame-stats;
     in property <[StatItem]> star-stats;
     in property <[float]> histogram;
 
@@ -21,8 +23,8 @@ export component StatsPanel inherits Rectangle {
     property <length> stat-label-width: 100px;
     property <length> stat-value-width: 56px;
 
-    height: 200px;
-    background: #1b1b1b;
+    height: 230px;
+    background: PanelPalette.background;
 
     HorizontalLayout {
         padding: 10px;
@@ -35,7 +37,7 @@ export component StatsPanel inherits Rectangle {
             alignment: start;
             Text {
                 text: root.has-stats ? "Statistics" : "No pixel statistics";
-                color: #d0d0d0;
+                color: PanelPalette.title;
                 font-weight: 700;
             }
             if root.has-channel-headers: HorizontalLayout {
@@ -44,7 +46,7 @@ export component StatsPanel inherits Rectangle {
                 for c in root.stat-channels: Text {
                     width: root.stat-value-width;
                     text: c;
-                    color: #d0d0d0;
+                    color: PanelPalette.title;
                     font-weight: 700;
                     font-size: 12px;
                     horizontal-alignment: right;
@@ -55,13 +57,29 @@ export component StatsPanel inherits Rectangle {
                 Text {
                     width: root.stat-label-width;
                     text: s.label;
-                    color: #a0a0a0;
+                    color: PanelPalette.muted;
                     font-size: 12px;
                 }
                 for v in s.values: Text {
                     width: root.stat-value-width;
                     text: v;
-                    color: #a0a0a0;
+                    color: PanelPalette.muted;
+                    font-size: 12px;
+                    horizontal-alignment: right;
+                }
+            }
+            for f in root.frame-stats:
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: f.label;
+                    color: PanelPalette.muted;
+                    font-size: 12px;
+                    width: stat-label-width;
+                }
+                Text {
+                    text: f.value;
+                    color: PanelPalette.muted;
                     font-size: 12px;
                     horizontal-alignment: right;
                 }
@@ -77,12 +95,12 @@ export component StatsPanel inherits Rectangle {
             visible: root.has-stars;
             Text {
                 text: "Stars";
-                color: #d0d0d0;
+                color: PanelPalette.title;
                 font-weight: 700;
             }
             for s in root.star-stats: Text {
                 text: s.label + ": " + s.value;
-                color: #a0a0a0;
+                color: PanelPalette.muted;
                 font-size: 12px;
             }
         }
@@ -90,8 +108,8 @@ export component StatsPanel inherits Rectangle {
         // Histogram: one bottom-anchored bar per bucket. It takes the remaining
         // width, so the columns above narrow it rather than crowding it out.
         Rectangle {
-            background: #101010;
-            border-color: #303030;
+            background: PanelPalette.histogram-bg;
+            border-color: PanelPalette.histogram-border;
             border-width: 1px;
             horizontal-stretch: 1;
             visible: root.has-stats;

@@ -63,7 +63,7 @@ impl Image {
     /// Converts the image to grayscale luminance image
     /// CFA and Grayscale images are returned as-is
     /// For RGB images the luminance is calculated from R,G,B values and returned as a single-channel image
-    fn luminance(&self) -> Image {
+    pub(crate) fn luminance(&self) -> Image {
         match self.image_type {
             ImageType::CFA(_) | ImageType::Grayscale => Image::new(
                 self.image_type,
