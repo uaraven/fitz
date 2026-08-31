@@ -1,5 +1,5 @@
 import { Button } from "std-widgets.slint";
-import { DialogPalette } from "dialog.slint";
+import { AppPalette } from "palette.slint";
 
 // The Help ▸ About overlay. Fills the whole window with a dimmed scrim (click to
 // dismiss) and a centered card. Purely presentational — the parent toggles its
@@ -10,7 +10,7 @@ export component AboutDialog inherits Rectangle {
     callback close();
 
     // Dim the window behind the card; clicking the scrim dismisses.
-    background: DialogPalette.scrim;
+    background: AppPalette.scrim;
     scrim := TouchArea {
         clicked => {
             root.close();
@@ -20,10 +20,10 @@ export component AboutDialog inherits Rectangle {
     Rectangle {
         width: 380px;
         height: 260px;
-        background: DialogPalette.card-bg;
+        background: AppPalette.card-bg;
         border-radius: 10px;
         border-width: 1px;
-        border-color: DialogPalette.card-border;
+        border-color: AppPalette.card-border;
         // Swallow clicks on the card so they don't reach the scrim and close it.
         TouchArea { }
 
@@ -42,17 +42,17 @@ export component AboutDialog inherits Rectangle {
                 text: "FitSmith";
                 font-size: 24px;
                 font-weight: 700;
-                color: DialogPalette.title;
+                color: AppPalette.title;
                 horizontal-alignment: center;
             }
             Text {
                 text: "Version " + root.version;
-                color: DialogPalette.muted;
+                color: AppPalette.muted;
                 horizontal-alignment: center;
             }
             Text {
                 text: "©2026 Oles Voronin";
-                color: DialogPalette.body;
+                color: AppPalette.body;
                 wrap: word-wrap;
                 horizontal-alignment: center;
             }

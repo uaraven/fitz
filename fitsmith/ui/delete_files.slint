@@ -1,5 +1,6 @@
 import { Button, ComboBox } from "std-widgets.slint";
-import { DialogCard, DialogPalette } from "dialog.slint";
+import { DialogCard } from "dialog.slint";
+import { AppPalette } from "palette.slint";
 
 // The Tools ▸ Delete Files… confirmation dialog: acts only on the checked
 // files (never "all files" when nothing is checked, unlike Compress/Export).
@@ -24,20 +25,20 @@ export component DeleteFilesDialog inherits DialogCard {
             text: "Delete Files";
             font-size: 20px;
             font-weight: 700;
-            color: DialogPalette.title;
+            color: AppPalette.title;
         }
         Text {
             text: root.file-count == 1
                 ? "1 checked file will be affected."
                 : root.file-count + " checked files will be affected.";
-            color: DialogPalette.body;
+            color: AppPalette.body;
             wrap: word-wrap;
         }
         HorizontalLayout {
             spacing: 8px;
             Text {
                 text: "Action:";
-                color: DialogPalette.body;
+                color: AppPalette.body;
                 vertical-alignment: center;
             }
             ComboBox {
@@ -48,7 +49,7 @@ export component DeleteFilesDialog inherits DialogCard {
         }
         if root.action-index == 1: Text {
             text: "This action cannot be undone.";
-            color: DialogPalette.danger;
+            color: AppPalette.danger;
             wrap: word-wrap;
         }
         Rectangle {
