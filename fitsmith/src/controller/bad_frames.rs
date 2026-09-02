@@ -28,6 +28,8 @@ use crate::{AppWindow, BadFrameRow};
 pub struct BadFrameParams {
     /// Factor 1 — transparency: background floor rising.
     pub floor: bool,
+    /// Factor 1a - contrast levels - covers the same thing as transparency, but more direct
+    pub contrast: bool,
     /// Factor 2 — focus: median star FWHM rising.
     pub fwhm: bool,
     /// Factor 3 — tracking: median star eccentricity rising.
@@ -38,6 +40,8 @@ pub struct BadFrameParams {
     /// Transparency's rejection threshold, in robust sigmas (3 conservative
     /// … 1 aggressive). Governs both `floor` and `star_count`.
     pub floor_sigma: f32,
+    /// low contrast rejection - caused by bad transparency
+    pub contrast_sigma: f32,
     /// Focus's rejection threshold, in robust sigmas.
     pub fwhm_sigma: f32,
     /// Tracking's rejection threshold, in robust sigmas.
@@ -62,6 +66,9 @@ pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> 
     let mut bad_frames: HashSet<PathBuf> = HashSet::new();
     if params.floor {
         bad_frames.extend(estimate_frame_for_noise_floor(files, params.floor_sigma));
+    }
+    if params.contrast {
+        bad_frames.extend(estimate_frame_for_contrast(files, params.contrast_sigma));
     }
     if params.star_count {
         let bads = estimate_frame_for_star_count(files, params.floor_sigma);
@@ -148,6 +155,23 @@ fn estimate_frame_for_eccentricity(metrics: &[FileMetrics], sigma: f32) -> Vec<P
     }).collect()
 }
 
+
+fn estimate_frame_for_contrast(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
+    let meta = calculate_meta_stats(metrics, |st| Some(st.contrast as f64));
+    if meta.mad == 0.0 {
+        return vec![]
+    }
+    metrics.iter().flat_map(|m| {
+        let z = (m.contrast - meta.median) / meta.mad;
+        if z <= -sigma {
+            Some(m.path.clone())
+        } else {
+            None
+        }
+    }).collect()
+}
+
+
 struct MetaStats {
     median: f32,
     mad: f32
@@ -205,6 +229,7 @@ fn show_bad_frames(app: &AppWindow, plan: Plan, failures: usize) {
 pub fn recompute_bad_frames(app: &AppWindow) {
     let params = BadFrameParams {
         floor: app.get_bad_floor_enabled(),
+        contrast: app.get_contrast_enabled(),
         fwhm: app.get_bad_fwhm_enabled(),
         eccentricity: app.get_bad_ecc_enabled(),
         // The "Transparency (floor / star count)" checkbox drives both
@@ -213,6 +238,7 @@ pub fn recompute_bad_frames(app: &AppWindow) {
         floor_sigma: app.get_bad_floor_sigma(),
         fwhm_sigma: app.get_bad_fwhm_sigma(),
         eccentricity_sigma: app.get_bad_ecc_sigma(),
+        contrast_sigma: app.get_contrast_sigma(),
     };
     let (rows, flagged, total) = STATE.with(|s| {
         let mut st = s.borrow_mut();
@@ -274,11 +300,13 @@ mod tests {
         BadFrameParams {
             floor: true,
             fwhm: true,
+            contrast: true,
             eccentricity: true,
             star_count: true,
             floor_sigma: sigma,
             fwhm_sigma: sigma,
             eccentricity_sigma: sigma,
+            contrast_sigma: sigma,
         }
     }
 
@@ -293,6 +321,13 @@ mod tests {
             }],
             contrast: 0.0,
             stars,
+        }
+    }
+
+    fn frame_with_contrast(path: &str, contrast: f32, stars: StarStats) -> FileMetrics {
+        FileMetrics {
+            contrast,
+            ..frame(path, 0.0, stars)
         }
     }
 
@@ -414,11 +449,13 @@ mod tests {
         let params = BadFrameParams {
             floor: true,
             fwhm: false,
+            contrast: false,
             eccentricity: false,
             star_count: true,
             floor_sigma: 2.0,
             fwhm_sigma: 2.0,
             eccentricity_sigma: 2.0,
+            contrast_sigma: 1.0,
         };
         let flagged = flagged_names(&evaluate(&files, &params));
         for bad in [
@@ -442,12 +479,14 @@ mod tests {
         let files = measure_bad_image_fixtures();
         let params = BadFrameParams {
             floor: false,
+            contrast: false,
             fwhm: false,
             eccentricity: true,
             star_count: false,
             floor_sigma: 2.0,
             fwhm_sigma: 2.0,
             eccentricity_sigma: 2.0,
+            contrast_sigma: 2.0,
         };
         let flagged = flagged_names(&evaluate(&files, &params));
         for bad in ["bad_tracking1.fits", "bad_eccentricity.fits"] {
@@ -460,5 +499,84 @@ mod tests {
             !flagged.iter().any(|n| n.starts_with("good")),
             "no good frame may trip the eccentricity factor, got {flagged:?}"
         );
+    }
+
+    #[test]
+    fn the_contrast_factor_alone_catches_every_bad_fixture() {
+        // Unlike floor/eccentricity, low contrast is a symptom shared by all
+        // five defects in the fixture set (starless frames, mistracking and
+        // trailing all wash out the image's dynamic range), so this factor
+        // alone should catch the lot.
+        let files = measure_bad_image_fixtures();
+        let params = BadFrameParams {
+            floor: false,
+            contrast: true,
+            fwhm: false,
+            eccentricity: false,
+            star_count: false,
+            floor_sigma: 2.0,
+            fwhm_sigma: 2.0,
+            eccentricity_sigma: 2.0,
+            contrast_sigma: 2.0,
+        };
+        let flagged = flagged_names(&evaluate(&files, &params));
+        for bad in [
+            "bad_no_stars1.fits",
+            "bad_no_stars2.fits",
+            "bad_no_stars3.fits",
+            "bad_tracking1.fits",
+            "bad_eccentricity.fits",
+        ] {
+            assert!(
+                flagged.iter().any(|n| n == bad),
+                "{bad} must be flagged by the contrast factor, got {flagged:?}"
+            );
+        }
+        assert!(
+            !flagged.iter().any(|n| n.starts_with("good")),
+            "no good frame may trip the contrast factor, got {flagged:?}"
+        );
+    }
+
+    #[test]
+    fn contrast_factor_flags_frames_below_the_session_baseline_only() {
+        // Direction check: contrast dropping (not rising) means "worse", the
+        // opposite sense from floor/fwhm/eccentricity. A frame with
+        // above-median contrast must never trip this factor.
+        let no_stars = StarStats { count: 0, hfr: None, fwhm: None, eccentricity: None };
+        let files = vec![
+            frame_with_contrast("a.fits", 0.20, no_stars.clone()),
+            frame_with_contrast("b.fits", 0.21, no_stars.clone()),
+            frame_with_contrast("c.fits", 0.19, no_stars.clone()),
+            frame_with_contrast("d.fits", 0.20, no_stars.clone()),
+            frame_with_contrast("e.fits", 0.21, no_stars.clone()),
+            frame_with_contrast("low_contrast.fits", 0.05, no_stars.clone()),
+            frame_with_contrast("high_contrast.fits", 0.40, no_stars),
+        ];
+        let params = BadFrameParams {
+            floor: false,
+            contrast: true,
+            fwhm: false,
+            eccentricity: false,
+            star_count: false,
+            floor_sigma: 2.0,
+            fwhm_sigma: 2.0,
+            eccentricity_sigma: 2.0,
+            contrast_sigma: 2.0,
+        };
+        let flagged = flagged_names(&evaluate(&files, &params));
+        assert_eq!(flagged, vec!["low_contrast.fits".to_string()]);
+    }
+
+    #[test]
+    fn contrast_factor_never_trips_when_every_frame_has_the_same_contrast() {
+        // Zero MAD across the baseline must not divide by zero or flag
+        // anything, matching the other factors' zero-dispersion guard.
+        let no_stars = StarStats { count: 0, hfr: None, fwhm: None, eccentricity: None };
+        let files = vec![
+            frame_with_contrast("a.fits", 0.3, no_stars.clone()),
+            frame_with_contrast("b.fits", 0.3, no_stars),
+        ];
+        assert!(evaluate(&files, &all_factors(1.0)).is_empty());
     }
 }
