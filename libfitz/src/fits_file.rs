@@ -145,7 +145,7 @@ pub fn load_fits(source: &Path) -> Result<Image> {
         let height = img.height().ok_or_else(|| anyhow!("No height"))?;
 
         let b_scale = hdu.header.get_float(BSCALE).unwrap_or(1.0) as f32;
-        let b_zero = hdu.header.get_float(BZERO).unwrap_or(0.0) as f32;
+        let b_zero = hdu.header.get_float(BZERO).unwrap_or(if let PixelData::I16(_) = &img.pixels { 32768.0 } else { 0.0 }) as f32;
 
         let datamax = hdu.header.get_float(DATAMAX).unwrap_or(0.0) as f32;
         let datamin = hdu.header.get_float(DATAMIN).unwrap_or(0.0) as f32;
