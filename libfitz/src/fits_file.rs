@@ -145,7 +145,14 @@ pub fn load_fits(source: &Path) -> Result<Image> {
         let height = img.height().ok_or_else(|| anyhow!("No height"))?;
 
         let b_scale = hdu.header.get_float(BSCALE).unwrap_or(1.0) as f32;
-        let b_zero = hdu.header.get_float(BZERO).unwrap_or(if let PixelData::I16(_) = &img.pixels { 32768.0 } else { 0.0 }) as f32;
+        let b_zero = hdu
+            .header
+            .get_float(BZERO)
+            .unwrap_or(if let PixelData::I16(_) = &img.pixels {
+                32768.0
+            } else {
+                0.0
+            }) as f32;
 
         let datamax = hdu.header.get_float(DATAMAX).unwrap_or(0.0) as f32;
         let datamin = hdu.header.get_float(DATAMIN).unwrap_or(0.0) as f32;
@@ -705,7 +712,7 @@ mod tests {
         let samples = u16_samples(load_samples(
             "i16.fits",
             pixels,
-            &[("DATAMIN", 0.0), ("DATAMAX", 1024.0)],
+            &[("BZERO", 0.0), ("DATAMIN", 0.0), ("DATAMAX", 1024.0)],
         ));
         // s / 1024 * 65535, truncated.
         assert_eq!(samples, vec![0, 16383, 32767, 49151, 65535]);
@@ -722,6 +729,31 @@ mod tests {
             &[("BZERO", 32768.0), ("DATAMIN", 0.0), ("DATAMAX", 65535.0)],
         ));
         assert_eq!(samples, vec![0, 32768, 65535]);
+    }
+
+    /// Some cameras (e.g. the DWARF 3) write raw unsigned 16-bit samples under
+    /// BITPIX=16 but never set BZERO at all, relying on readers to assume the
+    /// unsigned convention anyway. Siril's `manage_bitpix` has the same
+    /// special case: BZERO entirely missing (not merely present and 0)
+    /// defaults to the unsigned offset instead of the FITS standard's signed
+    /// default of 0, so this must default the same way or every such frame
+    /// loads with its top half wrapped to black.
+    #[test]
+    fn missing_bzero_on_a_bitpix_16_image_defaults_to_the_unsigned_offset() {
+        let pixels = PixelData::I16(vec![-32768, 0, 32767]);
+        let samples = u16_samples(load_samples("no_bzero.fits", pixels, &[]));
+        assert_eq!(samples, vec![0, 32768, 65535]);
+    }
+
+    /// An explicit `BZERO=0` is a deliberate declaration of signed data, not
+    /// an absent header, so it must NOT trigger the unsigned default above:
+    /// negative physical values saturate to 0 instead of being offset back
+    /// into range.
+    #[test]
+    fn explicit_bzero_zero_on_a_bitpix_16_image_is_honored_as_signed() {
+        let pixels = PixelData::I16(vec![-32768, 0, 32767]);
+        let samples = u16_samples(load_samples("bzero_zero.fits", pixels, &[("BZERO", 0.0)]));
+        assert_eq!(samples, vec![0, 0, 32767]);
     }
 
     /// BSCALE/BZERO resolve the sample to its physical value first; the data

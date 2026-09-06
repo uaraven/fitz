@@ -55,14 +55,18 @@ pub(crate) fn write_fits_with_float_keywords(
 }
 
 /// Write a 2D single-plane I16 mosaic, optionally tagged with a BAYERPAT.
+///
+/// Stamps an explicit `BZERO=0`: without it, a bare BITPIX=16 image with no
+/// BZERO at all now loads under the unsigned-16 default (see `load_fits`),
+/// which would shift these small sequential fixture values by +32768.
 pub(crate) fn write_mosaic_fits(path: &Path, width: usize, height: usize, pattern: Option<&str>) {
     let pixels: Vec<i16> = (0..(width * height) as i16).collect();
     let img = ImageData::new(vec![width, height], PixelData::I16(pixels));
     let mut fits = FitsFile::with_primary_image(img);
+    let header = &mut fits.primary_mut().header;
+    header.set(BZERO, HeaderValue::Float(0.0), None);
     if let Some(p) = pattern {
-        fits.primary_mut()
-            .header
-            .set(BAYERPAT, HeaderValue::String(p.to_string()), None);
+        header.set(BAYERPAT, HeaderValue::String(p.to_string()), None);
     }
     fits.to_file(path).unwrap();
 }
@@ -181,6 +185,9 @@ fn gaussian_at(x: usize, y: usize) -> f64 {
 }
 
 /// Write a 3-plane (R, G, B) I16 RGB cube with sequential pixel values.
+///
+/// Stamps an explicit `BZERO=0` (see `write_mosaic_fits`) so these small
+/// sequential values load back unshifted.
 pub(crate) fn write_rgb_cube_fits(path: &Path, width: usize, height: usize) {
     let n = width * height;
     let mut pixels = Vec::with_capacity(n * 3);
@@ -190,7 +197,10 @@ pub(crate) fn write_rgb_cube_fits(path: &Path, width: usize, height: usize) {
         }
     }
     let img = ImageData::new(vec![width, height, 3], PixelData::I16(pixels));
-    let fits = FitsFile::with_primary_image(img);
+    let mut fits = FitsFile::with_primary_image(img);
+    fits.primary_mut()
+        .header
+        .set(BZERO, HeaderValue::Float(0.0), None);
     fits.to_file(path).unwrap();
 }
 

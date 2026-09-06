@@ -18,8 +18,22 @@ fn has_extension(path: &Path, candidates: &[&str]) -> bool {
 
 /// Whether `path` looks like a FITS image we can open.
 pub fn is_fits_path(path: &Path) -> bool {
-    has_extension(path, FITS_EXTENSIONS)
+    has_extension(path, FITS_EXTENSIONS) && !macos_special_file(path)
 }
+
+#[cfg(target_os = "macos")]
+fn macos_special_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|f| f.to_str())
+        .map(|f| f.starts_with("._"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_special_file(_path: &Path) -> bool {
+    false
+}
+
 
 /// Whether `path` is a tile-compressed FITS (`.fz`), used to badge the file row.
 pub fn is_compressed(path: &Path) -> bool {
