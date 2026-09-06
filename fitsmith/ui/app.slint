@@ -192,12 +192,14 @@ export component AppWindow inherits Window {
     in property <[BadFrameRow]> bad-frames-model;
     in property <string> bad-frames-summary;
     in-out property <bool> bad-floor-enabled: true;
+    in-out property <bool> contrast-enabled: false;
     in-out property <bool> bad-fwhm-enabled: false;
     in-out property <bool> bad-ecc-enabled: false;
     // Each factor's own rejection threshold, in robust sigmas (1 aggressive
     // … 3 conservative). Transparency's slider also governs star count,
     // since they share the "Transparency" checkbox.
     in-out property <float> bad-floor-sigma: 2.0;
+    in-out property <float> contrast-sigma: 2.0;
     in-out property <float> bad-fwhm-sigma: 2.0;
     in-out property <float> bad-ecc-sigma: 2.0;
     in-out property <length> bad-frames-card-width: 720px;
@@ -867,9 +869,11 @@ export component AppWindow inherits Window {
         bad-frames: root.bad-frames-model;
         summary: root.bad-frames-summary;
         floor-enabled <=> root.bad-floor-enabled;
+        contrast-enabled <=> root.contrast-enabled;
         fwhm-enabled <=> root.bad-fwhm-enabled;
         ecc-enabled <=> root.bad-ecc-enabled;
         floor-sigma <=> root.bad-floor-sigma;
+        contrast-sigma <=> root.contrast-sigma;
         fwhm-sigma <=> root.bad-fwhm-sigma;
         ecc-sigma <=> root.bad-ecc-sigma;
         card-width <=> root.bad-frames-card-width;

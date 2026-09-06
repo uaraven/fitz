@@ -62,12 +62,14 @@ export component BadFramesDialog inherits DialogCard {
     // "N of M frames flagged", worded by the controller.
     in property <string> summary;
     in-out property <bool> floor-enabled;
+    in-out property <bool> contrast-enabled;
     in-out property <bool> fwhm-enabled;
     in-out property <bool> ecc-enabled;
     // Each factor's own rejection threshold, in robust sigmas (1 aggressive
     // … 3 conservative). The transparency slider also governs star count,
     // since they share the "Transparency" checkbox.
     in-out property <float> floor-sigma;
+    in-out property <float> contrast-sigma;
     in-out property <float> fwhm-sigma;
     in-out property <float> ecc-sigma;
 
@@ -121,6 +123,20 @@ export component BadFramesDialog inherits DialogCard {
                 FactorSlider {
                     sigma <=> root.floor-sigma;
                     enabled: root.floor-enabled;
+                    changed => {
+                        root.params-changed();
+                    }
+                }
+                CheckBox {
+                    text: "Contrast";
+                    checked <=> root.contrast-enabled;
+                    toggled => {
+                        root.params-changed();
+                    }
+                }
+                FactorSlider {
+                    sigma <=> root.contrast-sigma;
+                    enabled: root.contrast-enabled;
                     changed => {
                         root.params-changed();
                     }
