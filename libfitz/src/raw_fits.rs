@@ -3,11 +3,24 @@
 //! format for additional processing
 
 use crate::fits_file::find_image_hdu_index;
-use crate::keywords::{COMPRESSION_KEYWORDS, copy_missing_metadata};
+use crate::keywords::{BSCALE, BZERO, COMPRESSION_KEYWORDS, copy_missing_metadata};
 use anyhow::anyhow;
-use fitskit::{CompressOptions, CompressionType, FitsFile, Hdu, HduData, ImageData, Quantize};
+use fitskit::{
+    CompressOptions, CompressionType, FitsFile, Hdu, HduData, Header, ImageData, Quantize,
+};
 use std::borrow::Cow;
 use std::path::Path;
+
+/// copies BZERO and BSCALE headers. Used by compression/decompression
+fn copy_pixel_scaling(dest: &mut Header, src: &Header) {
+    for name in [BSCALE, BZERO] {
+        if dest.find(name).is_none()
+            && let Some(kw) = src.find(name)
+        {
+            dest.push(kw.clone());
+        }
+    }
+}
 
 /// Loads the FitsFile uncompressing it if necessary
 pub fn load_raw(source: &Path) -> anyhow::Result<FitsFile> {
@@ -23,6 +36,7 @@ pub fn load_raw(source: &Path) -> anyhow::Result<FitsFile> {
             &compressed_hdu.header,
             COMPRESSION_KEYWORDS,
         );
+        copy_pixel_scaling(&mut u_hdu.header, &compressed_hdu.header);
         Ok(FitsFile { hdus: vec![u_hdu] })
     } else {
         Ok(ff)
@@ -112,6 +126,7 @@ pub fn save_raw(
         let mut compressed_fits = FitsFile::with_empty_primary();
         let mut compressed_hdu = img.compress(&compress_options)?;
         copy_missing_metadata(&mut compressed_hdu.header, &hdu.header, &[]);
+        copy_pixel_scaling(&mut compressed_hdu.header, &hdu.header);
         compressed_fits.push_extension(compressed_hdu);
         compressed_fits.to_file(target)?;
         Ok(())
@@ -122,7 +137,7 @@ pub fn save_raw(
 mod tests {
     use super::*;
     use crate::test_support::{write_mosaic_fits, write_mosaic_fits_with_metadata};
-    use fitskit::Header;
+    use fitskit::{HeaderValue, PixelData};
     use tempfile::TempDir;
 
     fn assert_metadata_preserved(header: &Header) {
@@ -253,6 +268,53 @@ mod tests {
         let mut target_fits = FitsFile::from_file(&target).unwrap();
 
         assert!(copy_headers_raw(&source_fits, &mut target_fits).is_err());
+    }
+
+    /// `write_mosaic_fits`/`write_mosaic_fits_with_metadata` stamp `BZERO=0`
+    /// (a deliberate signed-data declaration), but the real-world regression
+    /// this guards is the unsigned-16 convention's `BZERO=32768`/`BSCALE=1` —
+    /// without those, an I16 mosaic's samples are meaningless to any reader
+    /// that doesn't special-case a missing `BZERO`.
+    fn write_unsigned16_mosaic(path: &Path, width: usize, height: usize) {
+        let pixels: Vec<i16> = (0..(width * height) as i16).collect();
+        let img = ImageData::new(vec![width, height], PixelData::I16(pixels));
+        let mut fits = FitsFile::with_primary_image(img);
+        let header = &mut fits.primary_mut().header;
+        header.set(BZERO, HeaderValue::Float(32768.0), None);
+        header.set(BSCALE, HeaderValue::Float(1.0), None);
+        fits.to_file(path).unwrap();
+    }
+
+    #[test]
+    fn compress_then_decompress_preserves_bzero_bscale() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("in.fits");
+        write_unsigned16_mosaic(&src, 8, 8);
+
+        let fits = load_raw(&src).unwrap();
+        assert_eq!(fits.hdus[0].header.get_float(BZERO), Some(32768.0));
+        assert_eq!(fits.hdus[0].header.get_float(BSCALE), Some(1.0));
+
+        let compressed = tmp.path().join("out.fits.fz");
+        save_raw(&fits, &compressed, CompressionSettings::Rice1).unwrap();
+
+        let compressed_fits = FitsFile::from_file(&compressed).unwrap();
+        let hdu_idx = find_image_hdu_index(&compressed_fits).unwrap();
+        let compressed_header = &compressed_fits.hdus[hdu_idx].header;
+        assert_eq!(
+            compressed_header.get_float(BZERO),
+            Some(32768.0),
+            "BZERO must survive compression, or the compressed data is unusable to any reader that doesn't default it"
+        );
+        assert_eq!(compressed_header.get_float(BSCALE), Some(1.0));
+
+        let decompressed = load_raw(&compressed).unwrap();
+        assert_eq!(
+            decompressed.hdus[0].header.get_float(BZERO),
+            Some(32768.0),
+            "BZERO must survive decompression too"
+        );
+        assert_eq!(decompressed.hdus[0].header.get_float(BSCALE), Some(1.0));
     }
 
     #[test]
