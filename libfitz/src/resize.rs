@@ -118,7 +118,7 @@ mod tests {
         let src: Vec<u16> = std::iter::repeat_n([7u16, 8, 9], 16).flatten().collect();
         let out = resize_rgb(&src, 4, 4, 2, 3);
         assert_eq!(out.len(), 2 * 3 * 3);
-        assert!(out.chunks_exact(3).all(|c| c == [7, 8, 9]));
+        assert!(out.as_chunks::<3>().0.iter().all(|c| *c == [7, 8, 9]));
     }
 
     #[test]
@@ -126,6 +126,6 @@ mod tests {
         // 1x1 source replicated across a larger target.
         let out = resize_rgb(&[1, 2, 3], 1, 1, 3, 2);
         assert_eq!(out.len(), 3 * 2 * 3);
-        assert!(out.chunks_exact(3).all(|c| c == [1, 2, 3]));
+        assert!(out.as_chunks::<3>().0.iter().all(|c| *c == [1, 2, 3]));
     }
 }

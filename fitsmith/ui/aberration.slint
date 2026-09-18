@@ -65,18 +65,18 @@ export component AberrationDialog inherits DialogCard {
             // Reads the pre-zoom geometry, assigns `root.zoom` (which re-runs
             // the `cell`/`grid-*` bindings), then re-derives the pan offsets.
             function zoom-to(z: float) {
-                self.anchor-fx = (-flick.viewport-x + flick.width / 2
-                    - (flick.viewport-width - self.grid-w) / 2) / self.grid-w;
-                self.anchor-fy = (-flick.viewport-y + flick.height / 2
-                    - (flick.viewport-height - self.grid-h) / 2) / self.grid-h;
+                self.anchor-fx = (-flick.content-x + flick.width / 2
+                    - (flick.content-width - self.grid-w) / 2) / self.grid-w;
+                self.anchor-fy = (-flick.content-y + flick.height / 2
+                    - (flick.content-height - self.grid-h) / 2) / self.grid-h;
                 root.zoom = z;
-                flick.viewport-x = clamp(
-                    flick.width / 2 - (flick.viewport-width - self.grid-w) / 2 - self.anchor-fx * self.grid-w,
-                    min(0px, flick.width - flick.viewport-width),
+                flick.content-x = clamp(
+                    flick.width / 2 - (flick.content-width - self.grid-w) / 2 - self.anchor-fx * self.grid-w,
+                    min(0px, flick.width - flick.content-width),
                     0px);
-                flick.viewport-y = clamp(
-                    flick.height / 2 - (flick.viewport-height - self.grid-h) / 2 - self.anchor-fy * self.grid-h,
-                    min(0px, flick.height - flick.viewport-height),
+                flick.content-y = clamp(
+                    flick.height / 2 - (flick.content-height - self.grid-h) / 2 - self.anchor-fy * self.grid-h,
+                    min(0px, flick.height - flick.content-height),
                     0px);
             }
 
@@ -85,12 +85,12 @@ export component AberrationDialog inherits DialogCard {
                 height: parent.height;
                 // Pad the viewport to the visible area when the grid is smaller,
                 // so it centers; grow to the grid when larger, so it can be panned.
-                viewport-width: max(viewport.grid-w, self.width);
-                viewport-height: max(viewport.grid-h, self.height);
+                content-width: max(viewport.grid-w, self.width);
+                content-height: max(viewport.grid-h, self.height);
 
                 GridLayout {
-                    x: (flick.viewport-width - viewport.grid-w) / 2;
-                    y: (flick.viewport-height - viewport.grid-h) / 2;
+                    x: (flick.content-width - viewport.grid-w) / 2;
+                    y: (flick.content-height - viewport.grid-h) / 2;
                     width: viewport.grid-w;
                     height: viewport.grid-h;
                     spacing: root.gutter;
@@ -120,11 +120,11 @@ export component AberrationDialog inherits DialogCard {
                 x: parent.width - self.width - 2px;
                 y: 2px;
                 height: parent.height - 4px - (hbar.visible ? 8px : 0px);
-                content: flick.viewport-height;
+                content: flick.content-height;
                 view: flick.height;
-                pos: -flick.viewport-y;
+                pos: -flick.content-y;
                 moved(p) => {
-                    flick.viewport-y = -p;
+                    flick.content-y = -p;
                 }
             }
             hbar := Scrollbar {
@@ -133,11 +133,11 @@ export component AberrationDialog inherits DialogCard {
                 x: 2px;
                 y: parent.height - self.height - 2px;
                 width: parent.width - 4px - (self.visible ? 8px : 0px);
-                content: flick.viewport-width;
+                content: flick.content-width;
                 view: flick.width;
-                pos: -flick.viewport-x;
+                pos: -flick.content-x;
                 moved(p) => {
-                    flick.viewport-x = -p;
+                    flick.content-x = -p;
                 }
             }
         }

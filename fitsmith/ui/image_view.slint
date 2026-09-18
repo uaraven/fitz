@@ -44,18 +44,18 @@ export component ImageView inherits Rectangle {
     // pre-zoom geometry, assigns `zoom` (which re-runs the `scaled-*` and
     // viewport bindings), then re-derives the pan offsets.
     public function zoom-to(z: float) {
-        root.anchor-fx = (-flick.viewport-x + flick.width / 2
-            - (flick.viewport-width - root.scaled-width) / 2) / root.scaled-width;
-        root.anchor-fy = (-flick.viewport-y + flick.height / 2
-            - (flick.viewport-height - root.scaled-height) / 2) / root.scaled-height;
+        root.anchor-fx = (-flick.content-x + flick.width / 2
+            - (flick.content-width - root.scaled-width) / 2) / root.scaled-width;
+        root.anchor-fy = (-flick.content-y + flick.height / 2
+            - (flick.content-height - root.scaled-height) / 2) / root.scaled-height;
         root.zoom = clamp(z, root.min-zoom, root.max-zoom);
-        flick.viewport-x = clamp(
-            flick.width / 2 - (flick.viewport-width - root.scaled-width) / 2 - root.anchor-fx * root.scaled-width,
-            min(0px, flick.width - flick.viewport-width),
+        flick.content-x = clamp(
+            flick.width / 2 - (flick.content-width - root.scaled-width) / 2 - root.anchor-fx * root.scaled-width,
+            min(0px, flick.width - flick.content-width),
             0px);
-        flick.viewport-y = clamp(
-            flick.height / 2 - (flick.viewport-height - root.scaled-height) / 2 - root.anchor-fy * root.scaled-height,
-            min(0px, flick.height - flick.viewport-height),
+        flick.content-y = clamp(
+            flick.height / 2 - (flick.content-height - root.scaled-height) / 2 - root.anchor-fy * root.scaled-height,
+            min(0px, flick.height - flick.content-height),
             0px);
     }
 
@@ -73,11 +73,11 @@ export component ImageView inherits Rectangle {
         height: parent.height;
         // Pad the viewport out to the visible area when the image is smaller,
         // so it centers; grow to the image when larger, so it can be panned.
-        viewport-width: max(root.scaled-width, self.width);
-        viewport-height: max(root.scaled-height, self.height);
+        content-width: max(root.scaled-width, self.width);
+        content-height: max(root.scaled-height, self.height);
         Image {
-            x: (flick.viewport-width - root.scaled-width) / 2;
-            y: (flick.viewport-height - root.scaled-height) / 2;
+            x: (flick.content-width - root.scaled-width) / 2;
+            y: (flick.content-height - root.scaled-height) / 2;
             width: root.scaled-width;
             height: root.scaled-height;
             source: root.source;
@@ -93,11 +93,11 @@ export component ImageView inherits Rectangle {
         x: parent.width - self.width - 2px;
         y: 2px;
         height: parent.height - 4px - (h-bar.visible ? 8px : 0px);
-        content: flick.viewport-height;
+        content: flick.content-height;
         view: flick.height;
-        pos: -flick.viewport-y;
+        pos: -flick.content-y;
         moved(p) => {
-            flick.viewport-y = -p;
+            flick.content-y = -p;
         }
     }
     h-bar := Scrollbar {
@@ -106,11 +106,11 @@ export component ImageView inherits Rectangle {
         x: 2px;
         y: parent.height - self.height - 2px;
         width: parent.width - 4px - (self.visible ? 8px : 0px);
-        content: flick.viewport-width;
+        content: flick.content-width;
         view: flick.width;
-        pos: -flick.viewport-x;
+        pos: -flick.content-x;
         moved(p) => {
-            flick.viewport-x = -p;
+            flick.content-x = -p;
         }
     }
 }
