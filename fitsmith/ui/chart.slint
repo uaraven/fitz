@@ -146,8 +146,8 @@ export component AnalyticsChart inherits Rectangle {
         y: root.title-h;
         width: root.viewport-w;
         height: root.area-h + root.x-axis-h;
-        viewport-width: root.content-w;
-        viewport-height: self.height;
+        content-width: root.content-w;
+        content-height: self.height;
 
         // Plot background and frame (the axes).
         Rectangle {
@@ -325,7 +325,7 @@ export component AnalyticsChart inherits Rectangle {
     // coordinates, translated into the Flickable's current scroll offset.
     if root.tip-visible: Rectangle {
         x: clamp(
-            flick.x + flick.viewport-x + root.tip-point.x * root.content-w - tip-layout.preferred-width / 2,
+            flick.x + flick.content-x + root.tip-point.x * root.content-w - tip-layout.preferred-width / 2,
             0px,
             root.width - tip-layout.preferred-width);
         y: root.tip-point.y * root.area-h < 56px

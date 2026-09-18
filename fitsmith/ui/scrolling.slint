@@ -67,18 +67,18 @@ export component VScrollArea inherits Rectangle {
     // already visible, so blink / keyboard navigation only nudges the list when
     // the current row would otherwise be off-screen.
     public function ensure-visible(item-top: length, item-height: length) {
-        if (item-top < -flick.viewport-y) {
-            flick.viewport-y = -item-top;
-        } else if (item-top + item-height > -flick.viewport-y + flick.height) {
-            flick.viewport-y = -(item-top + item-height - flick.height);
+        if (item-top < -flick.content-y) {
+            flick.content-y = -item-top;
+        } else if (item-top + item-height > -flick.content-y + flick.height) {
+            flick.content-y = -(item-top + item-height - flick.height);
         }
     }
 
     flick := Flickable {
         width: parent.width;
         height: parent.height;
-        viewport-width: self.width;
-        viewport-height: max(root.content-height, self.height);
+        content-width: self.width;
+        content-height: max(root.content-height, self.height);
         @children
     }
 
@@ -87,11 +87,11 @@ export component VScrollArea inherits Rectangle {
         width: 6px;
         x: parent.width - self.width;
         height: parent.height;
-        content: flick.viewport-height;
+        content: flick.content-height;
         view: flick.height;
-        pos: -flick.viewport-y;
+        pos: -flick.content-y;
         moved(p) => {
-            flick.viewport-y = -p;
+            flick.content-y = -p;
         }
     }
 }
