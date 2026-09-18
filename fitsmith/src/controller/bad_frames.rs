@@ -183,6 +183,10 @@ fn stats_extractor(extractor: fn(Stats) -> Option<f64>) -> impl Fn(&FileMetrics)
     }
 }
 fn calculate_meta_stats(files: &[FileMetrics], extractor: impl Fn(&FileMetrics) -> Option<f64> + Sync) -> MetaStats {
+    // Not redundant: `extractor` is only `Sync`, not `Send`, and rayon's `flat_map`
+    // needs the mapper itself to be `Send`. Wrapping it in a closure captures it
+    // by shared reference instead, which is `Send` because `extractor: Sync`.
+    #[allow(clippy::redundant_closure)]
     let mut data: Vec<f64> = files.par_iter().flat_map(|m| extractor(m)).collect();
     if data.is_empty() {
         return MetaStats{
@@ -246,7 +250,7 @@ pub fn recompute_bad_frames(app: &AppWindow) {
         let rows: Vec<BadFrameRow> = bad
             .iter()
             .map(|b| BadFrameRow {   
-                name: display_name(&b).into(),
+                name: display_name(b).into(),
             })
             .collect();
         let flagged: Vec<PathBuf> = bad.clone();

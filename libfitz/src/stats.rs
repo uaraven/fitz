@@ -85,7 +85,7 @@ impl Image {
             PixelBuffer::U16(px) => interleaved_counts(px, |&v| v as usize),
             PixelBuffer::F32(px) => interleaved_counts(px, |&v| float_to_u16(v)),
         };
-        let stats = counts.chunks_exact(BIN_COUNT).map(process).collect();
+        let stats = counts.as_chunks::<BIN_COUNT>().0.iter().map(|c| process(c)).collect();
         ImageStats {
             channels: stats,
             histogram: histogram_from_rgb(&self.pixels),
@@ -185,7 +185,7 @@ fn interleaved_counts<T: Sync>(samples: &[T], bin: impl Fn(&T) -> usize + Sync +
         .fold(
             || vec![0u32; 3 * BIN_COUNT],
             |mut acc, chunk| {
-                for px in chunk.chunks_exact(3) {
+                for px in chunk.as_chunks::<3>().0 {
                     acc[bin(&px[0])] += 1;
                     acc[BIN_COUNT + bin(&px[1])] += 1;
                     acc[2 * BIN_COUNT + bin(&px[2])] += 1;
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(channel.max, 65535);
         assert_eq!(channel.min_count, 1);
         assert_eq!(channel.max_count, 1);
-        let expected_mean = (0u32 + 32767 + 65535) as f32 / 3.0;
+        let expected_mean = (32767 + 65535) as f32 / 3.0;
         assert!((channel.mean - expected_mean).abs() < 1e-3);
 
         // 0.0 lands in bin 0 and 1.0 clamps into the top bin.
@@ -846,14 +846,14 @@ mod tests {
 
         let counts = interleaved_counts(interleaved, |&v| v as usize);
 
-        for (channel, table) in counts.chunks_exact(BIN_COUNT).enumerate() {
+        for (channel, table) in counts.as_chunks::<BIN_COUNT>().0.iter().enumerate() {
             let plane: Vec<u16> = interleaved
                 .iter()
                 .skip(channel)
                 .step_by(3)
                 .copied()
                 .collect();
-            assert_eq!(table, naive_counts(&plane), "channel {channel}");
+            assert_eq!(table.as_slice(), naive_counts(&plane), "channel {channel}");
         }
     }
 
@@ -885,7 +885,7 @@ mod tests {
     /// result independently of that pass's chunking.
     fn naive_rgb_luma_histogram(interleaved: &[u16]) -> [u64; HISTOGRAM_BIN_COUNT] {
         let mut histogram = [0u64; HISTOGRAM_BIN_COUNT];
-        for px in interleaved.chunks_exact(RGB_CHANNEL_COUNT) {
+        for px in interleaved.as_chunks::<RGB_CHANNEL_COUNT>().0 {
             let luma = (px[0] as f32 * 0.2126 + px[1] as f32 * 0.7152 + px[2] as f32 * 0.0722)
                 as u16 as usize;
             histogram[luma / HISTOGRAM_BUCKET] += 1;

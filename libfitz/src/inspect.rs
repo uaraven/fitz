@@ -148,10 +148,10 @@ mod tests {
         let tile = crop_rgb8(&src, width, height, 1, 1, 2);
         assert_eq!(tile.size, 2);
         assert_eq!(tile.rgb8.len(), 2 * 2 * 3);
-        let reds: Vec<u8> = tile.rgb8.chunks_exact(3).map(|p| p[0]).collect();
+        let reds: Vec<u8> = tile.rgb8.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
         assert_eq!(reds, [5, 6, 9, 10]);
         // The constant channels survive the copy.
-        assert!(tile.rgb8.chunks_exact(3).all(|p| p[1..] == [100, 200]));
+        assert!(tile.rgb8.as_chunks::<3>().0.iter().all(|p| p[1..] == [100, 200]));
     }
 
     #[test]

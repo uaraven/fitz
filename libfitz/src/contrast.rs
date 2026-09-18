@@ -125,7 +125,7 @@ impl Pixels {
             .for_each(|(dy, out_row)| {
                 let sy0 = dy * self.height / dst_h;
                 let sy1 = (((dy + 1) * self.height) / dst_h).max(sy0 + 1);
-                for dx in 0..dst_w {
+                for (dx, out_px) in out_row.iter_mut().enumerate() {
                     let sx0 = dx * self.width / dst_w;
                     let sx1 = (((dx + 1) * self.width) / dst_w).max(sx0 + 1);
 
@@ -139,7 +139,7 @@ impl Pixels {
                         }
                     }
 
-                    out_row[dx] = px / count as f32;
+                    *out_px = px / count as f32;
                 }
             });
         Pixels::new(out, dst_w, dst_h)
@@ -158,7 +158,7 @@ impl Pixels {
 pub fn percentile(data: &[f32], percentiles: &[usize]) -> (Vec<f32>, f32) {
     let mut sorted: Vec<f32> = data.to_vec();
     sorted.sort_by(|a,b| a.partial_cmp(b).unwrap());
-    let median = if sorted.len() % 2 == 0 {
+    let median = if sorted.len().is_multiple_of(2) {
         let idx = sorted.len()/2;
         (sorted[idx] + sorted[idx-1]) / 2.0
     } else {
