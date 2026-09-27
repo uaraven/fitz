@@ -13,7 +13,7 @@ Fitz supports following operations on FITS files:
 
 Some of the operations (debayering, stretching, split into RGB, preview and headers) are supported also on RAW files from popular digital cameras. Fitz uses [libraw](https://www.libraw.org/) for reading the RAW files. 
 
-_Note_ that Fujifilm X-Trans and Sigma Foveon sensors are not yet supported.
+_Note_ that Sigma Foveon sensors are not supported.
 
 I started fitz to quickly uncompress files created by NINA, because some of the tools and Siril scripts have problems with compressed files, after couple of days the project expanded into what it is now.
 

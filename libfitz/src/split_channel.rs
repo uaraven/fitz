@@ -56,7 +56,12 @@ impl Image {
         let debayered;
         let rgb = match self.image_type {
             ImageType::RGB => self,
-            ImageType::XTrans => bail!("X-Trans demosaicing is not supported"),
+            ImageType::XTrans(_) => {
+                debayered = self
+                    .debayer()
+                    .expect("an X-Trans image always debayers into RGB")?;
+                &debayered
+            }
             ImageType::CFA(_) => {
                 debayered = self
                     .debayer()
@@ -164,6 +169,29 @@ mod tests {
         assert_ne!(channels[0].pixels, channels[2].pixels);
 
         // The green channel of the debayered cube, reached the other way round.
+        let green = loaded.debayer().unwrap().unwrap().plane(1).unwrap();
+        assert_eq!(channels[1].pixels, green.pixels);
+    }
+
+    #[test]
+    fn split_xtrans_mosaic_debayers_first() {
+        const PATTERN: &str = "GGRGGBGGBGGRBRGRBGGGBGGRGGRGGBRBGBRG";
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("xtrans.fits");
+        write_mosaic_fits(&path, 12, 12, Some(PATTERN));
+
+        let loaded = load_fits(&path).unwrap();
+        let channels = loaded.split_channels().unwrap();
+
+        for channel in &channels {
+            assert_eq!(
+                (channel.width, channel.height),
+                (loaded.width, loaded.height)
+            );
+            assert_eq!(channel.pixels.len(), loaded.width * loaded.height);
+        }
+        assert_ne!(channels[0].pixels, channels[2].pixels);
+
         let green = loaded.debayer().unwrap().unwrap().plane(1).unwrap();
         assert_eq!(channels[1].pixels, green.pixels);
     }

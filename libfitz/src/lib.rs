@@ -24,6 +24,7 @@ mod keywords;
 pub mod raw_fits;
 pub mod stats;
 pub mod summary;
+mod xtrans;
 
 #[cfg(test)]
 pub(crate) mod test_support;

@@ -3,10 +3,11 @@ use anyhow::{Result, anyhow};
 use std::borrow::Cow;
 use std::path::Path;
 
-use crate::fits_bayer::{cfa_str, parse_cfa};
+use crate::fits_bayer::{BayerHeader, cfa_str, parse_bayer_header};
 use crate::keywords::{
     BAYERPAT, BSCALE, BZERO, CFA_KEYWORDS, DATAMAX, DATAMIN, add_history, copy_missing_metadata,
 };
+use crate::xtrans::pattern_str;
 use fitskit::{
     Bitpix, CompressOptions, FitsFile, HduData, Header, HeaderValue, ImageData, PixelData,
 };
@@ -125,7 +126,7 @@ pub fn load_fits(source: &Path) -> Result<Image> {
             return Err(anyhow!("Invalid image type"));
         };
 
-        let bayer_pat = hdu.header.get_string(BAYERPAT).and_then(parse_cfa);
+        let bayer_pat = hdu.header.get_string(BAYERPAT).and_then(parse_bayer_header);
 
         let image_type = match img.axes.len() {
             // A cube is only an image if it has exactly the three colour
@@ -133,7 +134,8 @@ pub fn load_fits(source: &Path) -> Result<Image> {
             // here, and treating it as RGB would silently mangle it.
             3 if img.axes[2] == 3 => ImageType::RGB,
             2 => match bayer_pat {
-                Some(cfa) => ImageType::CFA(cfa),
+                Some(BayerHeader::Standard(cfa)) => ImageType::CFA(cfa),
+                Some(BayerHeader::XTrans(pattern)) => ImageType::XTrans(pattern),
                 None => ImageType::Grayscale,
             },
             _ => {
@@ -254,7 +256,7 @@ pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<FitsFile> {
 
     let img_data = match img.image_type {
         ImageType::RGB => ImageData::new(vec![img.width, img.height, 3], pixel_data),
-        ImageType::Grayscale | ImageType::CFA(_) | ImageType::XTrans => {
+        ImageType::Grayscale | ImageType::CFA(_) | ImageType::XTrans(_) => {
             ImageData::new(vec![img.width, img.height], pixel_data)
         }
     };
@@ -281,12 +283,22 @@ pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<FitsFile> {
     let header = &mut dst_file.hdus[image_hdu].header;
     header.set(BSCALE, HeaderValue::Integer(bscale as i64), None);
     header.set(BZERO, HeaderValue::Integer(bzero as i64), None);
-    if let ImageType::CFA(cfa) = img.image_type {
-        header.set(
-            BAYERPAT,
-            HeaderValue::String(cfa_str(cfa).to_string()),
-            None,
-        );
+    match img.image_type {
+        ImageType::CFA(cfa) => {
+            header.set(
+                BAYERPAT,
+                HeaderValue::String(cfa_str(cfa).to_string()),
+                None,
+            );
+        }
+        ImageType::XTrans(pattern) => {
+            header.set(
+                BAYERPAT,
+                HeaderValue::String(pattern_str(&pattern)),
+                None,
+            );
+        }
+        _ => {}
     }
     if let Some(history) = &options.history {
         add_history(header, history);
@@ -297,7 +309,7 @@ pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<FitsFile> {
     // split-out channel) would make every other tool read it as raw sensor data
     // again.
     let drop: &[&str] = match img.image_type {
-        ImageType::CFA(_) => &[],
+        ImageType::CFA(_) | ImageType::XTrans(_) => &[],
         _ => CFA_KEYWORDS,
     };
     // Runs after the writer's own keywords: `copy_missing_metadata` skips the
@@ -396,12 +408,13 @@ pub fn load_header(source: &Path) -> Result<ImageMeta> {
     let axis = |i: usize| hdu.header.get_int(&format!("{naxis}{i}"));
 
     let axes = hdu.header.get_int(naxis).unwrap_or(0);
-    let bayer_pat = hdu.header.get_string(BAYERPAT).and_then(parse_cfa);
+    let bayer_pat = hdu.header.get_string(BAYERPAT).and_then(parse_bayer_header);
     let image_type = if axes == 3 && axis(3) == Some(3) {
         ImageType::RGB
     } else {
         match bayer_pat {
-            Some(cfa) => ImageType::CFA(cfa),
+            Some(BayerHeader::Standard(cfa)) => ImageType::CFA(cfa),
+            Some(BayerHeader::XTrans(pattern)) => ImageType::XTrans(pattern),
             None => ImageType::Grayscale,
         }
     };
@@ -546,6 +559,40 @@ mod tests {
             (loaded.width, loaded.height)
         );
         assert_eq!(reloaded.pixels, loaded.pixels);
+    }
+
+    /// An X-Trans frame's `BAYERPAT` is the 36-character pattern string itself
+    /// (Siril's convention), not a 4-character standard pattern name — must
+    /// round-trip through a save/reload the same way a CFA one does.
+    #[test]
+    fn xtrans_save_round_trips_pixels_and_bayer_pattern() {
+        const PATTERN: &str = "GGRGGBGGBGGRBRGRBGGGBGGRGGRGGBRBGBRG";
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("xtrans.fits");
+        write_mosaic_fits(&input, 12, 12, Some(PATTERN));
+
+        let loaded = load_fits(&input).unwrap();
+        let ImageType::XTrans(pattern) = loaded.image_type else {
+            panic!("a 36-character BAYERPAT must classify as ImageType::XTrans");
+        };
+        assert_eq!(crate::xtrans::pattern_str(&pattern), PATTERN);
+
+        let output = tmp.path().join("roundtrip.fits");
+        save_fits(&output, &loaded, SaveOptions::default()).unwrap();
+        let reloaded = load_fits(&output).unwrap();
+
+        assert_eq!(reloaded.image_type, loaded.image_type);
+        assert_eq!(
+            (reloaded.width, reloaded.height),
+            (loaded.width, loaded.height)
+        );
+        assert_eq!(reloaded.pixels, loaded.pixels);
+
+        // A debayered output must not carry the source mosaic's BAYERPAT.
+        let rgb = loaded.debayer().unwrap().unwrap();
+        let debayered = tmp.path().join("rgb.fits");
+        save_fits(&debayered, &rgb, SaveOptions::default()).unwrap();
+        assert!(output_header(&debayered).find("BAYERPAT").is_none());
     }
 
     /// `as_u8` must emit one sample per pixel. Emitting both bytes of each u16

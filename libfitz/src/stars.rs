@@ -50,7 +50,7 @@ impl Image {
     pub fn detection_plane(&self) -> Result<Image> {
         match self.image_type {
             ImageType::RGB => Ok(self.luminance()),
-            ImageType::Grayscale | ImageType::CFA(_) | ImageType::XTrans => Ok(Image::new(
+            ImageType::Grayscale | ImageType::CFA(_) | ImageType::XTrans(_) => Ok(Image::new(
                 ImageType::Grayscale,
                 Header::new(),
                 self.width,
@@ -65,7 +65,7 @@ impl Image {
     /// For RGB images the luminance is calculated from R,G,B values and returned as a single-channel image
     pub(crate) fn luminance(&self) -> Image {
         match self.image_type {
-            ImageType::CFA(_) | ImageType::Grayscale | ImageType::XTrans => Image::new(
+            ImageType::CFA(_) | ImageType::Grayscale | ImageType::XTrans(_) => Image::new(
                 self.image_type,
                 self.header.clone(),
                 self.width,

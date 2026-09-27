@@ -1,6 +1,7 @@
 use crate::data::{Image, ImageType, PixelBuffer};
 use crate::fits_bayer::cfa_str;
 use crate::keywords::{BAYERPAT, add_history};
+use crate::xtrans;
 use anyhow::{Result, bail};
 use bayer::CFA;
 use fitskit::{Header, HeaderValue};
@@ -42,7 +43,8 @@ pub fn load_raw_image(source: &Path) -> Result<Image> {
         data.extend_from_slice(&full[off..off + w]);
     }
     let image_type = if raw_data_ref.idata.filters == 9 {
-        ImageType::XTrans
+        let table: [[i8; 6]; 6] = raw_data_ref.idata.xtrans;
+        ImageType::XTrans(xtrans::pattern_from_libraw(table, raw_data_ref.idata.cdesc)?)
     } else if raw_data_ref.idata.filters >= 1000 {
         // CFA pattern at the visible origin; libraw_COLOR uses visible-area coordinates.
         let p = raw_data_ref as *const _ as *mut sys::libraw_data_t;
@@ -81,7 +83,7 @@ pub fn load_raw_image(source: &Path) -> Result<Image> {
 fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h: usize) -> Header {
     let mut header = Header::new();
     let cfa = match image_type {
-        ImageType::XTrans => Some(HeaderValue::String( "XTrans".to_string())),
+        ImageType::XTrans(pattern) => Some(HeaderValue::String(xtrans::pattern_str(&pattern))),
         ImageType::CFA(pattern) => Some(HeaderValue::String(cfa_str(pattern).to_string())),
         _ => None,
     };
@@ -303,6 +305,17 @@ mod tests {
                 .and_then(|k| k.comment.as_deref())
                 .is_some_and(|c| c.contains("8280x5520"))
         );
+    }
+
+    #[test]
+    fn metadata_to_headers_writes_the_xtrans_pattern_string_as_bayerpat() {
+        use crate::xtrans::parse_pattern;
+
+        const PATTERN: &str = "GGRGGBGGBGGRBRGRBGGGBGGRGGRGGBRBGBRG";
+        let pattern = parse_pattern(PATTERN).unwrap();
+        let header = metadata_to_headers(full_raw_info(), ImageType::XTrans(pattern), 6032, 4028);
+
+        assert_eq!(header.get_string(BAYERPAT), Some(PATTERN));
     }
 
     #[test]

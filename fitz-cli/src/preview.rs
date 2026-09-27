@@ -108,7 +108,7 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
 fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, usize, Vec<u16>)> {
     let image = load_image_from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let is_mosaic = matches!(image.image_type, ImageType::CFA(_));
+    let is_mosaic = matches!(image.image_type, ImageType::CFA(_) | ImageType::XTrans(_));
 
     let source = if opts.no_debayer && is_mosaic {
         print_step(opts.verbose, "loading raw (no debayer)");
