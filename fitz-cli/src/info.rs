@@ -64,7 +64,7 @@ fn print_table_header(out: &mut String, caption: &str, columns: &[&str]) {
 pub fn info_file(input: &Path, opts: &InfoOptions) -> Result<()> {
     print_step(opts.verbose, "reading");
 
-    let image = libfitz::fits_file::load_fits(input)?;
+    let image = libfitz::loader::load_image_from_file(input)?;
 
     // `--headers` is a distinct mode: dump the image HDU's raw header cards
     // instead of the formatted summary. For a tile-compressed input this is the

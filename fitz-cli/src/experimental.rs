@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::Result;
 
 pub(crate) fn contrast_file(input: &Path) -> Result<()> {
-    let image = libfitz::fits_file::load_fits(input)?;
+    let image = libfitz::loader::load_image_from_file(input)?;
     let contrast = image.contrast();
     println!("{}: {contrast}", input.display());
     Ok(())

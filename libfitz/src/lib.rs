@@ -29,5 +29,5 @@ pub mod summary;
 pub(crate) mod test_support;
 mod invert;
 pub mod contrast;
-mod raw_file;
-mod loader;
+pub mod raw_file;
+pub mod loader;

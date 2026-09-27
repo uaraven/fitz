@@ -15,7 +15,7 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
     print_progress(input, output);
 
     print_step(opts.verbose, "reading");
-    let image = libfitz::fits_file::load_fits(input)?;
+    let image = libfitz::loader::load_image_from_file(input)?;
 
     print_step(opts.verbose, "stretching");
     let image = image.stretch(opts.core.linked, opts.core.brightness);

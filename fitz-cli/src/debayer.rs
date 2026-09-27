@@ -5,7 +5,7 @@ use crate::options::DebayerOptions;
 use anyhow::{Result, bail};
 use libfitz::data::ImageType;
 use libfitz::export::{ExportFormat, FitsOptions, TiffOptions};
-use libfitz::fits_file::load_fits;
+use libfitz::loader::load_image_from_file;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum OutputFormat {
@@ -42,7 +42,7 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
     print_progress(input, output);
 
     print_step(opts.verbose, "reading");
-    let image = load_fits(input)?;
+    let image = load_image_from_file(input)?;
 
     let d = match image.image_type {
         ImageType::CFA(_) => {

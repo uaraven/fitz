@@ -20,6 +20,9 @@ fn is_fits_file(path: &Path) -> bool {
     file.read_exact(&mut magic).is_ok() && &magic == b"SIMPLE"
 }
 
+/// Loads a supported image from file
+/// Image can be either in FITS format
+/// or in one of RAW formats supported by libraw
 pub fn load_image_from_file(source: &Path) -> Result<Image> {
     if is_fits_file(source) {
         load_fits(source)
