@@ -14,7 +14,7 @@ pub(crate) fn cfa_str(cfa: CFA) -> &'static str {
     match cfa {
         CFA::RGGB => "RGGB",
         CFA::GBRG => "GBRG",
-        CFA::BGGR => "BGRG",
+        CFA::BGGR => "BGGR",
         CFA::GRBG => "GRBG",
     }
 }

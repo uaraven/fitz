@@ -6,6 +6,8 @@ license = "MIT"
 
 [dependencies]
 fitskit = { version = "0.2.0", features = ["gzip", "image"] }
+rsraw = "0.1"
+rsraw-sys = "0.1"
 anyhow = "1"
 bayer = "0.1.5"
 rayon = "1"
@@ -16,3 +18,4 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 [dev-dependencies]
 tempfile = "3"
 sha2 = "0.11"
+chrono = "0.4"
