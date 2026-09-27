@@ -269,7 +269,7 @@ fn load_debayered(
     report: &dyn Fn(&'static str),
 ) -> Result<(Image, Option<bool>)> {
     report("Reading");
-    let image = libfitz::fits_file::load_fits(path)?;
+    let image = libfitz::loader::load_image_from_file(path)?;
     let is_cfa = matches!(image.image_type, libfitz::data::ImageType::CFA(_));
     let image = apply_debayer(image, debayer, report)?;
     Ok((image, is_cfa.then_some(debayer)))
