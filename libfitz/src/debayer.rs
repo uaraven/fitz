@@ -90,19 +90,20 @@ fn demosaic_to_rgb(
 impl Image {
     /// Debayers the image into the RGB image
     pub fn debayer(&self) -> Option<Result<Image>> {
-        if let ImageType::CFA(cfa) = self.image_type {
-            let rgb_pixels = demosaic_to_rgb(&self.pixels, self.width, self.height, cfa);
-            Some(rgb_pixels.map(|rgb_pixels| {
-                Image::new(
-                    ImageType::RGB,
-                    self.header.clone(),
-                    self.width,
-                    self.height,
-                    rgb_pixels,
-                )
-            }))
-        } else {
-            None
+        match self.image_type {
+            ImageType::CFA(cfa) => {
+                let rgb_pixels = demosaic_to_rgb(&self.pixels, self.width, self.height, cfa);
+                Some(rgb_pixels.map(|rgb_pixels| {
+                    Image::new(
+                        ImageType::RGB,
+                        self.header.clone(),
+                        self.width,
+                        self.height,
+                        rgb_pixels,
+                    )
+                }))
+            }
+            _ => None,
         }
     }
 

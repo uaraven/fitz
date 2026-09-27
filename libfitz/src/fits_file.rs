@@ -254,8 +254,9 @@ pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<FitsFile> {
 
     let img_data = match img.image_type {
         ImageType::RGB => ImageData::new(vec![img.width, img.height, 3], pixel_data),
-        ImageType::Grayscale => ImageData::new(vec![img.width, img.height], pixel_data),
-        ImageType::CFA(_) => ImageData::new(vec![img.width, img.height], pixel_data),
+        ImageType::Grayscale | ImageType::CFA(_) | ImageType::XTrans => {
+            ImageData::new(vec![img.width, img.height], pixel_data)
+        }
     };
 
     // Every keyword below describes the *image*, so it has to land on the header

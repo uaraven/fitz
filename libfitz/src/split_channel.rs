@@ -56,6 +56,7 @@ impl Image {
         let debayered;
         let rgb = match self.image_type {
             ImageType::RGB => self,
+            ImageType::XTrans => bail!("X-Trans demosaicing is not supported"),
             ImageType::CFA(_) => {
                 debayered = self
                     .debayer()

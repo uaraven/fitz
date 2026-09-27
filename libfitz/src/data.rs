@@ -231,6 +231,8 @@ pub enum ImageType {
     RGB,
     Grayscale,
     CFA(CFA),
+    /// Mosaic image from X-Trans sensor
+    XTrans,
 }
 
 /// An Image struct contains an image type, width, height, and a vector of pixel buffers. The pixel buffers can be one of three types: u8, u16, or f32.
@@ -266,6 +268,7 @@ impl Image {
     pub fn channels(&self) -> usize {
         match self.image_type {
             ImageType::RGB => 3,
+            ImageType::XTrans => 1,
             ImageType::Grayscale | ImageType::CFA(_) => 1,
         }
     }

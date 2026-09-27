@@ -75,7 +75,7 @@ impl Default for ImageStats {
 impl Image {
     pub fn stats(&self) -> ImageStats {
         match self.image_type {
-            ImageType::CFA(_) | ImageType::Grayscale => single_channel_stats(&self.pixels),
+            ImageType::CFA(_) | ImageType::Grayscale | ImageType::XTrans => single_channel_stats(&self.pixels),
             ImageType::RGB => self.multi_channel_stats(),
         }
     }
