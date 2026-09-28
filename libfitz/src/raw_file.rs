@@ -5,9 +5,38 @@ use crate::xtrans;
 use anyhow::{Result, bail};
 use bayer::CFA;
 use fitskit::{Header, HeaderValue};
+use rayon::prelude::*;
 use rsraw::{FullRawInfo, GpsInfo, RawImage};
 use rsraw_sys as sys;
 use std::path::Path;
+
+/// Per-raw-colour-index (`0..=3`, the same index `libraw_COLOR`/`idata.xtrans`
+/// cells use, *before* it's resolved into an `R`/`G`/`B` letter via `cdesc`)
+/// black level, falling back to the scalar `black` when the camera didn't
+/// populate the per-channel array.
+fn channel_black_levels(color: &sys::libraw_colordata_t) -> [u32; 4] {
+    if color.cblack[0..4].iter().all(|&b| b == 0) {
+        [color.black; 4]
+    } else {
+        [
+            color.cblack[0],
+            color.cblack[1],
+            color.cblack[2],
+            color.cblack[3],
+        ]
+    }
+}
+
+/// Subtract `black` and rescale so `white` maps to 65535, clamping both ends.
+/// A camera's raw ADU counts sit on a non-zero pedestal (`black`) and rarely
+/// fill the full 16-bit container (`white` is the sensor's real saturation
+/// point) — skipping this leaves every downstream consumer (stats, stretch,
+/// demosaic) working against the wrong dynamic range.
+fn normalize_sample(raw: u16, black: u32, white: u32) -> u16 {
+    let span = white.saturating_sub(black).max(1);
+    let v = (raw as u32).saturating_sub(black).min(span);
+    (v as u64 * 65535 / span as u64) as u16
+}
 
 pub fn load_raw_image(source: &Path) -> Result<Image> {
     let data = std::fs::read(source)?;
@@ -36,33 +65,59 @@ pub fn load_raw_image(source: &Path) -> Result<Image> {
         )
     };
 
-    // Crop the visible area out of the full sensor buffer (drops masked border pixels).
-    let mut data = Vec::with_capacity(w * h);
-    for y in 0..h {
-        let off = (y + top) * pitch + left;
-        data.extend_from_slice(&full[off..off + w]);
-    }
-    let image_type = if raw_data_ref.idata.filters == 9 {
-        let table: [[i8; 6]; 6] = raw_data_ref.idata.xtrans;
-        ImageType::XTrans(xtrans::pattern_from_libraw(table, raw_data_ref.idata.cdesc)?)
-    } else if raw_data_ref.idata.filters >= 1000 {
-        // CFA pattern at the visible origin; libraw_COLOR uses visible-area coordinates.
-        let p = raw_data_ref as *const _ as *mut sys::libraw_data_t;
-        let c = |r, c| {
-            let idx = unsafe { sys::libraw_COLOR(p, r, c) } as usize;
-            raw_data_ref.idata.cdesc[idx] as u8 as char // cdesc is e.g. "RGBG"
-        };
-        let pattern = match [c(0, 0), c(0, 1), c(1, 0), c(1, 1)] {
-            ['R', 'G', 'G', 'B'] => CFA::RGGB,
-            ['B', 'G', 'G', 'R'] => CFA::BGGR,
-            ['G', 'R', 'B', 'G'] => CFA::GRBG,
-            ['G', 'B', 'R', 'G'] => CFA::GBRG,
-            other => bail!("Unsupported CFA pattern: {:?}", other),
-        };
-        ImageType::CFA(pattern)
+    let black_levels = channel_black_levels(&rd.color);
+    let white = if rd.color.maximum != 0 {
+        rd.color.maximum
     } else {
-        bail!("Unsupported RAW file: non-2x2 CFA");
+        rd.color.data_maximum
     };
+
+    // Sensor type, colour pattern, and the per-position black level (indexed
+    // the same way as the pattern itself, so both a 2x2 CFA phase and a 6x6
+    // X-Trans phase are expressed as one 6x6 table — a 2x2 pattern repeats
+    // exactly across a 6-cell period too).
+    let (image_type, black_by_position): (ImageType, [[u32; 6]; 6]) =
+        if raw_data_ref.idata.filters == 9 {
+            let table: [[i8; 6]; 6] = raw_data_ref.idata.xtrans;
+            let black6x6 = table.map(|row| row.map(|idx| black_levels[idx as usize]));
+            (
+                ImageType::XTrans(xtrans::pattern_from_libraw(table, raw_data_ref.idata.cdesc)?),
+                black6x6,
+            )
+        } else if raw_data_ref.idata.filters >= 1000 {
+            // CFA pattern at the visible origin; libraw_COLOR uses visible-area coordinates.
+            let p = raw_data_ref as *const _ as *mut sys::libraw_data_t;
+            let idx_at = |r, c| unsafe { sys::libraw_COLOR(p, r, c) } as usize;
+            let idxs = [[idx_at(0, 0), idx_at(0, 1)], [idx_at(1, 0), idx_at(1, 1)]];
+            let chars = idxs.map(|row| row.map(|idx| raw_data_ref.idata.cdesc[idx] as u8 as char)); // cdesc is e.g. "RGBG"
+            let pattern = match [chars[0][0], chars[0][1], chars[1][0], chars[1][1]] {
+                ['R', 'G', 'G', 'B'] => CFA::RGGB,
+                ['B', 'G', 'G', 'R'] => CFA::BGGR,
+                ['G', 'R', 'B', 'G'] => CFA::GRBG,
+                ['G', 'B', 'R', 'G'] => CFA::GBRG,
+                other => bail!("Unsupported CFA pattern: {:?}", other),
+            };
+            let black2x2 = idxs.map(|row| row.map(|idx| black_levels[idx]));
+            let black6x6 = std::array::from_fn(|r: usize| {
+                std::array::from_fn(|c: usize| black2x2[r % 2][c % 2])
+            });
+            (ImageType::CFA(pattern), black6x6)
+        } else {
+            bail!("Unsupported RAW file: non-2x2 CFA");
+        };
+
+    // Crop the visible area out of the full sensor buffer (drops masked
+    // border pixels), subtracting each pixel's own black level and rescaling
+    // so the sensor's saturation point maps to 65535 in the same pass.
+    let data: Vec<u16> = (0..h)
+        .into_par_iter()
+        .flat_map_iter(|y| {
+            let off = (y + top) * pitch + left;
+            let row = &full[off..off + w];
+            let black_row = &black_by_position[y % 6];
+            (0..w).map(move |x| normalize_sample(row[x], black_row[x % 6], white))
+        })
+        .collect();
 
     let headers = metadata_to_headers(raw_image.full_info(), image_type, w, h);
 
@@ -190,6 +245,10 @@ fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h
     add_history(
         &mut header,
         &format!("Converted from RAW file ({w}x{h} sensor crop)"),
+    );
+    add_history(
+        &mut header,
+        "Black level subtracted, white point scaled to full range",
     );
 
     header
@@ -349,5 +408,42 @@ mod tests {
     fn dms_to_decimal_handles_negative_and_positive_coordinates() {
         assert!((dms_to_decimal([47.0, 36.0, 22.0]) - 47.606_11).abs() < 1e-4);
         assert!((dms_to_decimal([-122.0, -19.0, -55.0]) - -122.331_95).abs() < 1e-4);
+    }
+
+    #[test]
+    fn channel_black_levels_reads_the_per_channel_array() {
+        let mut color: sys::libraw_colordata_t = unsafe { std::mem::zeroed() };
+        color.cblack[0] = 128;
+        color.cblack[1] = 130;
+        color.cblack[2] = 132;
+        color.cblack[3] = 130;
+        assert_eq!(channel_black_levels(&color), [128, 130, 132, 130]);
+    }
+
+    #[test]
+    fn channel_black_levels_falls_back_to_the_scalar_black() {
+        let mut color: sys::libraw_colordata_t = unsafe { std::mem::zeroed() };
+        color.black = 64;
+        assert_eq!(channel_black_levels(&color), [64, 64, 64, 64]);
+    }
+
+    #[test]
+    fn normalize_sample_clamps_and_scales_linearly() {
+        assert_eq!(normalize_sample(0, 512, 16383), 0);
+        assert_eq!(normalize_sample(512, 512, 16383), 0);
+        assert_eq!(normalize_sample(16383, 512, 16383), 65535);
+        // Above the sensor's declared saturation point: still clamps, doesn't overflow/wrap.
+        assert_eq!(normalize_sample(u16::MAX, 512, 16383), 65535);
+
+        let mid = 512 + (16383 - 512) / 2;
+        let expected = ((mid - 512) as u64 * 65535 / (16383 - 512) as u64) as u16;
+        assert_eq!(normalize_sample(mid, 512, 16383), expected);
+    }
+
+    #[test]
+    fn normalize_sample_does_not_divide_by_zero_on_a_degenerate_span() {
+        // A white point at or below black shouldn't happen in practice (LibRaw
+        // always derives `maximum` from the bit depth), but must not panic.
+        assert_eq!(normalize_sample(1000, 2000, 1000), 0);
     }
 }
