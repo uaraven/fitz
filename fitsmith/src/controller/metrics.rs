@@ -158,7 +158,7 @@ pub struct FileMetrics {
 /// statistics are as good as anyone's — so `time` comes back `None` rather
 /// than the whole file being skipped.
 pub fn analyze_file(path: &Path) -> Result<FileMetrics> {
-    let image = libfitz::fits_file::load_fits(path)?;
+    let image = libfitz::loader::load_image_from_file(path)?;
     let time_str = image
         .header
         .get_string("DATE-LOC")
