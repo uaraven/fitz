@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use libfitz::data::ImageType;
-use libfitz::fits_file::load_fits;
+use libfitz::loader::load_image_from_file;
 use libfitz::resize::resize_to_fit;
 
 use crate::io_prompt::print_step;
@@ -106,9 +106,9 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
 /// values, skipping color interpolation entirely; an already-debayered image
 /// has nothing to skip, so the flag is ignored with a warning.
 fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, usize, Vec<u16>)> {
-    let image = load_fits(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let image = load_image_from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
-    let is_mosaic = matches!(image.image_type, ImageType::CFA(_));
+    let is_mosaic = matches!(image.image_type, ImageType::CFA(_) | ImageType::XTrans(_));
 
     let source = if opts.no_debayer && is_mosaic {
         print_step(opts.verbose, "loading raw (no debayer)");

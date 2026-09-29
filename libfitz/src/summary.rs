@@ -101,6 +101,7 @@ fn channel_label(image: &Image) -> &'static str {
     match image.image_type {
         ImageType::RGB => "debayered RGB",
         ImageType::CFA(_) => "mosaic",
+        ImageType::XTrans(_) => "mosaic (XTrans)",
         ImageType::Grayscale => "monochrome (debayered)",
     }
 }

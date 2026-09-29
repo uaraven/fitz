@@ -17,7 +17,7 @@ pub fn render_preview(src: &Image) -> Result<DynamicImage> {
         ImageType::RGB => ImageBuffer::<Rgb<u16>, _>::from_raw(width, height, samples)
             .map(DynamicImage::ImageRgb16)
             .ok_or_else(|| anyhow!("conversion error")),
-        ImageType::Grayscale | ImageType::CFA(_) => {
+        ImageType::Grayscale | ImageType::CFA(_) | ImageType::XTrans(_) => {
             ImageBuffer::<Luma<u16>, _>::from_raw(width, height, samples)
                 .map(DynamicImage::ImageLuma16)
                 .ok_or_else(|| anyhow!("conversion error"))

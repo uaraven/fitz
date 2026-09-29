@@ -2,7 +2,7 @@
 //! auto-stretch, returning the stretched result in memory as normalized `[0,
 //! 1]` `f32` samples.
 
-use crate::data::{Image, ImageType, PixelBuffer};
+use crate::data::{Image, PixelBuffer};
 use crate::stats::{Stats, single_channel_stats};
 use rayon::prelude::*;
 
@@ -29,10 +29,7 @@ impl Image {
     /// to 16 bits; callers narrow on export as needed.
     /// This is a pure, in-memory transform: it does no reading or writing to disk.
     pub fn stretch(&self, linked: bool, brightness: f32) -> Image {
-        let channels = match self.image_type {
-            ImageType::RGB => 3,
-            ImageType::Grayscale | ImageType::CFA(_) => 1,
-        };
+        let channels = self.channels();
 
         let mut samples = normalize_pixel_buffer(&self.pixels);
         let params = self.stretch_params(linked, channels, brightness);
@@ -148,6 +145,7 @@ mod tests {
     use super::*;
     use crate::test_support::test_data;
     use fitskit::Header;
+    use crate::data::ImageType;
 
     #[test]
     fn mtf_hits_its_anchor_points() {

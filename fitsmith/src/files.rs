@@ -7,7 +7,14 @@ use std::path::{Path, PathBuf};
 
 /// Extensions FitSmith treats as openable FITS images (`.fz` is a
 /// tile-compressed FITS, transparently decompressed on read).
-const FITS_EXTENSIONS: &[&str] = &["fit", "fits", "fts", "fz"];
+pub const FITS_EXTENSIONS: &[&str] = &["fit", "fits", "fts", "fz"];
+
+pub const RAW_EXTENSIONS: &[&str] = &[
+"3fr", "ari", "arw", "bay", "braw", "crw", "cr2", "cr3", "cap", "data", "dcs", "dcr",
+"dng", "drf", "eip", "erf", "fff", "gpr", "iiq", "k25", "kdc", "mdc", "mef", "mos",
+"mrw", "nef", "nrw", "obm", "orf", "pef", "ptx", "pxn", "r3d", "raf", "raw", "rwl",
+"rw2", "rwz", "sr2", "srf", "srw", "tif", "x3f",
+];
 
 fn has_extension(path: &Path, candidates: &[&str]) -> bool {
     path.extension()
@@ -19,6 +26,10 @@ fn has_extension(path: &Path, candidates: &[&str]) -> bool {
 /// Whether `path` looks like a FITS image we can open.
 pub fn is_fits_path(path: &Path) -> bool {
     has_extension(path, FITS_EXTENSIONS) && !macos_special_file(path)
+}
+
+pub fn is_raw_image(path: &Path) -> bool {
+    has_extension(path, RAW_EXTENSIONS) && !macos_special_file(path)
 }
 
 #[cfg(target_os = "macos")]
@@ -59,7 +70,7 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && is_fits_path(p))
+        .filter(|p| p.is_file() && (is_fits_path(p) || is_raw_image(p)))
         .collect();
     paths.sort();
     paths

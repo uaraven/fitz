@@ -1,4 +1,5 @@
 use crate::convert::{float_to_u16, u16_to_float};
+pub use crate::xtrans::{XTransColor, XTransPattern};
 use anyhow::bail;
 use bayer::CFA;
 use fitskit::Header;
@@ -231,6 +232,8 @@ pub enum ImageType {
     RGB,
     Grayscale,
     CFA(CFA),
+    /// Mosaic image from an X-Trans sensor, carrying its 6x6 colour pattern
+    XTrans(XTransPattern),
 }
 
 /// An Image struct contains an image type, width, height, and a vector of pixel buffers. The pixel buffers can be one of three types: u8, u16, or f32.
@@ -266,6 +269,7 @@ impl Image {
     pub fn channels(&self) -> usize {
         match self.image_type {
             ImageType::RGB => 3,
+            ImageType::XTrans(_) => 1,
             ImageType::Grayscale | ImageType::CFA(_) => 1,
         }
     }

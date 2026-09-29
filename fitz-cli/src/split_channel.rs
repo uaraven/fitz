@@ -119,7 +119,7 @@ mod tests {
     use libfitz::data::ImageType;
     use std::fs;
     use tempfile::TempDir;
-
+    use libfitz::loader::load_image_from_file;
     use crate::test_support::test_data;
 
     /// Copies a bundled fixture into `dir` so the default beside-the-input
@@ -275,7 +275,7 @@ mod tests {
     }
 
     fn source_dims(input: &Path) -> (usize, usize) {
-        let image = load_fits(input).unwrap();
+        let image = load_image_from_file(input).unwrap();
         (image.width, image.height)
     }
 }

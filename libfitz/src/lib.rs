@@ -24,8 +24,11 @@ mod keywords;
 pub mod raw_fits;
 pub mod stats;
 pub mod summary;
+mod xtrans;
 
 #[cfg(test)]
 pub(crate) mod test_support;
 mod invert;
 pub mod contrast;
+pub mod raw_file;
+pub mod loader;

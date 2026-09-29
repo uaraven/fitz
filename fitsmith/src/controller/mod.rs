@@ -295,7 +295,8 @@ fn set_row_status(path: &Path, status: &str, error: &str) {
 /// the first newly added one.
 pub fn open_file(app: &AppWindow) {
     if let Some(paths) = rfd::FileDialog::new()
-        .add_filter("FITS images", &["fit", "fits", "fts", "fz"])
+        .add_filter("FITS images", crate::files::FITS_EXTENSIONS)
+        .add_filter("RAW images", crate::files::RAW_EXTENSIONS)
         .add_filter("All files", &["*"])
         .pick_files()
     {

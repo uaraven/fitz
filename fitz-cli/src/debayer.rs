@@ -5,7 +5,7 @@ use crate::options::DebayerOptions;
 use anyhow::{Result, bail};
 use libfitz::data::ImageType;
 use libfitz::export::{ExportFormat, FitsOptions, TiffOptions};
-use libfitz::fits_file::load_fits;
+use libfitz::loader::load_image_from_file;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum OutputFormat {
@@ -42,10 +42,10 @@ pub fn debayer_file(input: &Path, output: &Path, opts: &DebayerOptions) -> Resul
     print_progress(input, output);
 
     print_step(opts.verbose, "reading");
-    let image = load_fits(input)?;
+    let image = load_image_from_file(input)?;
 
     let d = match image.image_type {
-        ImageType::CFA(_) => {
+        ImageType::CFA(_) | ImageType::XTrans(_) => {
             print_step(opts.verbose, "debayering");
             if let Some(img_res) = image.debayer() {
                 img_res?
@@ -183,6 +183,29 @@ mod tests {
 
         // Metadata carries over; the now-stale mosaic pattern does not.
         assert_eq!(debayered.header.get_string("OBJECT"), Some("M31"));
+        assert_eq!(debayered.header.get_string("BAYERPAT"), None);
+    }
+
+    #[test]
+    fn debayer_file_writes_rgb_fits_from_an_xtrans_mosaic() {
+        // BAYERPAT for an X-Trans frame is the 36-character pattern string
+        // itself (Siril's convention), not a 4-character standard name.
+        const PATTERN: &str = "GGRGGBGGBGGRBRGRBGGGBGGRGGRGGBRBGBRG";
+        let tmp = TempDir::new().unwrap();
+        let input = tmp.path().join("xtrans.fits");
+        write_mosaic_fits(&input, 12, 12, Some(PATTERN));
+        let output = tmp.path().join("xtrans_debayer.fits");
+
+        debayer_file(&input, &output, &opts(OutputFormat::Fits, 16, true)).unwrap();
+
+        let debayered = load_fits(&output).unwrap();
+        assert_eq!(debayered.image_type, ImageType::RGB);
+        assert_eq!(debayered.width, 12);
+        assert_eq!(debayered.height, 12);
+        match debayered.pixels {
+            PixelBuffer::U16(v) => assert_eq!(v.len(), 12 * 12 * 3),
+            PixelBuffer::F32(_) => panic!("expected a u16 pixel buffer"),
+        }
         assert_eq!(debayered.header.get_string("BAYERPAT"), None);
     }
 

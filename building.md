@@ -71,6 +71,12 @@ MIT — see [LICENSE](LICENSE).
 Note that the FitSmith GUI uses [Slint](https://slint.dev/) under the GPLv3 license; see
 [fitsmith/building.md#slint-and-licensing](fitsmith/building.md#slint-and-licensing) for details.
 
+RAW camera file support uses [LibRaw](https://www.libraw.org/) under the CDDL-1.0 — see
+[LibRaw and licensing](#libraw-and-licensing) below.
+
+See [NOTICE.txt](NOTICE.txt) for attributions of every third-party open-source component the
+project is distributed with.
+
 ## AI Warning
 
 I needed a quick and dirty tool to compress and uncompress fits files. Researching libraries, understanding FITS format and writing it myself would take time and I needed it now. The result is this tool is mostly vibe-coded with Claude Code. I review the code to make sure I understand what it does and I make changes where necessary, but still most of the authorship goes to those anonymous heroes who write the code, on which Anthropic trains their models.

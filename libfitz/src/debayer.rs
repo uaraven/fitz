@@ -3,6 +3,7 @@
 use std::io::Cursor;
 
 use crate::data::{Image, ImageType, PixelBuffer};
+use crate::xtrans;
 use anyhow::{Result, anyhow};
 use bayer::{BayerDepth, CFA, RasterDepth, RasterMut, run_demosaic};
 use rayon::prelude::*;
@@ -90,19 +91,31 @@ fn demosaic_to_rgb(
 impl Image {
     /// Debayers the image into the RGB image
     pub fn debayer(&self) -> Option<Result<Image>> {
-        if let ImageType::CFA(cfa) = self.image_type {
-            let rgb_pixels = demosaic_to_rgb(&self.pixels, self.width, self.height, cfa);
-            Some(rgb_pixels.map(|rgb_pixels| {
-                Image::new(
+        match self.image_type {
+            ImageType::CFA(cfa) => {
+                let rgb_pixels = demosaic_to_rgb(&self.pixels, self.width, self.height, cfa);
+                Some(rgb_pixels.map(|rgb_pixels| {
+                    Image::new(
+                        ImageType::RGB,
+                        self.header.clone(),
+                        self.width,
+                        self.height,
+                        rgb_pixels,
+                    )
+                }))
+            }
+            ImageType::XTrans(pattern) => {
+                let rgb_pixels =
+                    xtrans::demosaic_to_rgb(&self.pixels, self.width, self.height, &pattern);
+                Some(Ok(Image::new(
                     ImageType::RGB,
                     self.header.clone(),
                     self.width,
                     self.height,
                     rgb_pixels,
-                )
-            }))
-        } else {
-            None
+                )))
+            }
+            _ => None,
         }
     }
 
@@ -147,6 +160,41 @@ mod tests {
             sha,
             "d4166430a8d94b586bee199d500fe26a25af0dbe65f79f932e786f2f7c8a0beb"
         );
+    }
+
+    #[test]
+    fn debayer_xtrans_image_keeps_native_channel_and_fills_others() {
+        use crate::xtrans::parse_pattern;
+
+        // A real Fuji X-Trans layout (X-T2). Two full 6x6 periods on each axis.
+        let pattern = parse_pattern("GGRGGBGGBGGRBRGRBGGGBGGRGGRGGBRBGBRG").unwrap();
+        let (width, height) = (12, 12);
+        let pixels: Vec<u16> = (0..(width * height) as u16).collect();
+        let img = Image::new(
+            ImageType::XTrans(pattern),
+            fitskit::Header::new(),
+            width,
+            height,
+            PixelBuffer::U16(pixels.clone()),
+        );
+
+        let debayered = img.debayer().unwrap().unwrap();
+        assert_eq!(debayered.image_type, ImageType::RGB);
+        assert_eq!(debayered.width, width);
+        assert_eq!(debayered.height, height);
+
+        let PixelBuffer::U16(rgb) = &debayered.pixels else {
+            panic!("an X-Trans image always debayers into u16 samples");
+        };
+        assert_eq!(rgb.len(), width * height * 3);
+
+        // (0, 0) is 'G' in this pattern: its raw sample must survive untouched
+        // into the green plane, since the sensor actually measured it there.
+        assert_eq!(rgb[1], pixels[0]);
+        // (0, 2) is 'R': survives into the red plane.
+        assert_eq!(rgb[2 * 3], pixels[2]);
+        // (0, 5) is 'B': survives into the blue plane.
+        assert_eq!(rgb[5 * 3 + 2], pixels[5]);
     }
 
     #[test]
