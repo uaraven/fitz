@@ -1,7 +1,7 @@
 FROM rust:1.97-slim
 
 RUN apt update && \
-    apt install -y rpm libfontconfig1-dev libssl-dev && \
+    apt install -y rpm libfontconfig1-dev libssl-dev clang && \
     cargo install cargo-bundle && \
     cargo install cargo-generate-rpm
 
