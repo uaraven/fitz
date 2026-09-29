@@ -1,9 +1,9 @@
 use crate::data::{Image, ImageType, PixelBuffer};
-use crate::fits_bayer::cfa_str;
+use crate::fits_bayer::{bayerpat_value, parse_cfa};
 use crate::keywords::{BAYERPAT, add_history};
+use crate::non_blank;
 use crate::xtrans;
 use anyhow::{Result, bail};
-use bayer::CFA;
 use fitskit::{Header, HeaderValue};
 use rayon::prelude::*;
 use rsraw::{FullRawInfo, GpsInfo, RawImage};
@@ -38,6 +38,17 @@ fn normalize_sample(raw: u16, black: u32, white: u32) -> u16 {
     (v as u64 * 65535 / span as u64) as u16
 }
 
+/// A `raw -> normalized` lookup table for one black level, built once by
+/// evaluating [`normalize_sample`] over every possible 16-bit sample. There
+/// are at most four distinct black levels in a frame (one per raw colour
+/// index), so replacing the per-pixel division in the hot crop loop with a
+/// table lookup costs at most `4 * 65536` divisions total, not one per pixel.
+fn normalize_lut(black: u32, white: u32) -> Vec<u16> {
+    (0..=u16::MAX)
+        .map(|raw| normalize_sample(raw, black, white))
+        .collect()
+}
+
 pub fn load_raw_image(source: &Path) -> Result<Image> {
     let data = std::fs::read(source)?;
     let mut raw_image = RawImage::open(&data)?;
@@ -51,9 +62,6 @@ pub fn load_raw_image(source: &Path) -> Result<Image> {
     if rd.raw_image.is_null() || raw_data_ref.idata.filters == 0 {
         bail!("Unsupported RAW file: not a Bayer CFA raw");
     }
-    // if raw_data_ref.idata.filters < 1000 {
-    //     bail!("Unsupported RAW file: non-2x2 CFA");
-    // }
 
     let (w, h) = (sizes.width as usize, sizes.height as usize);
     let (top, left) = (sizes.top_margin as usize, sizes.left_margin as usize);
@@ -72,17 +80,20 @@ pub fn load_raw_image(source: &Path) -> Result<Image> {
         rd.color.data_maximum
     };
 
-    // Sensor type, colour pattern, and the per-position black level (indexed
-    // the same way as the pattern itself, so both a 2x2 CFA phase and a 6x6
-    // X-Trans phase are expressed as one 6x6 table — a 2x2 pattern repeats
-    // exactly across a 6-cell period too).
-    let (image_type, black_by_position): (ImageType, [[u32; 6]; 6]) =
+    // Sensor type, colour pattern, and the per-position raw colour index
+    // (indexed the same way as the pattern itself, so both a 2x2 CFA phase
+    // and a 6x6 X-Trans phase are expressed as one 6x6 table — a 2x2 pattern
+    // repeats exactly across a 6-cell period too).
+    let (image_type, color_index_by_position): (ImageType, [[usize; 6]; 6]) =
         if raw_data_ref.idata.filters == 9 {
             let table: [[i8; 6]; 6] = raw_data_ref.idata.xtrans;
-            let black6x6 = table.map(|row| row.map(|idx| black_levels[idx as usize]));
+            let idx6x6 = table.map(|row| row.map(|idx| idx as usize));
             (
-                ImageType::XTrans(xtrans::pattern_from_libraw(table, raw_data_ref.idata.cdesc)?),
-                black6x6,
+                ImageType::XTrans(xtrans::pattern_from_libraw(
+                    table,
+                    raw_data_ref.idata.cdesc,
+                )?),
+                idx6x6,
             )
         } else if raw_data_ref.idata.filters >= 1000 {
             // CFA pattern at the visible origin; libraw_COLOR uses visible-area coordinates.
@@ -90,32 +101,41 @@ pub fn load_raw_image(source: &Path) -> Result<Image> {
             let idx_at = |r, c| unsafe { sys::libraw_COLOR(p, r, c) } as usize;
             let idxs = [[idx_at(0, 0), idx_at(0, 1)], [idx_at(1, 0), idx_at(1, 1)]];
             let chars = idxs.map(|row| row.map(|idx| raw_data_ref.idata.cdesc[idx] as u8 as char)); // cdesc is e.g. "RGBG"
-            let pattern = match [chars[0][0], chars[0][1], chars[1][0], chars[1][1]] {
-                ['R', 'G', 'G', 'B'] => CFA::RGGB,
-                ['B', 'G', 'G', 'R'] => CFA::BGGR,
-                ['G', 'R', 'B', 'G'] => CFA::GRBG,
-                ['G', 'B', 'R', 'G'] => CFA::GBRG,
-                other => bail!("Unsupported CFA pattern: {:?}", other),
-            };
-            let black2x2 = idxs.map(|row| row.map(|idx| black_levels[idx]));
-            let black6x6 = std::array::from_fn(|r: usize| {
-                std::array::from_fn(|c: usize| black2x2[r % 2][c % 2])
-            });
-            (ImageType::CFA(pattern), black6x6)
+            let pattern_str: String = [chars[0][0], chars[0][1], chars[1][0], chars[1][1]]
+                .into_iter()
+                .collect();
+            let pattern = parse_cfa(&pattern_str)
+                .ok_or_else(|| anyhow::anyhow!("Unsupported CFA pattern: {pattern_str}"))?;
+            let idx6x6 =
+                std::array::from_fn(|r: usize| std::array::from_fn(|c: usize| idxs[r % 2][c % 2]));
+            (ImageType::CFA(pattern), idx6x6)
         } else {
             bail!("Unsupported RAW file: non-2x2 CFA");
         };
 
+    // One LUT per raw colour index (always four, straight from
+    // `black_levels` — no need to dedup black values first), and each of the
+    // six row phases tiled out to the frame's width, so the crop loop below
+    // never divides or takes a modulo per pixel.
+    let luts: [Vec<u16>; 4] = std::array::from_fn(|i| normalize_lut(black_levels[i], white));
+    let row_luts: [Vec<usize>; 6] = std::array::from_fn(|phase| {
+        (0..w)
+            .map(|x| color_index_by_position[phase][x % 6])
+            .collect()
+    });
+
     // Crop the visible area out of the full sensor buffer (drops masked
     // border pixels), subtracting each pixel's own black level and rescaling
-    // so the sensor's saturation point maps to 65535 in the same pass.
+    // so the sensor's saturation point maps to 65535 in the same pass — via
+    // a table lookup rather than a per-pixel division.
     let data: Vec<u16> = (0..h)
         .into_par_iter()
         .flat_map_iter(|y| {
             let off = (y + top) * pitch + left;
             let row = &full[off..off + w];
-            let black_row = &black_by_position[y % 6];
-            (0..w).map(move |x| normalize_sample(row[x], black_row[x % 6], white))
+            let idx_row = &row_luts[y % 6];
+            let luts = &luts;
+            (0..w).map(move |x| luts[idx_row[x]][row[x] as usize])
         })
         .collect();
 
@@ -137,90 +157,78 @@ pub fn load_raw_image(source: &Path) -> Result<Image> {
 /// are regenerated by the FITS writer from the `Image` itself.
 fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h: usize) -> Header {
     let mut header = Header::new();
-    let cfa = match image_type {
-        ImageType::XTrans(pattern) => Some(HeaderValue::String(xtrans::pattern_str(&pattern))),
-        ImageType::CFA(pattern) => Some(HeaderValue::String(cfa_str(pattern).to_string())),
-        _ => None,
-    };
-
-    if let Some(pattern) = cfa {
-        header.set(
-            BAYERPAT,
-            pattern,
-            Some("Bayer color pattern"),
-        );
+    if let Some(value) = bayerpat_value(image_type) {
+        header.set(BAYERPAT, value, Some("Bayer color pattern"));
     }
 
-    if let Some(datetime) = raw_info.datetime {
-        header.set(
-            "DATE-OBS",
-            HeaderValue::String(datetime.format("%Y-%m-%dT%H:%M:%S").to_string()),
-            Some("Date/time of observation, UT"),
-        );
-    }
+    set_if(
+        &mut header,
+        "DATE-OBS",
+        raw_info
+            .datetime
+            .map(|dt| HeaderValue::String(dt.format("%Y-%m-%dT%H:%M:%S").to_string())),
+        Some("Date/time of observation, UT"),
+    );
+    set_if(
+        &mut header,
+        "EXPTIME",
+        (raw_info.shutter > 0.0).then_some(HeaderValue::Float(raw_info.shutter as f64)),
+        Some("[s] Exposure duration"),
+    );
+    set_if(
+        &mut header,
+        "ISOSPEED",
+        (raw_info.iso_speed > 0).then_some(HeaderValue::Integer(raw_info.iso_speed as i64)),
+        Some("ISO camera sensitivity"),
+    );
+    set_if(
+        &mut header,
+        "FOCRATIO",
+        (raw_info.aperture > 0.0).then_some(HeaderValue::Float(raw_info.aperture as f64)),
+        Some("Focal ratio (f-number)"),
+    );
+    set_if(
+        &mut header,
+        "FOCALLEN",
+        (raw_info.focal_len > 0.0).then_some(HeaderValue::Float(raw_info.focal_len as f64)),
+        Some("[mm] Focal length"),
+    );
 
-    if raw_info.shutter > 0.0 {
-        header.set(
-            "EXPTIME",
-            HeaderValue::Float(raw_info.shutter as f64),
-            Some("[s] Exposure duration"),
-        );
-    }
-
-    if raw_info.iso_speed > 0 {
-        header.set(
-            "ISOSPEED",
-            HeaderValue::Integer(raw_info.iso_speed as i64),
-            Some("ISO camera sensitivity"),
-        );
-    }
-
-    if raw_info.aperture > 0.0 {
-        header.set(
-            "FOCRATIO",
-            HeaderValue::Float(raw_info.aperture as f64),
-            Some("Focal ratio (f-number)"),
-        );
-    }
-
-    if raw_info.focal_len > 0.0 {
-        header.set(
-            "FOCALLEN",
-            HeaderValue::Float(raw_info.focal_len as f64),
-            Some("[mm] Focal length"),
-        );
-    }
-
-    if let Some(camera) = non_empty(&join_words(&[
-        &raw_info.normalized_make,
-        &raw_info.normalized_model,
-    ])) {
-        header.set(
-            "INSTRUME",
-            HeaderValue::String(camera),
-            Some("Camera make and model"),
-        );
-    }
-
-    if let Some(lens) = non_empty(&raw_info.lens_info.lens_name) {
-        header.set("TELESCOP", HeaderValue::String(lens), Some("Lens used"));
-    }
-
-    if let Some(artist) = non_empty(&raw_info.artist) {
-        header.set("OBSERVER", HeaderValue::String(artist), None);
-    }
-
-    if let Some(object) = non_empty(&raw_info.desc) {
-        header.set("OBJECT", HeaderValue::String(object), None);
-    }
-
-    if let Some(software) = non_empty(&raw_info.software) {
-        header.set(
-            "SWCREATE",
-            HeaderValue::String(software),
-            Some("Camera firmware/software"),
-        );
-    }
+    let camera = [&raw_info.normalized_make, &raw_info.normalized_model]
+        .into_iter()
+        .filter_map(|s| non_blank(s))
+        .collect::<Vec<_>>()
+        .join(" ");
+    set_if(
+        &mut header,
+        "INSTRUME",
+        non_blank(&camera).map(|s| HeaderValue::String(s.to_string())),
+        Some("Camera make and model"),
+    );
+    set_if(
+        &mut header,
+        "TELESCOP",
+        non_blank(&raw_info.lens_info.lens_name).map(|s| HeaderValue::String(s.to_string())),
+        Some("Lens used"),
+    );
+    set_if(
+        &mut header,
+        "OBSERVER",
+        non_blank(&raw_info.artist).map(|s| HeaderValue::String(s.to_string())),
+        None,
+    );
+    set_if(
+        &mut header,
+        "OBJECT",
+        non_blank(&raw_info.desc).map(|s| HeaderValue::String(s.to_string())),
+        None,
+    );
+    set_if(
+        &mut header,
+        "SWCREATE",
+        non_blank(&raw_info.software).map(|s| HeaderValue::String(s.to_string())),
+        Some("Camera firmware/software"),
+    );
 
     if raw_info.gps != GpsInfo::default() {
         header.set(
@@ -254,22 +262,12 @@ fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h
     header
 }
 
-/// Join non-blank, trimmed words with a single space (e.g. camera make +
-/// model), skipping any that are empty.
-fn join_words(words: &[&str]) -> String {
-    words
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// `Some(trimmed)` unless `s` is empty once trimmed — RAW/EXIF string fields
-/// come back as `""` rather than `None` when LibRaw found nothing.
-fn non_empty(s: &str) -> Option<String> {
-    let s = s.trim();
-    (!s.is_empty()).then(|| s.to_string())
+/// Sets `key` to `value`'s inner value when present; a no-op for `None` —
+/// every RAW/EXIF field above is written only when LibRaw actually found it.
+fn set_if(header: &mut Header, key: &str, value: Option<HeaderValue>, comment: Option<&str>) {
+    if let Some(value) = value {
+        header.set(key, value, comment);
+    }
 }
 
 /// Convert a `[degrees, minutes, seconds]` GPS coordinate (LibRaw's
@@ -287,6 +285,7 @@ fn dms_to_decimal(dms: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bayer::CFA;
     use chrono::{Local, TimeZone};
     use rsraw::{FocusType, LensInfo};
 
@@ -445,5 +444,22 @@ mod tests {
         // A white point at or below black shouldn't happen in practice (LibRaw
         // always derives `maximum` from the bit depth), but must not panic.
         assert_eq!(normalize_sample(1000, 2000, 1000), 0);
+    }
+
+    /// The hot crop loop replaces `normalize_sample`'s division with a table
+    /// lookup; the table must agree with the scalar function bit-for-bit over
+    /// the whole 16-bit domain, including the exact-saturation edge case.
+    #[test]
+    fn normalize_lut_matches_normalize_sample_over_the_full_domain() {
+        let (black, white) = (512, 16383);
+        let lut = normalize_lut(black, white);
+        assert_eq!(lut.len(), 65536);
+        for raw in 0..=u16::MAX {
+            assert_eq!(
+                lut[raw as usize],
+                normalize_sample(raw, black, white),
+                "raw sample {raw}"
+            );
+        }
     }
 }

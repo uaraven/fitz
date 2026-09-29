@@ -32,3 +32,10 @@ mod invert;
 pub mod contrast;
 pub mod raw_file;
 pub mod loader;
+
+/// `Some(trimmed)` unless `s` is empty once trimmed — a header/EXIF string
+/// field is blank rather than absent as often as it's simply missing.
+pub(crate) fn non_blank(s: &str) -> Option<&str> {
+    let s = s.trim();
+    (!s.is_empty()).then_some(s)
+}

@@ -56,16 +56,10 @@ impl Image {
         let debayered;
         let rgb = match self.image_type {
             ImageType::RGB => self,
-            ImageType::XTrans(_) => {
+            ImageType::CFA(_) | ImageType::XTrans(_) => {
                 debayered = self
                     .debayer()
-                    .expect("an X-Trans image always debayers into RGB")?;
-                &debayered
-            }
-            ImageType::CFA(_) => {
-                debayered = self
-                    .debayer()
-                    .expect("a CFA image always debayers into RGB")?;
+                    .expect("a mosaic image always debayers into RGB")?;
                 &debayered
             }
             ImageType::Grayscale => {

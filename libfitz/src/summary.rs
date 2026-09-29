@@ -5,6 +5,7 @@
 //! carries it.
 
 use crate::data::{Image, ImageType, PixelBuffer};
+use crate::non_blank;
 use fitskit::Header;
 
 /// One labeled field in [`info_summary`]'s report — a display label and its
@@ -79,7 +80,7 @@ fn push(fields: &mut Vec<SummaryField>, label: &'static str, value: String) {
 
 /// Append a string field only when present and non-blank once trimmed.
 fn push_str(fields: &mut Vec<SummaryField>, label: &'static str, value: Option<&str>) {
-    if let Some(value) = value.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(value) = value.and_then(non_blank) {
         push(fields, label, value.to_string());
     }
 }
@@ -111,10 +112,7 @@ fn channel_label(image: &Image) -> &'static str {
 /// (`FOCRATIO`), e.g. `My Scope (203mm F/4.5)`. Returns `None` when no telescope
 /// keyword carries usable information.
 fn telescope_label(header: &Header) -> Option<String> {
-    let name = header
-        .get_string("TELESCOP")
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let name = header.get_string("TELESCOP").and_then(non_blank);
 
     let mut optics = String::new();
     if let Some(focal) = header.get_float("FOCALLEN") {
@@ -158,7 +156,7 @@ fn push_coordinate(
         Axis::Ra => "RA",
         Axis::Dec => "DEC",
     };
-    let sexagesimal = sexagesimal.map(str::trim).filter(|s| !s.is_empty());
+    let sexagesimal = sexagesimal.and_then(non_blank);
 
     let value = match (deg, sexagesimal) {
         (Some(d), _) => Some(format_coordinate(axis, d)),
