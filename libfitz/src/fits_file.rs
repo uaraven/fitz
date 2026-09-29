@@ -3,11 +3,10 @@ use anyhow::{Result, anyhow};
 use std::borrow::Cow;
 use std::path::Path;
 
-use crate::fits_bayer::{BayerHeader, cfa_str, parse_bayer_header};
+use crate::fits_bayer::{bayerpat_value, image_type_for_2d, parse_bayer_header};
 use crate::keywords::{
     BAYERPAT, BSCALE, BZERO, CFA_KEYWORDS, DATAMAX, DATAMIN, add_history, copy_missing_metadata,
 };
-use crate::xtrans::pattern_str;
 use fitskit::{
     Bitpix, CompressOptions, FitsFile, HduData, Header, HeaderValue, ImageData, PixelData,
 };
@@ -133,11 +132,7 @@ pub fn load_fits(source: &Path) -> Result<Image> {
             // planes. Anything wider (a data cube, a stack) has no meaning
             // here, and treating it as RGB would silently mangle it.
             3 if img.axes[2] == 3 => ImageType::RGB,
-            2 => match bayer_pat {
-                Some(BayerHeader::Standard(cfa)) => ImageType::CFA(cfa),
-                Some(BayerHeader::XTrans(pattern)) => ImageType::XTrans(pattern),
-                None => ImageType::Grayscale,
-            },
+            2 => image_type_for_2d(bayer_pat),
             _ => {
                 return Err(anyhow!("unsupported image shape {:?}", img.axes));
             }
@@ -283,22 +278,8 @@ pub fn image_to_fits(img: &Image, options: SaveOptions) -> Result<FitsFile> {
     let header = &mut dst_file.hdus[image_hdu].header;
     header.set(BSCALE, HeaderValue::Integer(bscale as i64), None);
     header.set(BZERO, HeaderValue::Integer(bzero as i64), None);
-    match img.image_type {
-        ImageType::CFA(cfa) => {
-            header.set(
-                BAYERPAT,
-                HeaderValue::String(cfa_str(cfa).to_string()),
-                None,
-            );
-        }
-        ImageType::XTrans(pattern) => {
-            header.set(
-                BAYERPAT,
-                HeaderValue::String(pattern_str(&pattern)),
-                None,
-            );
-        }
-        _ => {}
+    if let Some(value) = bayerpat_value(img.image_type) {
+        header.set(BAYERPAT, value, None);
     }
     if let Some(history) = &options.history {
         add_history(header, history);
@@ -412,11 +393,7 @@ pub fn load_header(source: &Path) -> Result<ImageMeta> {
     let image_type = if axes == 3 && axis(3) == Some(3) {
         ImageType::RGB
     } else {
-        match bayer_pat {
-            Some(BayerHeader::Standard(cfa)) => ImageType::CFA(cfa),
-            Some(BayerHeader::XTrans(pattern)) => ImageType::XTrans(pattern),
-            None => ImageType::Grayscale,
-        }
+        image_type_for_2d(bayer_pat)
     };
 
     Ok(ImageMeta {

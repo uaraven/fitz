@@ -39,7 +39,7 @@ use super::metrics::{self, FileMetrics, Metric, MetricFamily, Series};
 use crate::AppWindow;
 use crate::chart::plot;
 use crate::chart_svg::svg;
-use crate::files::{display_name, is_fits_path, is_raw_image};
+use crate::files::{display_name, is_openable_image};
 
 use super::{AppState, STATE, operation_targets, set_row_status};
 
@@ -127,7 +127,7 @@ pub(super) fn start_batch(
     app: &AppWindow,
     done: impl FnOnce(&AppWindow, Plan, usize) + Send + 'static,
 ) {
-    let targets = operation_targets(|x| is_fits_path(x) || is_raw_image(x));
+    let targets = operation_targets(is_openable_image);
     let (generation, cancel, plan) = STATE.with(|s| {
         let mut st = s.borrow_mut();
         let generation = abort_batch(&mut st);

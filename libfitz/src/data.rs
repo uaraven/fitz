@@ -1,5 +1,5 @@
 use crate::convert::{float_to_u16, u16_to_float};
-pub use crate::xtrans::{XTransColor, XTransPattern};
+pub use crate::xtrans::XTransPattern;
 use anyhow::bail;
 use bayer::CFA;
 use fitskit::Header;
@@ -269,8 +269,7 @@ impl Image {
     pub fn channels(&self) -> usize {
         match self.image_type {
             ImageType::RGB => 3,
-            ImageType::XTrans(_) => 1,
-            ImageType::Grayscale | ImageType::CFA(_) => 1,
+            ImageType::Grayscale | ImageType::CFA(_) | ImageType::XTrans(_) => 1,
         }
     }
 

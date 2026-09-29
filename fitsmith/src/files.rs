@@ -32,6 +32,11 @@ pub fn is_raw_image(path: &Path) -> bool {
     has_extension(path, RAW_EXTENSIONS) && !macos_special_file(path)
 }
 
+/// Whether `path` is a FITS or RAW image FitSmith can open.
+pub fn is_openable_image(path: &Path) -> bool {
+    is_fits_path(path) || is_raw_image(path)
+}
+
 #[cfg(target_os = "macos")]
 fn macos_special_file(path: &Path) -> bool {
     path.file_name()
@@ -70,7 +75,7 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.is_file() && (is_fits_path(p) || is_raw_image(p)))
+        .filter(|p| p.is_file() && is_openable_image(p))
         .collect();
     paths.sort();
     paths

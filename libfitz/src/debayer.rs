@@ -91,32 +91,25 @@ fn demosaic_to_rgb(
 impl Image {
     /// Debayers the image into the RGB image
     pub fn debayer(&self) -> Option<Result<Image>> {
-        match self.image_type {
-            ImageType::CFA(cfa) => {
-                let rgb_pixels = demosaic_to_rgb(&self.pixels, self.width, self.height, cfa);
-                Some(rgb_pixels.map(|rgb_pixels| {
-                    Image::new(
-                        ImageType::RGB,
-                        self.header.clone(),
-                        self.width,
-                        self.height,
-                        rgb_pixels,
-                    )
-                }))
-            }
-            ImageType::XTrans(pattern) => {
-                let rgb_pixels =
-                    xtrans::demosaic_to_rgb(&self.pixels, self.width, self.height, &pattern);
-                Some(Ok(Image::new(
-                    ImageType::RGB,
-                    self.header.clone(),
-                    self.width,
-                    self.height,
-                    rgb_pixels,
-                )))
-            }
-            _ => None,
-        }
+        let rgb_pixels: Result<PixelBuffer> = match self.image_type {
+            ImageType::CFA(cfa) => demosaic_to_rgb(&self.pixels, self.width, self.height, cfa),
+            ImageType::XTrans(pattern) => Ok(xtrans::demosaic_to_rgb(
+                &self.pixels,
+                self.width,
+                self.height,
+                &pattern,
+            )),
+            _ => return None,
+        };
+        Some(rgb_pixels.map(|rgb_pixels| {
+            Image::new(
+                ImageType::RGB,
+                self.header.clone(),
+                self.width,
+                self.height,
+                rgb_pixels,
+            )
+        }))
     }
 
     /// This image reinterpreted as a raw mosaic with Bayer pattern `cfa`,
