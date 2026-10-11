@@ -37,7 +37,7 @@ use slint::{ComponentHandle, ModelRc, VecModel, Weak};
 use super::metrics::{self, FileMetrics, Metric, MetricFamily, Series};
 
 use crate::AppWindow;
-use crate::chart::plot;
+use crate::chart::{XAxis, plot};
 use crate::chart_svg::svg;
 use crate::files::{display_name, is_openable_image};
 
@@ -397,6 +397,21 @@ pub fn analytics_metric_changed(app: &AppWindow, index: i32) {
     replot(app);
 }
 
+/// Re-plot after the X-axis switch flipped (time ↔ frame order). Pure, like a
+/// metric change: the cached metrics are re-mapped, nothing is re-read.
+pub fn analytics_axis_changed(app: &AppWindow) {
+    replot(app);
+}
+
+/// The X axis the dialog's switch currently selects.
+fn x_axis(app: &AppWindow) -> XAxis {
+    if app.get_analytics_time_axis() {
+        XAxis::Time
+    } else {
+        XAxis::Order
+    }
+}
+
 /// Close the dialog: drop the plotted series and stop any batch still running
 /// for it. Leaves `analytics_cache` alone — surviving the close is exactly what
 /// it is for.
@@ -415,7 +430,7 @@ pub fn close_analytics(app: &AppWindow) {
 /// series (see `chart::Plot`/`chart.slint` for why).
 fn replot(app: &AppWindow) {
     let series = current_series(app);
-    let plot = plot(&series);
+    let plot = plot(&series, x_axis(app));
 
     // Every channel plots the same set of files (see `build_series`), so the
     // first channel's point count is the number of files actually plotted.
@@ -507,7 +522,7 @@ pub fn analytics_export_svg(app: &AppWindow) {
 /// Render and write the chart as SVG; `Ok(None)` if the user cancelled.
 fn export_svg(app: &AppWindow) -> Result<Option<PathBuf>> {
     let series = current_series(app);
-    let doc = svg(&plot(&series), series.metric.label());
+    let doc = svg(&plot(&series, x_axis(app)), series.metric.label());
     let Some(path) = prompt_export_path(series.metric, "SVG image", "svg") else {
         return Ok(None);
     };
@@ -679,13 +694,7 @@ mod tests {
         // Already cancelled before the first file: nothing is read at all.
         let cancel = AtomicBool::new(true);
         let mut count = 0;
-        let stopped = analyze_batch(
-            &targets,
-            &cancel,
-            |_, _| count += 1,
-            |_, _| {},
-            |_, _| {},
-        );
+        let stopped = analyze_batch(&targets, &cancel, |_, _| count += 1, |_, _| {}, |_, _| {});
         assert!(stopped.is_none());
         assert_eq!(count, 0);
     }

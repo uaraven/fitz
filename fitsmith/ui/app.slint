@@ -154,6 +154,7 @@ export component AppWindow inherits Window {
     in-out property <int> analytics-metric;
     in-out property <float> analytics-zoom: 1.0;
     in-out property <bool> analytics-stddev-enabled: false;
+    in-out property <bool> analytics-time-axis: true;
     in property <[StatLine]> analytics-stat-lines;
     in property <string> analytics-metric-label;
     in property <int> analytics-plotted-count;
@@ -271,6 +272,8 @@ export component AppWindow inherits Window {
     callback cancel-analytics();
     // Metric dropdown changed — re-plot from the cached per-file metrics.
     callback analytics-metric-changed(int);
+    // X-axis switch (time ↔ frame order) flipped — likewise a pure re-plot.
+    callback analytics-axis-changed();
     // Export the chart: SVG re-renders the plotted series as a vector document,
     // CSV writes it as rows. Neither depends on what the dialog is showing, so
     // a zoomed-in chart still exports whole.
@@ -843,6 +846,10 @@ export component AppWindow inherits Window {
         metric-index <=> root.analytics-metric;
         zoom <=> root.analytics-zoom;
         stddev-enabled <=> root.analytics-stddev-enabled;
+        time-axis <=> root.analytics-time-axis;
+        axis-changed => {
+            root.analytics-axis-changed();
+        }
         stat-lines: root.analytics-stat-lines;
         metric-changed(index) => {
             root.analytics-metric-changed(index);

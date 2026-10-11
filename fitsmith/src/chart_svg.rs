@@ -253,7 +253,7 @@ fn draw_line(s: &mut String, line: &ChartLine, color: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart::plot;
+    use crate::chart::{XAxis, plot};
     use crate::controller::metrics::{ChannelSeries, Metric, SamplePoint, Series};
     use std::path::PathBuf;
 
@@ -279,7 +279,7 @@ mod tests {
                 points,
             }],
         };
-        plot(&series)
+        plot(&series, XAxis::Time)
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod tests {
                 },
             ],
         };
-        let doc = svg(&plot(&series), "Mean (ADU)");
+        let doc = svg(&plot(&series, XAxis::Time), "Mean (ADU)");
 
         assert_eq!(doc.matches("<polyline").count(), 3);
         assert_eq!(doc.matches("<circle").count(), 3);
@@ -453,7 +453,7 @@ mod tests {
                 },
             ],
         };
-        let doc = svg(&plot(&series), "Mean (ADU)");
+        let doc = svg(&plot(&series, XAxis::Time), "Mean (ADU)");
         assert!(!doc.contains("stroke-dasharray"));
     }
 

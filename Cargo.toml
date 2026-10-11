@@ -16,6 +16,12 @@ strip = true          # NB: panic = 'abort' is incompatible with the `bayer` dep
 [profile.release.package.libfitz]
 opt-level = 2
 
+# Dependencies (image decoding, rayon) are far too slow at opt-level 0; build
+# them optimised even in dev builds. Our own crate keeps fast incremental builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+
 [profile.profiling]
 inherits = "release"
 debug = true
