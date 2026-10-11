@@ -128,6 +128,9 @@ fn main() -> Result<()> {
     forward!(on_analytics_metric_changed, |app, index| {
         controller::analytics_metric_changed(&app, index)
     });
+    forward!(on_analytics_axis_changed, |app| {
+        controller::analytics_axis_changed(&app)
+    });
     forward!(on_analytics_export_svg, |app| {
         controller::analytics_export_svg(&app)
     });

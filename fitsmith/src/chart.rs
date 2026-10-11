@@ -32,6 +32,16 @@ pub struct Plot {
     pub stat_lines: Vec<StatLine>,
 }
 
+/// What the X axis measures: acquisition time (gaps between sessions stay
+/// visible) or frame order (every image one equal step, so a multi-night run
+/// reads without the empty daytime stretches).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum XAxis {
+    #[default]
+    Time,
+    Order,
+}
+
 /// A value axis: the (nice, rounded-outward) bounds the plot maps onto and the
 /// tick values inside them.
 struct ValueAxis {
@@ -120,6 +130,14 @@ fn time_ticks(lo: f64, hi: f64) -> Vec<f64> {
     ticks
 }
 
+/// Frame-number ticks (1-based) for an order axis over `count` frames, on a
+/// nice step so a long run is not labeled at every frame. Always includes
+/// frame 1.
+fn order_ticks(count: usize) -> Vec<usize> {
+    let step = nice_step(count.saturating_sub(1) as f64, 6).max(1.0) as usize;
+    (1..=count).filter(|k| (k - 1) % step == 0).collect()
+}
+
 /// Break a Unix-epoch timestamp (seconds, UTC) into civil fields
 /// `(year, month, day, hour, minute, second)`. Uses Howard Hinnant's
 /// `civil_from_days` — the exact inverse of the `days_from_civil` that
@@ -171,6 +189,31 @@ fn format_stamp(epoch: f64) -> String {
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}")
 }
 
+/// The time axis's ticks. The date labels the first tick and then only the
+/// ticks that roll over to a new day. Repeating one date under all six ticks of
+/// a single night is noise; showing it on the change makes a midnight crossing
+/// visible instead.
+fn time_x_ticks(t_lo: f64, t_hi: f64, x_of: impl Fn(f64) -> f32) -> Vec<ChartTick> {
+    let mut prev_date = None;
+    time_ticks(t_lo, t_hi)
+        .into_iter()
+        .map(|t| {
+            let date = format_date(t);
+            let changed = prev_date.as_ref() != Some(&date);
+            prev_date = Some(date.clone());
+            ChartTick {
+                pos: x_of(t),
+                label: format_time(t).into(),
+                date_label: if changed {
+                    date.into()
+                } else {
+                    Default::default()
+                },
+            }
+        })
+        .collect()
+}
+
 /// Map a [`Series`] into the chart's 0..1 space: X spans the first to the
 /// last timestamp across every channel, Y spans one value axis (shared by
 /// every channel, so R/G/B stay comparable) inverted (0 is the top). An empty
@@ -179,7 +222,11 @@ fn format_stamp(epoch: f64) -> String {
 ///
 /// Times are labeled in UTC — the frame's acquisition time (`DATE-LOC`, else
 /// `DATE-OBS`) exactly as the header spelled it, with no zone conversion.
-pub fn plot(series: &Series) -> Plot {
+///
+/// With [`XAxis::Order`] the timestamps only fix the order: frame `i` of `n`
+/// sits at `(i + 0.5) / n`, one equal slot per image, and the ticks are frame
+/// numbers. Tooltips carry the frame number ahead of the timestamp.
+pub fn plot(series: &Series, axis_mode: XAxis) -> Plot {
     let all_points = || series.channels.iter().flat_map(|c| c.points.iter());
     let (Some(t_lo), Some(t_hi)) = (
         all_points().map(|p| p.time).min_by(f64::total_cmp),
@@ -192,12 +239,24 @@ pub fn plot(series: &Series) -> Plot {
     });
     let axis = value_axis(value_range.0, value_range.1);
 
-    let x_of = |t: f64| {
+    // Every channel plots the same files in the same (time-sorted) order.
+    let frame_count = series
+        .channels
+        .iter()
+        .map(|c| c.points.len())
+        .max()
+        .unwrap_or(0);
+    let x_of_time = |t: f64| {
         if t_hi > t_lo {
             ((t - t_lo) / (t_hi - t_lo)) as f32
         } else {
             0.5
         }
+    };
+    let x_of_index = |i: usize| (i as f32 + 0.5) / frame_count as f32;
+    let x_of = |i: usize, t: f64| match axis_mode {
+        XAxis::Time => x_of_time(t),
+        XAxis::Order => x_of_index(i),
     };
     let y_of = |v: f64| {
         if axis.hi > axis.lo {
@@ -214,10 +273,15 @@ pub fn plot(series: &Series) -> Plot {
             let points: Vec<ChartPoint> = channel
                 .points
                 .iter()
-                .map(|p| ChartPoint {
-                    x: x_of(p.time),
+                .enumerate()
+                .map(|(i, p)| ChartPoint {
+                    x: x_of(i, p.time),
                     y: y_of(p.value),
-                    time_label: format_stamp(p.time).into(),
+                    time_label: match axis_mode {
+                        XAxis::Time => format_stamp(p.time),
+                        XAxis::Order => format!("#{} · {}", i + 1, format_stamp(p.time)),
+                    }
+                    .into(),
                     value_label: format_stat(p.value).into(),
                 })
                 .collect();
@@ -239,27 +303,17 @@ pub fn plot(series: &Series) -> Plot {
         })
         .collect();
 
-    // The date labels the first tick and then only the ticks that roll over to
-    // a new day. Repeating one date under all six ticks of a single night is
-    // noise; showing it on the change makes a midnight crossing visible instead.
-    let mut prev_date = None;
-    let x_ticks = time_ticks(t_lo, t_hi)
-        .into_iter()
-        .map(|t| {
-            let date = format_date(t);
-            let changed = prev_date.as_ref() != Some(&date);
-            prev_date = Some(date.clone());
-            ChartTick {
-                pos: x_of(t),
-                label: format_time(t).into(),
-                date_label: if changed {
-                    date.into()
-                } else {
-                    Default::default()
-                },
-            }
-        })
-        .collect();
+    let x_ticks = match axis_mode {
+        XAxis::Time => time_x_ticks(t_lo, t_hi, x_of_time),
+        XAxis::Order => order_ticks(frame_count)
+            .into_iter()
+            .map(|k| ChartTick {
+                pos: x_of_index(k - 1),
+                label: k.to_string().into(),
+                date_label: Default::default(),
+            })
+            .collect(),
+    };
 
     let stat_lines = match series.channels.first() {
         Some(channel) if series.channels.len() == 1 && channel.points.len() >= 2 => {
@@ -313,6 +367,11 @@ mod tests {
     use super::*;
     use crate::controller::metrics::{ChannelSeries, Metric, SamplePoint};
     use std::path::PathBuf;
+
+    /// Time-axis plot, the mode most tests exercise.
+    fn plot(series: &Series) -> Plot {
+        super::plot(series, XAxis::Time)
+    }
 
     fn sample_points(samples: &[(f64, f64)]) -> Vec<SamplePoint> {
         samples
@@ -594,5 +653,55 @@ mod tests {
         ));
         assert_eq!(p.lines[0].points[0].x, 0.0);
         assert_eq!(p.lines[2].points[1].x, 1.0);
+    }
+
+    #[test]
+    fn order_axis_spaces_frames_evenly_across_nights() {
+        // Two nights: 1 h apart within a night, 20 h between them.
+        let lo = libfitz::fits_file::parse_date_obs("2026-06-22T22:00:00").unwrap();
+        let s = series(&[
+            (lo, 1.0),
+            (lo + 3600.0, 2.0),
+            (lo + 21.0 * 3600.0, 3.0),
+            (lo + 22.0 * 3600.0, 4.0),
+        ]);
+        let p = super::plot(&s, XAxis::Order);
+        let xs: Vec<f32> = p.lines[0].points.iter().map(|pt| pt.x).collect();
+        assert_eq!(xs, [0.125, 0.375, 0.625, 0.875]);
+
+        // Ticks are bare frame numbers with no date row.
+        let labels: Vec<&str> = p.x_ticks.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["1", "2", "3", "4"]);
+        assert!(p.x_ticks.iter().all(|t| t.date_label.is_empty()));
+
+        // The tooltip keeps the timestamp and adds the frame number.
+        assert_eq!(p.lines[0].points[1].time_label, "#2 · 2026-06-22 23:00:00");
+        // Time mode on the same data is unchanged: true gaps.
+        let t = plot(&s);
+        assert!(t.lines[0].points[1].x < 0.1 && t.lines[0].points[2].x > 0.9);
+    }
+
+    #[test]
+    fn order_axis_thins_ticks_for_long_runs_and_handles_edges() {
+        let samples: Vec<(f64, f64)> = (0..100).map(|i| (1000.0 + i as f64, i as f64)).collect();
+        let p = super::plot(&series(&samples), XAxis::Order);
+        assert!(p.x_ticks.len() <= 8);
+        assert_eq!(p.x_ticks[0].label.as_str(), "1");
+        assert!(p.x_ticks.iter().all(|t| (0.0..=1.0).contains(&t.pos)));
+
+        assert_eq!(super::plot(&series(&[]), XAxis::Order), Plot::default());
+        let one = super::plot(&series(&[(1000.0, 42.0)]), XAxis::Order);
+        assert_eq!(one.lines[0].points[0].x, 0.5);
+        assert_eq!(one.x_ticks.len(), 1);
+    }
+
+    #[test]
+    fn order_axis_shares_x_across_rgb_channels() {
+        let r = [(10.0, 1.0), (500.0, 2.0)];
+        let p = super::plot(&rgb_series(&r, &r, &r), XAxis::Order);
+        for i in 0..2 {
+            assert_eq!(p.lines[0].points[i].x, p.lines[1].points[i].x);
+            assert_eq!(p.lines[1].points[i].x, p.lines[2].points[i].x);
+        }
     }
 }

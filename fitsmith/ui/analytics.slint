@@ -1,4 +1,4 @@
-import { Button, ComboBox, Slider, CheckBox } from "std-widgets.slint";
+import { Button, ComboBox, Slider, CheckBox, Switch } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 import { AppPalette } from "palette.slint";
 import { AnalyticsChart } from "chart.slint";
@@ -52,7 +52,11 @@ export component AnalyticsDialog inherits DialogCard {
     in-out property <bool> stddev-enabled: false;
     property <bool> per-channel: root.label-g != "" || root.label-b != "";
 
+    // true = X is acquisition time; false = one equal step per image.
+    in-out property <bool> time-axis: true;
+
     callback metric-changed(int);
+    callback axis-changed();
     callback export-svg();
     callback export-csv();
 
@@ -166,6 +170,14 @@ export component AnalyticsDialog inherits DialogCard {
                 enabled: root.plotted-count > 0;
                 clicked => {
                     root.export-csv();
+                }
+            }
+
+            Switch {
+                text: "Time X axis";
+                checked <=> root.time-axis;
+                toggled => {
+                    root.axis-changed();
                 }
             }
 
