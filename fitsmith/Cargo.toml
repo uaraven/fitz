@@ -33,8 +33,8 @@ icon = [
 # .fit/.fits/.fts/.fz on macOS. 
 # cargo-bundle has no first-class field for document-type associations, so
 # this splices raw Info.plist keys in directly.
-osx_info_plist_exts = ["assets/document-types.plist.xml"]
-linux_mime_types=["image/fits", "application/fits"]
+osx.info_plist_exts = ["assets/document-types.plist.xml"]
+linux.mime_types=["image/fits", "application/fits"]
 
 # Linux RPM build (cargo-bundle has no RPM backend). Unlike cargo-bundle's deb
 # backend, cargo-generate-rpm doesn't synthesize a .desktop entry from the
