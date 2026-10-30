@@ -6,6 +6,15 @@
 
 pub use fitskit;
 
+// On the MSVC target LibRaw (via rsraw-sys) is compiled with plain clang — see
+// `.cargo/config.toml` — which, unlike cl/clang-cl, doesn't embed a default-lib
+// directive for oldnames.lib, the UCRT's source of the POSIX aliases LibRaw
+// calls (stricmp, strnicmp, swab). Declared here rather than as a rustflag so
+// it also reaches rustdoc's doctest links and any downstream crate.
+#[cfg(all(windows, target_env = "msvc"))]
+#[link(name = "oldnames")]
+unsafe extern "C" {}
+
 pub mod copy_header;
 pub mod crop;
 pub mod debayer;

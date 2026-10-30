@@ -382,6 +382,8 @@ export component AppWindow inherits Window {
     }
 
     title: "FitSmith";
+    // Title bar / taskbar icon on Windows and Linux (macOS takes the bundle's icon).
+    icon: @image-url("../assets/256x256.png");
     preferred-width: 1000px;
     preferred-height: 680px;
     // Enough for both min widths (150 + 6 handle + 480) plus window chrome.
