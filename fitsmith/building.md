@@ -24,21 +24,26 @@ requirements (FitSmith pulls in Slint, which needs `fontconfig` on Linux).
 
 ## Packaging
 
-FitSmith can be packaged as a native installer per OS via [`cargo-bundle`](https://github.com/burtonageo/cargo-bundle)
-(install once with `cargo install cargo-bundle`). Two wrapper scripts drive it — there's no
-CI, since Slint's per-OS windowing/font dependencies mean each package has to be built on
-that OS:
+FitSmith can be packaged per OS. macOS and Linux use
+[`cargo-bundle`](https://github.com/burtonageo/cargo-bundle) (install once with
+`cargo install cargo-bundle`); Windows uses [NSIS](https://nsis.sourceforge.io/), an
+open-source installer system with permissive licenses. The scripts drive the packaging — there
+is no CI, since Slint's per-OS windowing/font dependencies mean each package has to be built
+on that OS:
 
 ```shell
-./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb + .rpm
-./build/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset on PATH)
+./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb
+./build/package-rpm.sh         # Linux -> .rpm
+./build/package-windows.ps1    # Windows -> .exe installer (needs NSIS / makensis on PATH)
 ```
 
-On Linux, building the `.rpm` needs `rpmbuild` on `PATH` (`sudo dnf install rpm-build` on
-Fedora/RHEL, `sudo apt install rpm` on Debian/Ubuntu); the script skips it with an install
-hint if missing, and still builds the `.deb`.
+On Linux, building an `.rpm` additionally needs `rpmbuild` and `cargo-generate-rpm`; see
+`build/package-rpm.sh` for the install hints.
 
-Output lands under `target/release/bundle/<osx|deb|rpm|msi>/`. Packages are unsigned — no Apple
+The Windows installer includes `fitsmith.exe`, `fitz.exe`, and the Bayer runtime DLL, and
+installs Start Menu shortcuts plus an uninstaller. Its output is
+`target/release/bundle/FitSmith-<version>-windows-x64-setup.exe`; the macOS and Linux package
+outputs land under `target/release/bundle/<osx|deb|rpm>/`. Packages are unsigned — no Apple
 Developer ID or Windows code-signing certificate is used — so first launch shows a Gatekeeper
 warning on macOS (right-click the app -> Open) and a SmartScreen warning on Windows (More
 info -> Run anyway).
