@@ -1,8 +1,8 @@
 use crate::convert::u16_to_float;
 use crate::data::{Image, PixelBuffer};
-use rayon::prelude::*;
 use crate::resize::fit_dimensions;
 use crate::stretch::DEFAULT_BRIGHTNESS;
+use rayon::prelude::*;
 
 /// Build a normalized 1D Gaussian kernel for a given sigma.
 fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
@@ -23,7 +23,7 @@ fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
 struct Pixels {
     width: usize,
     height: usize,
-    values: Vec<f32>
+    values: Vec<f32>,
 }
 
 impl Pixels {
@@ -71,7 +71,6 @@ impl Pixels {
             });
         out
     }
-
 
     /// Separable Gaussian blur: horizontal pass then vertical pass.
     /// This is the standard O(N * kernel_radius) approach rather than a
@@ -144,8 +143,6 @@ impl Pixels {
             });
         Pixels::new(out, dst_w, dst_h)
     }
-
-
 }
 
 /// Calculate percentiles of the pixel values
@@ -157,25 +154,31 @@ impl Pixels {
 /// ```
 pub fn percentile(data: &[f32], percentiles: &[usize]) -> (Vec<f32>, f32) {
     let mut sorted: Vec<f32> = data.to_vec();
-    sorted.sort_by(|a,b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let median = if sorted.len().is_multiple_of(2) {
-        let idx = sorted.len()/2;
-        (sorted[idx] + sorted[idx-1]) / 2.0
+        let idx = sorted.len() / 2;
+        (sorted[idx] + sorted[idx - 1]) / 2.0
     } else {
         sorted[sorted.len() / 2]
     };
-    
-    (percentiles.iter().map(|&p| {
-        let index = (sorted.len()-1) as f32 * (p as f32 / 100.0);
-        let lower = index.floor();
-        let upper = index.ceil();
-        if lower == upper {
-            return sorted[lower as usize]
-        }
-        // Linear interpolation between the two surrounding values
-        let weight = index - lower;
-        sorted[lower as usize] * (1.0 - weight) + sorted[upper as usize] * weight
-    }).collect(), median)
+
+    (
+        percentiles
+            .iter()
+            .map(|&p| {
+                let index = (sorted.len() - 1) as f32 * (p as f32 / 100.0);
+                let lower = index.floor();
+                let upper = index.ceil();
+                if lower == upper {
+                    return sorted[lower as usize];
+                }
+                // Linear interpolation between the two surrounding values
+                let weight = index - lower;
+                sorted[lower as usize] * (1.0 - weight) + sorted[upper as usize] * weight
+            })
+            .collect(),
+        median,
+    )
 }
 
 const MEDIAN_KERNEL_SIZE: usize = 3;
@@ -195,7 +198,6 @@ fn contrast_target_dimensions(width: usize, height: usize) -> (usize, usize) {
 }
 
 impl Image {
-
     /// Calculates the global percentile contrast of the image
     /// C = (P95 - P5) / median
     /// The image is processed with median filter and gaussian filter before calculating
@@ -204,10 +206,14 @@ impl Image {
         let source = self.stretch(true, DEFAULT_BRIGHTNESS);
 
         let luminance = source.luminance();
-        let pixels = Pixels::new(match luminance.pixels {
-            PixelBuffer::U16(v) => v.par_iter().map(|x| u16_to_float(*x)).collect(),
-            PixelBuffer::F32(v) => v,
-        }, source.width, source.height);
+        let pixels = Pixels::new(
+            match luminance.pixels {
+                PixelBuffer::U16(v) => v.par_iter().map(|x| u16_to_float(*x)).collect(),
+                PixelBuffer::F32(v) => v,
+            },
+            source.width,
+            source.height,
+        );
 
         let (target_w, target_h) = contrast_target_dimensions(pixels.width, pixels.height);
         let pixels = if (target_w, target_h) == (pixels.width, pixels.height) {
@@ -215,8 +221,12 @@ impl Image {
         } else {
             pixels.resize(target_w, target_h)
         };
-        let median = Pixels::new( pixels.median_filter(MEDIAN_KERNEL_SIZE), pixels.width, pixels.height);
-        let blurred = median.gaussian_filter( GAUSS_SIGMA);
+        let median = Pixels::new(
+            pixels.median_filter(MEDIAN_KERNEL_SIZE),
+            pixels.width,
+            pixels.height,
+        );
+        let blurred = median.gaussian_filter(GAUSS_SIGMA);
         let (percentiles, median) = percentile(&blurred, &[5, 95]);
 
         // A perfectly flat (zero-noise) background stretches to solid black:
@@ -230,7 +240,6 @@ impl Image {
             (percentiles[1] - percentiles[0]) / median
         }
     }
-
 }
 
 #[cfg(test)]

@@ -9,17 +9,17 @@
 //! dialogs use: opening it after Star metrics… reads no file at all, and every
 //! knob change re-evaluates purely in memory.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-use rayon::prelude::*;
-use slint::{ModelRc, VecModel};
-use libfitz::stars::median_in_place;
-use libfitz::stats::Stats;
 use super::analytics::{self, Plan};
 use super::metrics::FileMetrics;
 use super::{STATE, set_checked_paths, update_checked_count, update_exposure};
 use crate::files::display_name;
 use crate::{AppWindow, BadFrameRow};
+use libfitz::stars::median_in_place;
+use libfitz::stats::Stats;
+use rayon::prelude::*;
+use slint::{ModelRc, VecModel};
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 /// The dialog's knobs: which failure modes to look for, and how far from the
 /// session baseline a frame must stray to be flagged. Each factor has its
@@ -78,7 +78,10 @@ pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> 
         bad_frames.extend(estimate_frame_for_focus(files, params.fwhm_sigma));
     }
     if params.eccentricity {
-        bad_frames.extend(estimate_frame_for_eccentricity(files, params.eccentricity_sigma));
+        bad_frames.extend(estimate_frame_for_eccentricity(
+            files,
+            params.eccentricity_sigma,
+        ));
     }
     // ensure the list is returned in the original order
     files
@@ -92,119 +95,141 @@ pub fn evaluate(files: &[FileMetrics], params: &BadFrameParams) -> Vec<PathBuf> 
 fn estimate_frame_for_star_count(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, |s| Some(s.stars.count as f64));
     if meta.mad == 0.0 {
-        return vec![]
+        return vec![];
     }
-    metrics.iter().flat_map(|m| {
-        let stars = &m.stars;
-        let z = (stars.count as f32 - meta.median) / meta.mad;
-        if z <= -sigma {
-            Some(m.path.clone())
-        } else {
-            None
-        }
-    }).collect()
+    metrics
+        .iter()
+        .flat_map(|m| {
+            let stars = &m.stars;
+            let z = (stars.count as f32 - meta.median) / meta.mad;
+            if z <= -sigma {
+                Some(m.path.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn estimate_frame_for_noise_floor(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, stats_extractor(|st| Some(st.median as f64)));
     if meta.mad == 0.0 {
-        return vec![]
+        return vec![];
     }
-    let data: Vec<f64> = metrics.iter().flat_map(stats_extractor(|st| Some(st.median as f64))).collect();
-    data.iter().enumerate().flat_map(|(idx,d)| {
-        let z = (*d as f32 - meta.median) / meta.mad;
-        if z >= sigma {
-            Some(metrics[idx].path.clone())
-        } else {
-            None
-        }
-    }).collect()
+    let data: Vec<f64> = metrics
+        .iter()
+        .flat_map(stats_extractor(|st| Some(st.median as f64)))
+        .collect();
+    data.iter()
+        .enumerate()
+        .flat_map(|(idx, d)| {
+            let z = (*d as f32 - meta.median) / meta.mad;
+            if z >= sigma {
+                Some(metrics[idx].path.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
-
 
 fn estimate_frame_for_focus(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, |s| s.stars.fwhm);
     if meta.mad == 0.0 {
-        return vec![]
+        return vec![];
     }
-    metrics.iter().flat_map(|m| {
-        let stars = &m.stars;
-        let z = (stars.fwhm.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
-        if z >= sigma {
-            Some(m.path.clone())
-        } else {
-            None
-        }
-    }).collect()
+    metrics
+        .iter()
+        .flat_map(|m| {
+            let stars = &m.stars;
+            let z = (stars.fwhm.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
+            if z >= sigma {
+                Some(m.path.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
-
 
 fn estimate_frame_for_eccentricity(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, |s| s.stars.eccentricity);
     if meta.mad == 0.0 {
-        return vec![]
+        return vec![];
     }
-    metrics.iter().flat_map(|m| {
-        let stars = &m.stars;
-        let z = (stars.eccentricity.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
-        if z >= sigma {
-            Some(m.path.clone())
-        } else {
-            None
-        }
-    }).collect()
+    metrics
+        .iter()
+        .flat_map(|m| {
+            let stars = &m.stars;
+            let z = (stars.eccentricity.unwrap_or(0.0) as f32 - meta.median) / meta.mad;
+            if z >= sigma {
+                Some(m.path.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
-
 
 fn estimate_frame_for_contrast(metrics: &[FileMetrics], sigma: f32) -> Vec<PathBuf> {
     let meta = calculate_meta_stats(metrics, |st| Some(st.contrast as f64));
     if meta.mad == 0.0 {
-        return vec![]
+        return vec![];
     }
-    metrics.iter().flat_map(|m| {
-        let z = (m.contrast - meta.median) / meta.mad;
-        if z <= -sigma {
-            Some(m.path.clone())
-        } else {
-            None
-        }
-    }).collect()
+    metrics
+        .iter()
+        .flat_map(|m| {
+            let z = (m.contrast - meta.median) / meta.mad;
+            if z <= -sigma {
+                Some(m.path.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
-
 
 struct MetaStats {
     median: f32,
-    mad: f32
+    mad: f32,
 }
 
-fn stats_extractor(extractor: fn(Stats) -> Option<f64>) -> impl Fn(&FileMetrics) -> Option<f64> + Sync {
+fn stats_extractor(
+    extractor: fn(Stats) -> Option<f64>,
+) -> impl Fn(&FileMetrics) -> Option<f64> + Sync {
     move |m: &FileMetrics| {
-        if m.stats.len() == 1 { extractor(m.stats[0]) } else { extractor(m.stats[1]) }
+        if m.stats.len() == 1 {
+            extractor(m.stats[0])
+        } else {
+            extractor(m.stats[1])
+        }
     }
 }
-fn calculate_meta_stats(files: &[FileMetrics], extractor: impl Fn(&FileMetrics) -> Option<f64> + Sync) -> MetaStats {
+fn calculate_meta_stats(
+    files: &[FileMetrics],
+    extractor: impl Fn(&FileMetrics) -> Option<f64> + Sync,
+) -> MetaStats {
     // Not redundant: `extractor` is only `Sync`, not `Send`, and rayon's `flat_map`
     // needs the mapper itself to be `Send`. Wrapping it in a closure captures it
     // by shared reference instead, which is `Send` because `extractor: Sync`.
     #[allow(clippy::redundant_closure)]
     let mut data: Vec<f64> = files.par_iter().flat_map(|m| extractor(m)).collect();
     if data.is_empty() {
-        return MetaStats{
+        return MetaStats {
             median: 0.0,
             mad: 0.0,
-        }
+        };
     }
     let median = median_in_place(&mut data);
     let mut mad_data: Vec<f64> = data.iter().map(|d| (d - median).abs()).collect();
     mad_data.sort_by(|a, b| a.total_cmp(b));
 
     let mad = median_in_place(&mut mad_data) * 1.4826;
-    MetaStats{
+    MetaStats {
         median: median as f32,
         mad: mad as f32,
     }
 }
-
 
 /// Tools ▸ Detect Bad Frames…: measure the target files (the checked rows, or
 /// all of them when none are checked) behind the cancellable progress overlay
@@ -249,7 +274,7 @@ pub fn recompute_bad_frames(app: &AppWindow) {
         let bad = evaluate(&st.bad_frames, &params);
         let rows: Vec<BadFrameRow> = bad
             .iter()
-            .map(|b| BadFrameRow {   
+            .map(|b| BadFrameRow {
                 name: display_name(b).into(),
             })
             .collect();
@@ -370,17 +395,32 @@ mod tests {
             frame(
                 "a.fits",
                 0.0,
-                StarStats { count: 1, hfr: None, fwhm: None, eccentricity: Some(1.0) },
+                StarStats {
+                    count: 1,
+                    hfr: None,
+                    fwhm: None,
+                    eccentricity: Some(1.0),
+                },
             ),
             frame(
                 "b.fits",
                 0.0,
-                StarStats { count: 1, hfr: None, fwhm: None, eccentricity: Some(3.0) },
+                StarStats {
+                    count: 1,
+                    hfr: None,
+                    fwhm: None,
+                    eccentricity: Some(3.0),
+                },
             ),
             frame(
                 "c.fits",
                 0.0,
-                StarStats { count: 0, hfr: None, fwhm: None, eccentricity: None },
+                StarStats {
+                    count: 0,
+                    hfr: None,
+                    fwhm: None,
+                    eccentricity: None,
+                },
             ),
         ];
         let meta = calculate_meta_stats(&files, |m| m.stars.eccentricity);
@@ -408,9 +448,7 @@ mod tests {
         ];
         names
             .iter()
-            .map(|name| {
-                analyze_file(&test_data(&format!("bad-image/{name}"))).unwrap()
-            })
+            .map(|name| analyze_file(&test_data(&format!("bad-image/{name}"))).unwrap())
             .collect()
     }
 
@@ -547,7 +585,12 @@ mod tests {
         // Direction check: contrast dropping (not rising) means "worse", the
         // opposite sense from floor/fwhm/eccentricity. A frame with
         // above-median contrast must never trip this factor.
-        let no_stars = StarStats { count: 0, hfr: None, fwhm: None, eccentricity: None };
+        let no_stars = StarStats {
+            count: 0,
+            hfr: None,
+            fwhm: None,
+            eccentricity: None,
+        };
         let files = vec![
             frame_with_contrast("a.fits", 0.20, no_stars.clone()),
             frame_with_contrast("b.fits", 0.21, no_stars.clone()),
@@ -576,7 +619,12 @@ mod tests {
     fn contrast_factor_never_trips_when_every_frame_has_the_same_contrast() {
         // Zero MAD across the baseline must not divide by zero or flag
         // anything, matching the other factors' zero-dispersion guard.
-        let no_stars = StarStats { count: 0, hfr: None, fwhm: None, eccentricity: None };
+        let no_stars = StarStats {
+            count: 0,
+            hfr: None,
+            fwhm: None,
+            eccentricity: None,
+        };
         let files = vec![
             frame_with_contrast("a.fits", 0.3, no_stars.clone()),
             frame_with_contrast("b.fits", 0.3, no_stars),

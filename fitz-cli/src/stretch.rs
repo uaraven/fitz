@@ -22,8 +22,14 @@ pub fn stretch_file(input: &Path, output: &Path, opts: &StretchOptions) -> Resul
 
     print_step(opts.verbose, "writing");
     let format = match opts.format {
-        OutputFormat::Tiff => ExportFormat::Tiff(TiffOptions{ bpp: 16, compress: false }),
-        OutputFormat::Fits => ExportFormat::Fits(FitsOptions{ bpp: -32, compress: false }),
+        OutputFormat::Tiff => ExportFormat::Tiff(TiffOptions {
+            bpp: 16,
+            compress: false,
+        }),
+        OutputFormat::Fits => ExportFormat::Fits(FitsOptions {
+            bpp: -32,
+            compress: false,
+        }),
         OutputFormat::Png => ExportFormat::Png,
         OutputFormat::Jpeg => ExportFormat::Jpeg(90),
     };

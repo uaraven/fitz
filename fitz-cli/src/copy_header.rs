@@ -8,15 +8,17 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use libfitz::fitskit::FitsFile;
 use crate::io_prompt::{ensure_can_write, print_progress, print_step};
 use crate::options::CopyHeaderOptions;
+use anyhow::{Context, Result};
+use libfitz::fitskit::FitsFile;
 
 pub fn copy_header_file(source: &Path, target: &Path, opts: &CopyHeaderOptions) -> Result<()> {
     print_step(opts.verbose, "reading");
-    let source_fits = FitsFile::from_file(source).with_context(|| format!("cannot open {}", source.display()))?;
-    let target_fits = &mut FitsFile::from_file(target).with_context(|| format!("cannot open {}", target.display()))?;
+    let source_fits =
+        FitsFile::from_file(source).with_context(|| format!("cannot open {}", source.display()))?;
+    let target_fits = &mut FitsFile::from_file(target)
+        .with_context(|| format!("cannot open {}", target.display()))?;
     print_step(opts.verbose, "copying header");
     let copied = libfitz::raw_fits::copy_headers_raw(&source_fits, target_fits)?;
 

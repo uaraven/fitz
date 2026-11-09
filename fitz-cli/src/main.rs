@@ -344,7 +344,7 @@ struct InfoArgs {
     #[arg(long)]
     pixels: bool,
     /// Detect the frame's stars and report their count and median HFR, FWHM and
-    /// eccentricity. Independent of --pixel in both directions. 
+    /// eccentricity. Independent of --pixel in both directions.
     #[arg(long)]
     stars: bool,
     /// Use a logarithmic vertical axis for the pixel histogram. Only useful

@@ -48,11 +48,11 @@ pub fn encode_image(rgb8: &[u8], width: usize, height: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::preview::rgb16_to_rgb8;
+    use crate::test_support::test_data;
     use libfitz::fits_file::load_fits;
     use libfitz::resize::resize_to_fit;
     use libfitz::stretch::DEFAULT_BRIGHTNESS;
-    use crate::preview::rgb16_to_rgb8;
-    use crate::test_support::test_data;
 
     fn frames(seq: &str) -> Vec<&str> {
         // Split on the APC terminator, dropping the empty tail after the last one.
@@ -106,8 +106,7 @@ mod tests {
         let rgb = loaded.debayer().unwrap().unwrap();
         let stretched = rgb.stretch(false, DEFAULT_BRIGHTNESS);
         let pixels = stretched.pixels.as_u16();
-        let (pw, ph, preview) =
-            resize_to_fit(&pixels, stretched.width, stretched.height, 120, 120);
+        let (pw, ph, preview) = resize_to_fit(&pixels, stretched.width, stretched.height, 120, 120);
 
         let rgb8 = rgb16_to_rgb8(&preview);
         let seq = encode_image(&rgb8, pw, ph);
