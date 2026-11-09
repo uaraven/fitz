@@ -50,7 +50,7 @@ pub struct BadFrameParams {
 
 /// Decide which of the session's frames are bad under `params`.
 ///
-/// Intended algorithm (see `.plan/bad-frame-detector.md`): for each enabled
+/// Intended algorithm: for each enabled
 /// factor's metric, compute the session median and MAD across `files`, then
 /// each frame's robust z-score `z = (value − median) / (1.4826 × MAD)`,
 /// one-tailed — only the direction that means "worse" counts (background,
