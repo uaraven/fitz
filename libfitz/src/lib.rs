@@ -23,6 +23,7 @@ mod fits_bayer;
 pub mod fits_file;
 mod keywords;
 pub mod raw_fits;
+pub mod session;
 pub mod stats;
 pub mod summary;
 mod xtrans;
