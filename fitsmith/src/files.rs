@@ -1,55 +1,15 @@
 //! Pure, UI-free helpers for the working set of files: recognizing FITS paths,
 //! scanning a directory, deriving display names, and stepping the blink
-//! selection. Kept free of Slint and `libfitz` so the logic is unit-testable
-//! without an event loop.
+//! selection. Kept free of Slint so the logic is unit-testable without an
+//! event loop.
 
 use std::path::{Path, PathBuf};
 
-/// Extensions FitSmith treats as openable FITS images (`.fz` is a
-/// tile-compressed FITS, transparently decompressed on read).
-pub const FITS_EXTENSIONS: &[&str] = &["fit", "fits", "fts", "fz"];
-
-pub const RAW_EXTENSIONS: &[&str] = &[
-"3fr", "ari", "arw", "bay", "braw", "crw", "cr2", "cr3", "cap", "data", "dcs", "dcr",
-"dng", "drf", "eip", "erf", "fff", "gpr", "iiq", "k25", "kdc", "mdc", "mef", "mos",
-"mrw", "nef", "nrw", "obm", "orf", "pef", "ptx", "pxn", "r3d", "raf", "raw", "rwl",
-"rw2", "rwz", "sr2", "srf", "srw", "tif", "x3f",
-];
-
-fn has_extension(path: &Path, candidates: &[&str]) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| candidates.iter().any(|c| c.eq_ignore_ascii_case(e)))
-        .unwrap_or(false)
-}
-
-/// Whether `path` looks like a FITS image we can open.
-pub fn is_fits_path(path: &Path) -> bool {
-    has_extension(path, FITS_EXTENSIONS) && !macos_special_file(path)
-}
-
-pub fn is_raw_image(path: &Path) -> bool {
-    has_extension(path, RAW_EXTENSIONS) && !macos_special_file(path)
-}
-
-/// Whether `path` is a FITS or RAW image FitSmith can open.
-pub fn is_openable_image(path: &Path) -> bool {
-    is_fits_path(path) || is_raw_image(path)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_special_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|f| f.to_str())
-        .map(|f| f.starts_with("._"))
-        .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn macos_special_file(_path: &Path) -> bool {
-    false
-}
-
+// The extension lists and FITS/RAW path predicates live in `libfitz` so the
+// CLI's session scan recognises exactly the same files; re-exported here so
+// existing `crate::files::…` callers are unchanged.
+use libfitz::files::has_extension;
+pub use libfitz::files::{FITS_EXTENSIONS, RAW_EXTENSIONS, is_fits_path, is_openable_image};
 
 /// Whether `path` is a tile-compressed FITS (`.fz`), used to badge the file row.
 pub fn is_compressed(path: &Path) -> bool {
@@ -178,16 +138,6 @@ pub fn expand_inputs(args: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recognizes_fits_extensions_case_insensitively() {
-        assert!(is_fits_path(Path::new("a.fit")));
-        assert!(is_fits_path(Path::new("a.FITS")));
-        assert!(is_fits_path(Path::new("a.Fts")));
-        assert!(is_fits_path(Path::new("a.fz")));
-        assert!(!is_fits_path(Path::new("a.png")));
-        assert!(!is_fits_path(Path::new("noext")));
-    }
 
     #[test]
     fn detects_compressed_only_for_fz() {
