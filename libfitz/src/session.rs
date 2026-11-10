@@ -125,7 +125,8 @@ impl FilterGroup {
 #[derive(Debug, Clone)]
 pub struct TypeGroup {
     pub frame_type: FrameType,
-    /// Alphabetical, frames without a filter last.
+    /// In [`filter_rank`] order: L, R, G, B, Ha, SII, OIII, any other filter
+    /// alphabetically (ignoring case), and frames without a filter last.
     pub filters: Vec<FilterGroup>,
     pub count: usize,
     /// Total exposure, seconds: the sum over `filters`.
@@ -321,7 +322,7 @@ fn collect_images(dir: &Path, out: &mut Vec<PathBuf>) {
 /// decode pixels. Fails only if `root` is not a directory.
 pub fn summarize_dir(root: &Path) -> Result<Summary> {
     if !root.is_dir() {
-        bail!("{} is not a directory", root.display());
+        bail!("not a directory");
     }
 
     let read: Vec<(ScannedImage, Result<FrameInfo>)> = scan_images(root)
@@ -332,9 +333,10 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
         })
         .collect();
 
-    // night → type → filter → frames; a `bool` in front of an `Option` key
-    // sorts the `None` last.
-    type Frames = BTreeMap<(bool, Option<String>), Vec<Frame>>;
+    // night → type → filter → frames. A leading `bool` on a night key sorts the
+    // unknown date last; the filter key is its `filter_rank`, then its name
+    // ignoring case (the name itself keeps differently-cased spellings apart).
+    type Frames = BTreeMap<(usize, Option<String>, Option<String>), Vec<Frame>>;
     let mut nights: BTreeMap<(bool, Option<i64>), BTreeMap<FrameType, Frames>> = BTreeMap::new();
     let mut errors = Vec::new();
     for (image, info) in read {
@@ -346,7 +348,11 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
                     .or_default()
                     .entry(image.frame_type)
                     .or_default()
-                    .entry((info.filter.is_none(), info.filter))
+                    .entry((
+                        filter_rank(info.filter.as_deref()),
+                        info.filter.as_deref().map(str::to_lowercase),
+                        info.filter,
+                    ))
                     .or_default()
                     .push(info.frame);
             }
@@ -362,7 +368,7 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
                 .map(|(frame_type, filters)| {
                     let filters = filters
                         .into_iter()
-                        .map(|((_, filter), frames)| FilterGroup::new(filter, frames))
+                        .map(|((_, _, filter), frames)| FilterGroup::new(filter, frames))
                         .collect();
                     TypeGroup::new(frame_type, filters)
                 })
@@ -372,6 +378,23 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
         .collect();
 
     Ok(Summary::new(root.to_path_buf(), sessions, errors))
+}
+
+/// The filters listed ahead of all others, in this order (compared ignoring
+/// case): luminance, the RGB trio, then the narrowband Ha, SII, OIII.
+const FILTER_ORDER: [&str; 7] = ["L", "R", "G", "B", "Ha", "SII", "OIII"];
+
+/// Where a filter sorts among the filter groups of a type: its position in
+/// [`FILTER_ORDER`], then every other named filter (which the caller orders
+/// alphabetically, ignoring case), then frames without a filter.
+fn filter_rank(filter: Option<&str>) -> usize {
+    match filter {
+        Some(name) => FILTER_ORDER
+            .iter()
+            .position(|known| known.eq_ignore_ascii_case(name))
+            .unwrap_or(FILTER_ORDER.len()),
+        None => FILTER_ORDER.len() + 1,
+    }
 }
 
 /// What the headers of one image contribute to a summary.
@@ -935,6 +958,60 @@ mod tests {
         assert_eq!(filters, [Some("Ha"), None]);
         assert_eq!(lights.integration, 30.0);
         assert_eq!(lights.count, 2);
+    }
+
+    #[test]
+    fn filters_are_ordered_lrgb_then_ha_sii_oiii_then_the_rest_alphabetically() {
+        let tmp = TempDir::new().unwrap();
+        let r = tmp.path();
+        // Written in a scrambled order, with mixed case and unknown filters.
+        let filters = [
+            "OIII", "Zeta", "SII", "B", "alpha", "Ha", "G", "Duo-Band", "R", "L", "ha 7nm",
+        ];
+        for (i, filter) in filters.iter().enumerate() {
+            frame(
+                r,
+                &format!("f{i}.fit"),
+                Some(filter),
+                1.0,
+                Some("2026-06-22T22:00:00"),
+                None,
+            );
+        }
+        frame(r, "none.fit", None, 1.0, Some("2026-06-22T22:00:00"), None);
+
+        let summary = summarize_dir(r).unwrap();
+
+        let lights = summary.sessions[0].type_group(FrameType::Light).unwrap();
+        let order: Vec<_> = lights.filters.iter().map(|g| g.filter.as_deref()).collect();
+        assert_eq!(
+            order,
+            [
+                Some("L"),
+                Some("R"),
+                Some("G"),
+                Some("B"),
+                Some("Ha"),
+                Some("SII"),
+                Some("OIII"),
+                // Everything else, alphabetically ignoring case...
+                Some("alpha"),
+                Some("Duo-Band"),
+                Some("ha 7nm"),
+                Some("Zeta"),
+                // ...and frames without a filter last.
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn known_filter_names_match_ignoring_case() {
+        assert!(filter_rank(Some("ha")) < filter_rank(Some("sii")));
+        assert_eq!(filter_rank(Some("HA")), filter_rank(Some("Ha")));
+        // Only the exact name is special: a longer name is just "another filter".
+        assert_eq!(filter_rank(Some("Ha 7nm")), filter_rank(Some("Other")));
+        assert!(filter_rank(Some("Other")) < filter_rank(None));
     }
 
     #[test]
