@@ -48,10 +48,15 @@ const SKIPPED_EXTENSIONS: &[&str] = &["tif"];
 /// What an image is for. Ordered as they are listed in a summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FrameType {
+    /// Science exposures of the target.
     Light,
+    /// Same exposure as the lights, shutter closed: thermal signal.
     Dark,
+    /// Shortest possible exposure, shutter closed: readout signal.
     Bias,
+    /// Evenly lit field, for vignetting and dust correction.
     Flat,
+    /// Shutter closed at the flats' exposure time, to calibrate the flats.
     DarkFlat,
 }
 
@@ -70,6 +75,18 @@ impl FrameType {
         }
     }
 
+    /// Singular noun a frame of this type is counted by (`"dark"` in "12 dark
+    /// frames", `"dark flat"`).
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+            Self::Bias => "bias",
+            Self::Flat => "flat",
+            Self::DarkFlat => "dark flat",
+        }
+    }
+
     /// Plural display label (`"Lights"`, `"Dark flats"`).
     pub fn label(self) -> &'static str {
         match self {
@@ -85,6 +102,7 @@ impl FrameType {
 /// One image: where it is, how long it exposed for, and when it was taken.
 #[derive(Debug, Clone)]
 pub struct Frame {
+    /// The image file.
     pub path: PathBuf,
     /// `EXPTIME` in seconds; 0 when the header has none.
     pub exposure: f64,
@@ -101,6 +119,7 @@ pub struct FilterGroup {
     pub filter: Option<String>,
     /// Ordered by observation time, then path.
     pub frames: Vec<Frame>,
+    /// Number of frames.
     pub count: usize,
     /// Total exposure, seconds.
     pub integration: f64,
@@ -124,10 +143,12 @@ impl FilterGroup {
 /// All the frames of one [`FrameType`], split by filter.
 #[derive(Debug, Clone)]
 pub struct TypeGroup {
+    /// The frame type every frame in the group has.
     pub frame_type: FrameType,
     /// In [`filter_rank`] order: L, R, G, B, Ha, SII, OIII, any other filter
     /// alphabetically (ignoring case), and frames without a filter last.
     pub filters: Vec<FilterGroup>,
+    /// Number of frames over all `filters`.
     pub count: usize,
     /// Total exposure, seconds: the sum over `filters`.
     pub integration: f64,
@@ -161,8 +182,10 @@ pub struct Session {
     pub count: usize,
     /// Total exposure of the light frames only, seconds.
     pub integration: f64,
-    /// Earliest and latest observation time of any frame in the session.
+    /// Earliest observation time of any frame in the session (Unix epoch);
+    /// `None` when no frame has a readable timestamp.
     pub start: Option<f64>,
+    /// Latest observation time of any frame in the session; `None` like `start`.
     pub end: Option<f64>,
 }
 
@@ -217,6 +240,7 @@ impl Session {
 /// The result of [`summarize_dir`].
 #[derive(Debug, Clone)]
 pub struct Summary {
+    /// The scanned folder.
     pub root: PathBuf,
     /// Chronological, the unknown-date session last.
     pub sessions: Vec<Session>,
@@ -239,12 +263,23 @@ impl Summary {
             errors,
         }
     }
+
+    /// Number of light frames over all sessions.
+    pub fn light_count(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter_map(|s| s.type_group(FrameType::Light))
+            .map(|t| t.count)
+            .sum()
+    }
 }
 
 /// An image found by [`scan_images`] with the type its folders give it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScannedImage {
+    /// The image file.
     pub path: PathBuf,
+    /// The type its enclosing folders give it (see [`frame_type_for`]).
     pub frame_type: FrameType,
 }
 
@@ -410,7 +445,7 @@ fn read_frame_info(path: &Path) -> Result<FrameInfo> {
             path: path.to_path_buf(),
             exposure: header
                 .get_float(EXPTIME)
-                .filter(|e| *e > 0.0)
+                .filter(|e| e.is_finite() && *e > 0.0)
                 .unwrap_or(0.0),
             observed: observed_time(&header),
         },
@@ -687,6 +722,52 @@ mod tests {
                 ("misc/d.fit".to_string(), FrameType::Light),
             ]
         );
+    }
+
+    #[test]
+    fn light_count_covers_only_lights_across_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let at = |day: &str| format!("2026-06-{day}T22:00:00");
+        frame(root, "Lights/a.fit", Some("L"), 60.0, Some(&at("22")), None);
+        frame(root, "Lights/b.fit", Some("L"), 60.0, Some(&at("22")), None);
+        frame(root, "Lights/c.fit", Some("L"), 60.0, Some(&at("23")), None);
+        frame(root, "Darks/d.fit", None, 60.0, Some(&at("22")), None);
+
+        let summary = summarize_dir(root).unwrap();
+
+        assert_eq!(summary.sessions.len(), 2);
+        assert_eq!(summary.count, 4);
+        assert_eq!(summary.light_count(), 3);
+    }
+
+    #[test]
+    fn frame_types_have_singular_nouns() {
+        assert_eq!(FrameType::Light.noun(), "light");
+        assert_eq!(FrameType::DarkFlat.noun(), "dark flat");
+    }
+
+    #[test]
+    fn non_finite_exposure_and_hostile_timestamps_are_ignored() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        frame(
+            root,
+            "inf.fit",
+            None,
+            f64::INFINITY,
+            Some("99999999999999999-01-01T00:00:00"),
+            Some("2026-06-22T22:00:00"),
+        );
+
+        let summary = summarize_dir(root).unwrap();
+
+        // The unparseable DATE-LOC falls through to DATE-OBS; the infinite
+        // exposure counts as zero rather than poisoning the totals.
+        assert!(summary.errors.is_empty(), "{:?}", summary.errors);
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.integration, 0.0);
+        assert_eq!(names(&summary), ["2026-06-22"]);
     }
 
     #[test]

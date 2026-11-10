@@ -74,17 +74,6 @@ fn session_rows(session: &Session) -> Vec<Row> {
     .collect()
 }
 
-/// The noun a frame type is counted by (`"dark"` in "12 dark frames").
-fn frame_noun(frame_type: FrameType) -> &'static str {
-    match frame_type {
-        FrameType::Light => "light",
-        FrameType::Dark => "dark",
-        FrameType::Bias => "bias",
-        FrameType::Flat => "flat",
-        FrameType::DarkFlat => "dark flat",
-    }
-}
-
 fn frames(count: usize, noun: &str) -> String {
     format!("{count} {noun} frame{}", if count == 1 { "" } else { "s" })
 }
@@ -95,7 +84,7 @@ fn frame_counts(session: &Session) -> String {
     session
         .types
         .iter()
-        .map(|t| frames(t.count, frame_noun(t.frame_type)))
+        .map(|t| frames(t.count, t.frame_type.noun()))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -150,12 +139,6 @@ pub fn format_summary(summary: &Summary) -> String {
         }
     }
 
-    let light_frames: usize = summary
-        .sessions
-        .iter()
-        .filter_map(|s| s.type_group(FrameType::Light))
-        .map(|t| t.count)
-        .sum();
     let _ = writeln!(
         out,
         "Total: {}, {}, total integration {}",
@@ -164,7 +147,7 @@ pub fn format_summary(summary: &Summary) -> String {
         } else {
             format!("{} sessions", summary.sessions.len())
         },
-        frames(light_frames, "light"),
+        frames(summary.light_count(), "light"),
         format_duration(summary.integration)
     );
     out
@@ -173,8 +156,9 @@ pub fn format_summary(summary: &Summary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_frame_fits};
+    use crate::test_support::test_data;
     use libfitz::session::{Frame, FrameType, TypeGroup};
+    use libfitz::test_frames::write_frame_fits;
     use std::path::PathBuf;
 
     fn group(filter: Option<&str>, count: usize, integration: f64) -> FilterGroup {
@@ -336,7 +320,7 @@ Total: 1 session, 0 light frames, total integration 0h 00m 00s
         std::fs::create_dir_all(&lights).unwrap();
         std::fs::create_dir_all(&darks).unwrap();
         let ha = |name: &str, time: &str| {
-            write_frame_fits(&lights.join(name), Some("Ha"), 300.0, Some(time))
+            write_frame_fits(&lights.join(name), Some("Ha"), 300.0, Some(time), None)
         };
         ha("a.fit", "2026-06-22T22:00:00");
         ha("b.fit", "2026-06-22T22:10:00");

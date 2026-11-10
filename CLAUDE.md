@@ -111,6 +111,8 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
 - **`errors.rs`** / **`fits_bayer.rs`** — `FitsError`, and `BAYERPAT` string ↔ `CFA`.
 - **`test_support.rs`** (test-only) — fixtures: locate bundled `../test-data/`, copy into a
   temp dir, synthesize small FITS images.
+- **`test_frames.rs`** (test / `test-support` feature) — `write_frame_fits`, a tiny header-only
+  fixture shared with `fitz-cli`'s tests through the `test-support` feature.
 
 ### `fitz-cli` layout
 
@@ -140,8 +142,7 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
   half-blocks / kitty graphics protocol), capability detection, and the 16→8-bit narrowing
   (`high_byte`/`rgb16_to_rgb8`); not part of `libfitz` since a GUI frontend wouldn't use
   ANSI escape codes.
-- **`test_support.rs`** (test-only) — locates bundled `../test-data/` and synthesizes a tiny
-  frame (`write_frame_fits`) for the CLI's own tests.
+- **`test_support.rs`** (test-only) — locates bundled `../test-data/` for the CLI's own tests.
 
 ### `fitsmith` layout
 
