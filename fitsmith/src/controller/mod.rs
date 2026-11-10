@@ -315,32 +315,36 @@ pub fn open_directory(app: &AppWindow) {
     let Some(dir) = rfd::FileDialog::new().pick_folder() else {
         return;
     };
-    let recursive = has_subdirectories(&dir)
-        && {
-            let answer = rfd::MessageDialog::new()
+    let recursive = has_subdirectories(&dir) && {
+        let answer = rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Info)
             .set_title("Include images in subfolders?")
-            .set_description(format!(
-                "{} contains subfolders",
-                dir.display()
-            ))
+            .set_description(format!("{} contains subfolders", dir.display()))
             .set_buttons(rfd::MessageButtons::YesNoCancel)
             .show();
-            match include_subfolders(&answer) {
-                Some(recursive) => recursive,
-                None => return,
-            }
-        };
-    let paths = if recursive {
-        scan_directory_recursive(&dir)
-    } else {
-        scan_directory(&dir)
+        match include_subfolders(&answer) {
+            Some(recursive) => recursive,
+            None => return,
+        }
     };
-    if paths.is_empty() {
-        app.set_status_text(format!("No images in {}", dir.display()).into());
-        return;
-    }
-    add_and_select(app, paths);
+    // The walk can take a while on a big tree or a network drive, so it runs
+    // off the UI thread.
+    app.set_status_text(format!("Scanning {}…", dir.display()).into());
+    let weak = app.as_weak();
+    std::thread::spawn(move || {
+        let paths = if recursive {
+            scan_directory_recursive(&dir)
+        } else {
+            scan_directory(&dir)
+        };
+        let _ = weak.upgrade_in_event_loop(move |app| {
+            if paths.is_empty() {
+                app.set_status_text(format!("No images in {}", dir.display()).into());
+            } else {
+                add_and_select(&app, paths);
+            }
+        });
+    });
 }
 
 /// Interpret the "Include subfolders?" answer: `Some(true)` for Yes,
