@@ -1,6 +1,6 @@
 //! Build a display-ready preview of an in-memory [`Image`]: its own pixel
 //! buffer, narrowed to 16-bit samples, wrapped directly in an `image` crate
-//! [`DynamicImage`](image::DynamicImage) ready for a GUI or terminal renderer
+//! [`DynamicImage`] ready for a GUI or terminal renderer
 //! to paint. Built straight from `Image`, not via a FITS round-trip:
 //! `fitskit`'s FITS→`DynamicImage` conversion only understands a single 2D
 //! plane, so encoding an already-debayered `RGB` image and reading it back

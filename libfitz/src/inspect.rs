@@ -4,7 +4,7 @@
 //!
 //! Pure image math with no FITS or GUI dependency — it operates on the
 //! interleaved RGB8 buffer the preview pipeline already produces
-//! ([`crate::preview::PreviewImage`]), so a GUI frontend crops the resident
+//! ([`crate::preview::render_preview`]), so a GUI frontend crops the resident
 //! preview with no re-read, and the geometry (the off-by-one-prone part) is
 //! unit-testable with synthetic dimensions.
 
