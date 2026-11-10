@@ -5,13 +5,18 @@
 //! times, and copy that report — in the layout `fitz summary` prints — to the
 //! clipboard.
 //!
-//! Reading the headers runs on a worker thread; its result is applied only if
-//! the dialog is still showing that run (a generation guard, like the other
-//! batches). The grouping itself is `libfitz`'s — this module only flattens
+//! Reading the headers runs on a worker thread; closing the dialog stops it
+//! between files, and its result is applied only if the dialog is still
+//! showing that run (a generation guard, like the other batches). The grouping itself is `libfitz`'s — this module only flattens
 //! the [`Summary`] into display rows.
 
-use libfitz::session::{Summary, format_duration, format_timestamp, summarize_files};
-use libfitz::session_report::format_summary;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use libfitz::session::{
+    Summary, count_noun, format_duration, format_timestamp, summarize_files_cancellable,
+};
+use libfitz::session_report::{format_summary, totals};
 use slint::ComponentHandle;
 
 use super::{STATE, operation_targets};
@@ -24,7 +29,7 @@ fn flatten(summary: &Summary) -> Vec<SessionRow> {
     let row = |depth: i32, label: String, count: usize, integration: f64| SessionRow {
         depth,
         label: label.into(),
-        count: frame_count(count).into(),
+        count: count_noun(count, "frame").into(),
         time: format_duration(integration).into(),
     };
     let mut rows = Vec::new();
@@ -51,26 +56,13 @@ fn clock(epoch: f64) -> String {
     let stamp = format_timestamp(epoch);
     stamp
         .split_once(' ')
-        .map_or(stamp.clone(), |(_, time)| time.to_string())
+        .map_or_else(String::new, |(_, time)| time.to_string())
 }
 
-/// `"1 frame"` / `"92 frames"`.
-fn frame_count(count: usize) -> String {
-    format!("{count} frame{}", if count == 1 { "" } else { "s" })
-}
-
-/// The totals line under the tree: sessions, light frames, light integration
-/// and — when some images could not be read — how many were left out.
+/// The totals line under the tree: the report's closing totals and — when
+/// some images could not be read — how many were left out.
 fn summary_line(summary: &Summary) -> String {
-    let mut line = format!(
-        "{}, {} light, {} integration",
-        match summary.sessions.len() {
-            1 => "1 session".to_string(),
-            n => format!("{n} sessions"),
-        },
-        frame_count(summary.light_count()),
-        format_duration(summary.integration),
-    );
+    let mut line = totals(summary);
     if !summary.errors.is_empty() {
         line.push_str(&format!(" · {} unreadable", summary.errors.len()));
     }
@@ -86,17 +78,23 @@ pub fn open_sessions_dialog(app: &AppWindow) {
         return;
     }
     let total = STATE.with(|s| s.borrow().paths.len());
-    let generation = STATE.with(|s| {
+    let (generation, cancel) = STATE.with(|s| {
         let mut st = s.borrow_mut();
+        // A read still running for an earlier opening is of no use any more.
+        st.sessions_cancel.store(true, Ordering::Relaxed);
+        st.sessions_cancel = Arc::new(AtomicBool::new(false));
         st.sessions_generation += 1;
         st.sessions_report.clear();
         st.sessions_model.set_vec(Vec::new());
-        st.sessions_generation
+        (st.sessions_generation, st.sessions_cancel.clone())
     });
     let source = if targets.len() == total {
-        format!("All {} in the working set", files_noun(total))
+        format!("All {} in the working set", count_noun(total, "file"))
     } else {
-        format!("{} checked in the working set", files_noun(targets.len()))
+        format!(
+            "{} checked in the working set",
+            count_noun(targets.len(), "file")
+        )
     };
     app.set_sessions_source(source.into());
     app.set_sessions_summary("Reading headers…".into());
@@ -105,14 +103,9 @@ pub fn open_sessions_dialog(app: &AppWindow) {
 
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let summary = summarize_files(&targets);
+        let summary = summarize_files_cancellable(&targets, &cancel);
         let _ = weak.upgrade_in_event_loop(move |app| apply_summary(&app, generation, summary));
     });
-}
-
-/// `"1 file"` / `"12 files"`.
-fn files_noun(count: usize) -> String {
-    format!("{count} file{}", if count == 1 { "" } else { "s" })
 }
 
 /// Show a finished summary — unless the dialog was closed or reopened
@@ -166,11 +159,12 @@ fn set_clipboard_text(
     slot.as_mut().expect("just opened").set_text(text)
 }
 
-/// Dialog dismissed: forget the rows and make any read still running land as
-/// stale.
+/// Dialog dismissed: forget the rows, stop any header read still running and
+/// make its result land as stale.
 pub fn close_sessions(_app: &AppWindow) {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
+        st.sessions_cancel.store(true, Ordering::Relaxed);
         st.sessions_generation += 1;
         st.sessions_report.clear();
         st.sessions_model.set_vec(Vec::new());
@@ -181,6 +175,7 @@ pub fn close_sessions(_app: &AppWindow) {
 mod tests {
     use super::*;
     use crate::controller::test_data;
+    use libfitz::session::summarize_files;
 
     #[test]
     fn real_frames_flatten_into_a_session_type_filter_tree() {
@@ -232,9 +227,10 @@ mod tests {
         let summary = summarize_files(&[good, broken]);
         let line = summary_line(&summary);
 
-        assert!(line.starts_with("1 session, 1 frame light, "), "{line}");
-        assert!(line.contains("0h 03m 00s integration"), "{line}"); // EXPTIME 180 s
-        assert!(line.ends_with("· 1 unreadable"), "{line}");
+        assert_eq!(
+            line,
+            "1 session, 1 light frame, total integration 0h 03m 00s · 1 unreadable"
+        ); // EXPTIME 180 s
     }
 
     #[test]

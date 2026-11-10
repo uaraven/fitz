@@ -27,12 +27,13 @@ use crate::fits_file::parse_date_obs;
 use crate::keywords::{DATE_LOC, DATE_OBS, EXPTIME, FILTER};
 use crate::loader::load_header_from_file;
 use crate::non_blank;
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use fitskit::Header;
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
 /// Local noon: nights are cut here, so 22:00 and 02:00 the next morning are the
@@ -154,7 +155,7 @@ impl FilterGroup {
 pub struct TypeGroup {
     /// The frame type every frame in the group has.
     pub frame_type: FrameType,
-    /// In [`filter_rank`] order: L, R, G, B, Ha, SII, OIII, any other filter
+    /// In display order: L, R, G, B, Ha, SII, OIII, any other filter
     /// alphabetically (ignoring case), and frames without a filter last.
     pub filters: Vec<FilterGroup>,
     /// Number of frames over all `filters`.
@@ -344,7 +345,11 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
     if !root.is_dir() {
         bail!("not a directory");
     }
-    Ok(summarize_images(root.to_path_buf(), scan_images(root)))
+    Ok(summarize_images(
+        root.to_path_buf(),
+        scan_images(root),
+        &AtomicBool::new(false),
+    ))
 }
 
 /// Group an explicit list of image files — a working set rather than a folder
@@ -354,6 +359,15 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
 /// as a scan root's does). Files that cannot be read land in
 /// [`Summary::errors`]; an empty list gives an empty summary.
 pub fn summarize_files(paths: &[PathBuf]) -> Summary {
+    summarize_files_cancellable(paths, &AtomicBool::new(false))
+}
+
+/// [`summarize_files`] that gives up early: once `cancel` is set, the files not
+/// yet read are skipped (counted in [`Summary::errors`] as "cancelled"), so a
+/// caller that has stopped caring about the result stops paying for it. Set the
+/// flag from another thread; the returned summary is then incomplete and only
+/// good for discarding.
+pub fn summarize_files_cancellable(paths: &[PathBuf], cancel: &AtomicBool) -> Summary {
     let root = common_dir(paths);
     let root_type = folder_type(&root);
     let images = paths
@@ -363,7 +377,7 @@ pub fn summarize_files(paths: &[PathBuf]) -> Summary {
             path: path.clone(),
         })
         .collect();
-    summarize_images(root, images)
+    summarize_images(root, images, cancel)
 }
 
 /// The deepest folder containing every path (empty when they share none, or
@@ -384,13 +398,17 @@ fn common_dir(paths: &[PathBuf]) -> PathBuf {
     common
 }
 
-/// Read the headers of `images` (in parallel) and bucket them into a
-/// [`Summary`] rooted at `root`.
-fn summarize_images(root: PathBuf, images: Vec<ScannedImage>) -> Summary {
+/// Read the headers of `images` (in parallel, skipping the rest once `cancel`
+/// is set) and bucket them into a [`Summary`] rooted at `root`.
+fn summarize_images(root: PathBuf, images: Vec<ScannedImage>, cancel: &AtomicBool) -> Summary {
     let read: Vec<(ScannedImage, Result<FrameInfo>)> = images
         .into_par_iter()
         .map(|image| {
-            let info = read_frame_info(&image.path);
+            let info = if cancel.load(AtomicOrdering::Relaxed) {
+                Err(anyhow!("cancelled"))
+            } else {
+                read_frame_info(&image.path)
+            };
             (image, info)
         })
         .collect();
@@ -512,6 +530,13 @@ fn cmp_option_last<T: Copy>(
         (None, Some(_)) => Ordering::Greater,
         (None, None) => Ordering::Equal,
     }
+}
+
+/// `count` followed by `noun`, with an `s` unless `count` is 1: `"1 frame"`,
+/// `"92 frames"`, `"0 sessions"`. For regular nouns (or noun phrases ending in
+/// one, like `"dark flat frame"`).
+pub fn count_noun(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 /// A duration as `"5h 12m 30s"` (minutes and seconds zero-padded, hours not
@@ -912,6 +937,44 @@ mod tests {
         assert_eq!(common_dir(&[]), PathBuf::new());
         // `/a/bc` is not under `/a/b`.
         assert_eq!(common_dir(&[p("/a/b/x.fit"), p("/a/bc/y.fit")]), p("/a"));
+    }
+
+    #[test]
+    fn a_cancelled_summary_skips_the_remaining_files() {
+        let tmp = TempDir::new().unwrap();
+        let a = frame(
+            tmp.path(),
+            "a.fit",
+            None,
+            10.0,
+            Some("2026-06-22T20:00:00"),
+            None,
+        );
+        let b = frame(
+            tmp.path(),
+            "b.fit",
+            None,
+            10.0,
+            Some("2026-06-22T20:01:00"),
+            None,
+        );
+        let files = [a, b];
+
+        // An unset flag changes nothing.
+        let normal = summarize_files_cancellable(&files, &AtomicBool::new(false));
+        assert_eq!((normal.count, normal.errors.len()), (2, 0));
+
+        // A flag set up front reads nothing: every file is skipped.
+        let cancelled = summarize_files_cancellable(&files, &AtomicBool::new(true));
+        assert_eq!((cancelled.count, cancelled.errors.len()), (0, 2));
+        assert!(cancelled.errors.iter().all(|(_, why)| why == "cancelled"));
+    }
+
+    #[test]
+    fn count_noun_pluralises_regular_nouns() {
+        assert_eq!(count_noun(0, "frame"), "0 frames");
+        assert_eq!(count_noun(1, "frame"), "1 frame");
+        assert_eq!(count_noun(92, "dark flat frame"), "92 dark flat frames");
     }
 
     #[test]

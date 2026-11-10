@@ -141,6 +141,9 @@ struct AppState {
     /// The system clipboard, created on first use and then kept: on X11 the
     /// copied text vanishes as soon as the handle that set it is dropped.
     clipboard: Option<arboard::Clipboard>,
+    /// Raised to stop the Session Summary dialog's header read; each opening
+    /// gets a fresh flag so stopping one can't silence the next.
+    sessions_cancel: Arc<AtomicBool>,
     /// Bumped whenever the dialog opens or closes, so a folder scan that
     /// finishes afterwards lands as stale and is dropped.
     sessions_generation: u64,
@@ -187,6 +190,7 @@ impl AppState {
             sessions_model: Rc::new(VecModel::default()),
             sessions_report: String::new(),
             clipboard: None,
+            sessions_cancel: Arc::new(AtomicBool::new(false)),
             sessions_generation: 0,
             bad_frames: Vec::new(),
             bad_frame_flagged: Vec::new(),

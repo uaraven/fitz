@@ -3,7 +3,7 @@
 //! formatting of a [`Summary`] — scanning and grouping are
 //! [`crate::session`]'s.
 
-use crate::session::{FilterGroup, FrameType, Session, Summary, format_duration};
+use crate::session::{FilterGroup, FrameType, Session, Summary, count_noun, format_duration};
 use std::fmt::Write as _;
 
 /// One printed line of the report: the light frames as a whole, or one of their
@@ -43,19 +43,27 @@ fn session_rows(session: &Session) -> Vec<Row> {
     .collect()
 }
 
-fn frames(count: usize, noun: &str) -> String {
-    format!("{count} {noun} frame{}", if count == 1 { "" } else { "s" })
-}
-
 /// `"92 light frames, 30 dark frames, 20 flat frames"` — every frame type the
 /// session has, in the usual type order.
 fn frame_counts(session: &Session) -> String {
     session
         .types
         .iter()
-        .map(|t| frames(t.count, t.frame_type.noun()))
+        .map(|t| count_noun(t.count, &format!("{} frame", t.frame_type.noun())))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The one-line totals: `"2 sessions, 178 light frames, total integration
+/// 13h 29m 00s"` — sessions, light frames and light integration over the whole
+/// summary. The report's closing line, and the GUI's status line.
+pub fn totals(summary: &Summary) -> String {
+    format!(
+        "{}, {}, total integration {}",
+        count_noun(summary.sessions.len(), "session"),
+        count_noun(summary.light_count(), "light frame"),
+        format_duration(summary.integration)
+    )
 }
 
 /// The report for one scanned directory: each session (a heading with its light
@@ -72,9 +80,11 @@ pub fn format_summary(summary: &Summary) -> String {
         .collect();
     let rows = || sessions.iter().flat_map(|(_, rows)| rows);
 
-    // Column widths shared by every row of the report.
+    // Column widths shared by every row of the report. Widths are in characters
+    // (what `{:<n}` pads to), not bytes: a filter name from a header may well be
+    // non-ASCII ("Hα").
     let label_width = rows()
-        .map(|r| 2 * r.depth + r.label.len())
+        .map(|r| 2 * r.depth + r.label.chars().count())
         .max()
         .unwrap_or(0);
     let count_width = rows().map(|r| r.count.to_string().len()).max().unwrap_or(1);
@@ -108,17 +118,7 @@ pub fn format_summary(summary: &Summary) -> String {
         }
     }
 
-    let _ = writeln!(
-        out,
-        "Total: {}, {}, total integration {}",
-        if summary.sessions.len() == 1 {
-            "1 session".to_string()
-        } else {
-            format!("{} sessions", summary.sessions.len())
-        },
-        frames(summary.light_count(), "light"),
-        format_duration(summary.integration)
-    );
+    let _ = writeln!(out, "Total: {}", totals(summary));
     out
 }
 
@@ -266,6 +266,32 @@ Total: 1 session, 1 light frame, total integration 0h 00m 30s
 Session 2026-10-10 - 0h 00m 00s light integration
     12 dark frames
 Total: 1 session, 0 light frames, total integration 0h 00m 00s
+";
+        assert_eq!(report, expected);
+    }
+
+    #[test]
+    fn non_ascii_filter_names_keep_the_columns_aligned() {
+        let night = night_session(
+            "2026-10-08",
+            vec![type_group(
+                FrameType::Light,
+                vec![
+                    group(Some("Hα 7nm"), 2, 600.0),
+                    group(Some("OIII"), 3, 900.0),
+                ],
+            )],
+        );
+
+        let report = format_summary(&summary_of(vec![night]));
+
+        let expected = "\
+Session 2026-10-08 - 0h 25m 00s light integration
+    5 light frames
+  Lights    5 frames  0h 25m 00s
+    Hα 7nm  2 frames  0h 10m 00s
+    OIII    3 frames  0h 15m 00s
+Total: 1 session, 5 light frames, total integration 0h 25m 00s
 ";
         assert_eq!(report, expected);
     }
