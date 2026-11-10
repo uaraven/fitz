@@ -269,6 +269,8 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
         super::forget_path(&mut st, old);
         st.analytics_cache.remove(old);
     });
+    // The replacement can land in another folder (a chosen output directory).
+    super::refresh_folders(app);
     update_memory(app);
     spawn_exposure_load(app.as_weak(), vec![new.to_path_buf()]);
 }

@@ -139,6 +139,9 @@ export component AppWindow inherits Window {
     in-out property <bool> sessions-show-calibration: false;
     in-out property <length> sessions-card-width: 680px;
     in-out property <length> sessions-card-height: 520px;
+    // True when the working set spans several folders: the file list then
+    // names each row's folder.
+    in property <bool> show-folders;
     in-out property <bool> show-delete-files: false;
     in property <int> delete-files-count;
     in-out property <int> delete-files-action: 0;
@@ -602,6 +605,7 @@ export component AppWindow inherits Window {
                 height: parent.height;
                 files: root.files;
                 selected-index: root.selected-index;
+                show-folders: root.show-folders;
                 select(idx) => {
                     root.select-file(idx);
                 }

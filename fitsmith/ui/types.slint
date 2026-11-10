@@ -12,6 +12,9 @@ export struct FileRow {
     error: string,
     checked: bool,
     exposure: float,
+    // Short name of the folder the file is in, distinct from every other
+    // folder in the working set's; shown only when the set spans several.
+    folder: string,
 }
 
 // One FITS header card, split into the Headers tab's display columns.

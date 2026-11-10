@@ -12,6 +12,7 @@ It allows preview of multiple FITS files with debayering and screen stretch, if 
  - Blink through the working set of the FITS files.
  - Session summary (Tools ▸ Session Summary…): group the checked files (or the whole working set) into observing nights, frame types (lights, darks, flats, …) and filters, with frame counts and integration times — light frames only unless "Show calibration frames" is checked; a copy button puts the same text report `fitz summary` prints on the clipboard
  - Add Folder can include the folder's subfolders
+ - When the working set holds files from several folders, the file list shows each file's folder name (with its parent added where two folders share a name, e.g. `night1/Lights`)
  - Batch export FITS to JPG, PNG or TIFF
  - Batch compression or decompression of FITS files
  - View headers

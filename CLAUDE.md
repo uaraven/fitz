@@ -186,7 +186,7 @@ side, split by concern:
   R/G/B for an already-debayered RGB source) → the on-screen chart and its colored SVG
   export.
 - **`files.rs`** — pure path helpers (FITS extensions, flat and recursive directory scan,
-  output paths).
+  output paths, `folder_labels` for the file list's per-row folder names).
 - **`image.rs`** — the one RGBA8-buffer → `slint::Image` conversion point.
 
 ### Conventions that span files

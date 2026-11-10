@@ -58,6 +58,69 @@ pub fn has_subdirectories(dir: &Path) -> bool {
     })
 }
 
+/// Short labels that tell apart the folders `paths` live in, for the file list
+/// to show once the working set spans several of them. `None` when every path
+/// is in one folder (nothing to tell apart); otherwise one label per path: the
+/// shortest trailing part of its folder's path that no other folder shares —
+/// `Lights` when that is unique, `night1/Lights` when another folder is also
+/// called `Lights`.
+pub fn folder_labels(paths: &[PathBuf]) -> Option<Vec<String>> {
+    // Folder names from the root down, per distinct parent folder.
+    let mut dirs: Vec<&Path> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for dir in paths.iter().map(|p| p.parent().unwrap_or(Path::new(""))) {
+        if seen.insert(dir) {
+            dirs.push(dir);
+        }
+    }
+    if dirs.len() < 2 {
+        return None;
+    }
+    let names: Vec<Vec<String>> = dirs
+        .iter()
+        .map(|dir| {
+            dir.components()
+                .filter_map(|c| match c {
+                    std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
+    let tail = |names: &[String], k: usize| names[names.len().saturating_sub(k)..].join("/");
+
+    // Grow the suffix until each folder's label is unique among all of them.
+    let deepest = names.iter().map(Vec::len).max().unwrap_or(0);
+    let mut labels: Vec<Option<String>> = vec![None; dirs.len()];
+    for k in 1..=deepest {
+        let mut count = std::collections::HashMap::new();
+        for n in &names {
+            *count.entry(tail(n, k)).or_insert(0usize) += 1;
+        }
+        for (label, n) in labels.iter_mut().zip(&names) {
+            if label.is_none() && count[&tail(n, k)] == 1 {
+                *label = Some(tail(n, k));
+            }
+        }
+    }
+    // A folder with no usable name (a drive root) or one still ambiguous (the
+    // same path on two drives) falls back to its full path.
+    let by_dir: std::collections::HashMap<&Path, String> = dirs
+        .iter()
+        .zip(labels)
+        .map(|(dir, label)| {
+            let label = label.filter(|l| !l.is_empty());
+            (*dir, label.unwrap_or_else(|| dir.display().to_string()))
+        })
+        .collect();
+    Some(
+        paths
+            .iter()
+            .map(|p| by_dir[p.parent().unwrap_or(Path::new(""))].clone())
+            .collect(),
+    )
+}
+
 /// The next selection index for blink / arrow scrubbing, wrapping around the
 /// working set. Returns 0 for an empty set (nothing to select).
 pub fn next_index(current: usize, len: usize) -> usize {
@@ -218,6 +281,41 @@ mod tests {
             deep,
             ["Lights/night1/deep.fits.fz", "Lights/raw.ARW", "top.fit"]
         );
+    }
+
+    #[test]
+    fn folder_labels_are_absent_for_a_single_folder() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(folder_labels(&[]), None);
+        assert_eq!(
+            folder_labels(&[p("/d/Lights/a.fit"), p("/d/Lights/b.fit")]),
+            None
+        );
+    }
+
+    #[test]
+    fn folder_labels_use_the_shortest_unique_trailing_path() {
+        let p = |s: &str| PathBuf::from(s);
+        let labels = folder_labels(&[
+            p("/d/night1/Lights/a.fit"),
+            p("/d/night1/Lights/b.fit"),
+            p("/d/night2/Lights/c.fit"),
+            p("/d/night1/Darks/d.fit"),
+        ])
+        .unwrap();
+        // Two folders are called `Lights`, so they carry their parent too;
+        // `Darks` is unique on its own. Files in one folder share a label.
+        assert_eq!(
+            labels,
+            ["night1/Lights", "night1/Lights", "night2/Lights", "Darks"]
+        );
+    }
+
+    #[test]
+    fn folder_labels_cope_with_folders_of_different_depth_and_drive_roots() {
+        let p = |s: &str| PathBuf::from(s);
+        let labels = folder_labels(&[p("/x/b/a.fit"), p("/b/a.fit"), p("/a.fit")]).unwrap();
+        assert_eq!(labels, ["x/b", "b", "/"]);
     }
 
     #[test]

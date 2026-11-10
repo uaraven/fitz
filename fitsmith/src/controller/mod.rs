@@ -57,7 +57,7 @@ use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel, Weak};
 use crate::controller::support::load_exposure;
 use crate::doc::FileMeta;
 use crate::files::{
-    display_name, expand_inputs, has_subdirectories, is_compressed, scan_directory,
+    display_name, expand_inputs, folder_labels, has_subdirectories, is_compressed, scan_directory,
     scan_directory_recursive,
 };
 use crate::{AppWindow, FileRow, view};
@@ -296,6 +296,8 @@ fn make_row(path: &Path, exposure: f32) -> FileRow {
         error: "".into(),
         checked: false,
         exposure,
+        // Filled in by `refresh_folders`, which sees the whole working set.
+        folder: "".into(),
     }
 }
 
@@ -400,8 +402,30 @@ fn add_and_select(app: &AppWindow, paths: Vec<PathBuf>) {
     if let Some(index) = target {
         select_file(app, index as i32);
     }
+    refresh_folders(app);
     update_exposure(app);
     spawn_exposure_load(app.as_weak(), added);
+}
+
+/// Give every list row the name of its folder, and tell the window whether to
+/// show them: only when the working set spans more than one folder. Call after
+/// any change to the set's paths. Rows already right are left untouched.
+fn refresh_folders(app: &AppWindow) {
+    let show = STATE.with(|s| {
+        let st = s.borrow();
+        let labels = folder_labels(&st.paths);
+        for i in 0..st.files_model.row_count() {
+            let want = labels.as_ref().map_or("", |l| l[i].as_str());
+            if let Some(mut row) = st.files_model.row_data(i)
+                && row.folder != want
+            {
+                row.folder = want.into();
+                st.files_model.set_row_data(i, row);
+            }
+        }
+        labels.is_some()
+    });
+    app.set_show_folders(show);
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
@@ -503,6 +527,7 @@ pub fn clear_files(app: &AppWindow) {
         st.generation += 1;
     });
     show_empty(app);
+    refresh_folders(app);
     update_memory(app);
     update_exposure(app);
     update_checked_count(app);
@@ -598,6 +623,7 @@ fn drop_rows(mut targets: Vec<usize>) -> Option<Option<usize>> {
 /// refresh the memory/exposure/checked readouts and re-home the highlight to
 /// the row it resolved on (or show the empty state when the set emptied).
 fn finish_removal(app: &AppWindow, target: Option<usize>) {
+    refresh_folders(app);
     update_memory(app);
     update_exposure(app);
     update_checked_count(app);
@@ -822,6 +848,7 @@ mod tests {
             error: "".into(),
             checked: false,
             exposure: 0.0,
+            folder: "".into(),
         }
     }
 
@@ -845,16 +872,19 @@ mod tests {
         let model = VecModel::from(vec![
             FileRow {
                 exposure: 30.0,
+                folder: "".into(),
                 ..row("a")
             },
             FileRow {
                 checked: true,
                 exposure: 60.0,
+                folder: "".into(),
                 ..row("b")
             },
             FileRow {
                 checked: true,
                 exposure: 10.0,
+                folder: "".into(),
                 ..row("c")
             },
         ]);
@@ -870,10 +900,12 @@ mod tests {
         let none_checked = VecModel::from(vec![
             FileRow {
                 exposure: 30.0,
+                folder: "".into(),
                 ..row("a")
             },
             FileRow {
                 exposure: 60.0,
+                folder: "".into(),
                 ..row("b")
             },
         ]);

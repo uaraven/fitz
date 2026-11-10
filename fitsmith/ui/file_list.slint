@@ -17,6 +17,8 @@ import { AppPalette } from "palette.slint";
 export component FileList inherits Rectangle {
     in property <[FileRow]> files;
     in property <int> selected-index;
+    // Whether the working set spans several folders, so each row names its own.
+    in property <bool> show-folders;
     callback select(int);
     callback select-relative(int);
     callback select-first();
@@ -161,6 +163,19 @@ export component FileList inherits Rectangle {
                             : (rowrect.is-error ? root.err-text : AppPalette.panel-value);
                         vertical-alignment: center;
                         horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    // The file's folder, muted and right-aligned, capped so a
+                    // long path never squeezes the file name away.
+                    Text {
+                        text: row.folder;
+                        visible: root.show-folders;
+                        max-width: root.show-folders ? list.content-width * 0.4 : 0px;
+                        font-size: 11px;
+                        color: rowrect.selected ? white : AppPalette.muted;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                        overflow: elide;
                     }
                     Text {
                         text: row.status;
