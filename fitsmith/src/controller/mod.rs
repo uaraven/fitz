@@ -134,10 +134,11 @@ struct AppState {
     bad_frames: Vec<FileMetrics>,
     /// The `[SessionRow]` model behind the Session Summary dialog.
     sessions_model: Rc<VecModel<crate::SessionRow>>,
-    /// The plain-text report behind the open Session Summary dialog, exactly as
-    /// `fitz summary` prints it — what the dialog's copy button puts on the
-    /// clipboard. Empty until the headers are read; cleared on close.
-    sessions_report: String,
+    /// The summary behind the open Session Summary dialog — re-flattened when
+    /// "Show calibration frames" flips, and formatted (exactly as `fitz summary`
+    /// prints it) by the copy button. `None` until the headers are read;
+    /// cleared on close.
+    sessions_summary: Option<libfitz::session::Summary>,
     /// The system clipboard, created on first use and then kept: on X11 the
     /// copied text vanishes as soon as the handle that set it is dropped.
     clipboard: Option<arboard::Clipboard>,
@@ -188,7 +189,7 @@ impl AppState {
             analytics_cancel: Arc::new(AtomicBool::new(false)),
             analytics_family: MetricFamily::Pixel,
             sessions_model: Rc::new(VecModel::default()),
-            sessions_report: String::new(),
+            sessions_summary: None,
             clipboard: None,
             sessions_cancel: Arc::new(AtomicBool::new(false)),
             sessions_generation: 0,

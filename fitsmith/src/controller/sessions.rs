@@ -2,7 +2,8 @@
 //! or all of them when none are checked — see [`super::operation_targets`])
 //! with [`libfitz::session::summarize_files`] and show their sessions, frame
 //! types and filters as a read-only tree with frame counts and integration
-//! times, and copy that report — in the layout `fitz summary` prints — to the
+//! times — the light frames only, or (with "Show calibration frames") every
+//! frame type — and copy that report — in the layout `fitz summary` prints — to the
 //! clipboard.
 //!
 //! Reading the headers runs on a worker thread; closing the dialog stops it
@@ -14,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use libfitz::session::{
-    Summary, count_noun, format_duration, format_timestamp, summarize_files_cancellable,
+    FrameType, Summary, count_noun, format_duration, format_timestamp, summarize_files_cancellable,
 };
 use libfitz::session_report::{format_summary, totals};
 use slint::ComponentHandle;
@@ -23,9 +24,11 @@ use super::{STATE, operation_targets};
 use crate::{AppWindow, SessionRow};
 
 /// Flatten `summary` depth-first into display lines: each session (depth 0),
-/// then its frame types (1), then each type's filters (2). A session's time is
-/// its light integration; every other line shows its own total.
-fn flatten(summary: &Summary) -> Vec<SessionRow> {
+/// then its frame types (1), then each type's filters (2). With `calibration`
+/// off only the light frames are listed, and a session line counts just those.
+/// A session's time is its light integration; every other line shows its own
+/// total.
+fn flatten(summary: &Summary, calibration: bool) -> Vec<SessionRow> {
     let row = |depth: i32, label: String, count: usize, integration: f64| SessionRow {
         depth,
         label: label.into(),
@@ -38,8 +41,17 @@ fn flatten(summary: &Summary) -> Vec<SessionRow> {
         if let (Some(start), Some(end)) = (session.start, session.end) {
             label = format!("{label}  {} – {}", clock(start), clock(end));
         }
-        rows.push(row(0, label, session.count, session.integration));
-        for group in &session.types {
+        let count = if calibration {
+            session.count
+        } else {
+            session.type_group(FrameType::Light).map_or(0, |g| g.count)
+        };
+        rows.push(row(0, label, count, session.integration));
+        let shown = session
+            .types
+            .iter()
+            .filter(|g| calibration || g.frame_type == FrameType::Light);
+        for group in shown {
             let label = group.frame_type.label().to_string();
             rows.push(row(1, label, group.count, group.integration));
             for filter in &group.filters {
@@ -84,7 +96,7 @@ pub fn open_sessions_dialog(app: &AppWindow) {
         st.sessions_cancel.store(true, Ordering::Relaxed);
         st.sessions_cancel = Arc::new(AtomicBool::new(false));
         st.sessions_generation += 1;
-        st.sessions_report.clear();
+        st.sessions_summary = None;
         st.sessions_model.set_vec(Vec::new());
         (st.sessions_generation, st.sessions_cancel.clone())
     });
@@ -114,17 +126,30 @@ fn apply_summary(app: &AppWindow, generation: u64, summary: Summary) {
     if STATE.with(|s| s.borrow().sessions_generation) != generation {
         return;
     }
-    STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        st.sessions_model.set_vec(flatten(&summary));
-        st.sessions_report = format_summary(&summary);
-    });
     let line = if summary.sessions.is_empty() {
         "No readable images".to_string()
     } else {
         summary_line(&summary)
     };
     app.set_sessions_summary(line.into());
+    STATE.with(|s| {
+        let mut st = s.borrow_mut();
+        let calibration = app.get_sessions_show_calibration();
+        st.sessions_model.set_vec(flatten(&summary, calibration));
+        st.sessions_summary = Some(summary);
+    });
+}
+
+/// "Show calibration frames" flipped: re-list the summary already read (a
+/// no-op while the headers are still being read — the result is flattened
+/// with the new setting when it lands).
+pub fn show_sessions_calibration(_app: &AppWindow, show: bool) {
+    STATE.with(|s| {
+        let st = s.borrow();
+        if let Some(summary) = &st.sessions_summary {
+            st.sessions_model.set_vec(flatten(summary, show));
+        }
+    });
 }
 
 /// Put the report on the system clipboard and say so (or why not) in the
@@ -132,11 +157,8 @@ fn apply_summary(app: &AppWindow, generation: u64, summary: Summary) {
 pub fn copy_sessions(app: &AppWindow) {
     let notice = STATE.with(|s| {
         let mut st = s.borrow_mut();
-        let st = &mut *st; // split the borrow between the report and the clipboard
-        if st.sessions_report.is_empty() {
-            return None;
-        }
-        let result = set_clipboard_text(&mut st.clipboard, &st.sessions_report);
+        let report = format_summary(st.sessions_summary.as_ref()?);
+        let result = set_clipboard_text(&mut st.clipboard, &report);
         Some(match result {
             Ok(()) => "Copied to clipboard".to_string(),
             Err(e) => format!("Copy failed: {e}"),
@@ -166,7 +188,7 @@ pub fn close_sessions(_app: &AppWindow) {
         let mut st = s.borrow_mut();
         st.sessions_cancel.store(true, Ordering::Relaxed);
         st.sessions_generation += 1;
-        st.sessions_report.clear();
+        st.sessions_summary = None;
         st.sessions_model.set_vec(Vec::new());
     });
 }
@@ -177,8 +199,9 @@ mod tests {
     use crate::controller::test_data;
     use libfitz::session::summarize_files;
 
-    #[test]
-    fn real_frames_flatten_into_a_session_type_filter_tree() {
+    /// Two real light frames (taken on different nights) under `Lights/` and a
+    /// real RAW dark under `DARKS/`, summarised.
+    fn lights_and_dark() -> Summary {
         let tmp = tempfile::tempdir().unwrap();
         let lights = tmp.path().join("Lights");
         let darks = tmp.path().join("DARKS");
@@ -192,9 +215,17 @@ mod tests {
         std::fs::copy(test_data("uncompressed.fit"), &files[0]).unwrap();
         std::fs::copy(test_data("bad-image/good1.fits"), &files[1]).unwrap();
         std::fs::copy(test_data("comet.ARW"), &files[2]).unwrap();
+        summarize_files(&files)
+    }
 
-        let summary = summarize_files(&files);
-        let rows = flatten(&summary);
+    fn frames(row: &SessionRow) -> usize {
+        row.count.split(' ').next().unwrap().parse().unwrap()
+    }
+
+    #[test]
+    fn real_frames_flatten_into_a_session_type_filter_tree() {
+        let summary = lights_and_dark();
+        let rows = flatten(&summary, true);
 
         // Depths only ever step down by one, starting at a session.
         assert_eq!(rows[0].depth, 0);
@@ -202,7 +233,6 @@ mod tests {
         let line = |label: &str| rows.iter().find(|r| r.label == label).unwrap();
         // The two light fixtures were taken on different nights, so each night
         // has its own "Lights" line; together they hold both frames.
-        let frames = |r: &SessionRow| r.count.split(' ').next().unwrap().parse::<usize>().unwrap();
         let lights: Vec<&SessionRow> = rows.iter().filter(|r| r.label == "Lights").collect();
         assert!(lights.iter().all(|r| r.depth == 1));
         assert_eq!(lights.iter().map(|r| frames(r)).sum::<usize>(), 2);
@@ -215,6 +245,38 @@ mod tests {
         // Every frame is counted once at the filter level.
         let leaf_frames: usize = rows.iter().filter(|r| r.depth == 2).map(frames).sum();
         assert_eq!(leaf_frames, 3);
+    }
+
+    #[test]
+    fn hiding_calibration_lists_only_the_light_frames() {
+        let summary = lights_and_dark();
+        let rows = flatten(&summary, false);
+
+        // No calibration type and none of its filters — the RAW dark's
+        // "(no filter)" line goes with it.
+        assert!(rows.iter().all(|r| r.label != "Darks"));
+        assert!(rows.iter().all(|r| r.label != "(no filter)"));
+        assert!(
+            rows.iter()
+                .filter(|r| r.depth == 1)
+                .all(|r| r.label == "Lights")
+        );
+        // Every session is still listed, and each counts only its lights.
+        assert_eq!(
+            rows.iter().filter(|r| r.depth == 0).count(),
+            summary.sessions.len()
+        );
+        let session_frames: usize = rows.iter().filter(|r| r.depth == 0).map(frames).sum();
+        assert_eq!(session_frames, 2);
+        let leaf_frames: usize = rows.iter().filter(|r| r.depth == 2).map(frames).sum();
+        assert_eq!(leaf_frames, 2);
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.label == "Narrowband 7nm")
+                .unwrap()
+                .time,
+            "0h 03m 00s"
+        );
     }
 
     #[test]

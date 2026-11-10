@@ -77,6 +77,9 @@ fn main() -> Result<()> {
         controller::open_sessions_dialog(&app)
     });
     forward!(on_copy_sessions, |app| controller::copy_sessions(&app));
+    forward!(on_sessions_calibration_toggled, |app, show| {
+        controller::show_sessions_calibration(&app, show)
+    });
     forward!(on_close_sessions, |app| controller::close_sessions(&app));
     forward!(on_clear_files, |app| controller::clear_files(&app));
     forward!(on_reload_current, |app| controller::reload_current(&app));

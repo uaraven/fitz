@@ -135,6 +135,8 @@ export component AppWindow inherits Window {
     in property <string> sessions-source;
     in property <string> sessions-summary;
     in property <string> sessions-notice;
+    // The dialog's "Show calibration frames" box; kept across openings.
+    in-out property <bool> sessions-show-calibration: false;
     in-out property <length> sessions-card-width: 680px;
     in-out property <length> sessions-card-height: 520px;
     in-out property <bool> show-delete-files: false;
@@ -228,6 +230,7 @@ export component AppWindow inherits Window {
     callback open-directory();
     callback open-sessions-dialog();
     callback copy-sessions();
+    callback sessions-calibration-toggled(bool);
     callback close-sessions();
     callback clear-files();
     // Re-read the highlighted file from disk, recomputing its headers,
@@ -926,8 +929,12 @@ export component AppWindow inherits Window {
         source: root.sessions-source;
         summary: root.sessions-summary;
         notice: root.sessions-notice;
+        show-calibration <=> root.sessions-show-calibration;
         copy => {
             root.copy-sessions();
+        }
+        show-calibration-toggled(show) => {
+            root.sessions-calibration-toggled(show);
         }
         card-width <=> root.sessions-card-width;
         card-height <=> root.sessions-card-height;
