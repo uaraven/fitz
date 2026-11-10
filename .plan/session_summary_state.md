@@ -2,7 +2,7 @@
 
 Plan: [session_summary.md](session_summary.md). Update this file after every completed step: check the box, and add any implementation detail a later step needs under that phase's **Notes**. Run `cargo test --workspace` before checking a step off.
 
-Status: Phase 0 committed. Phase 1 implemented, not yet committed. Next: Phase 2.
+Status: Phases 0 and 1 committed. Phase 2 implemented (Open Folder recursion committed; Session Summary dialog not yet committed, now working-set based) — needs a manual GUI check.
 
 Revision: scanning logic changed — every image in every folder is scanned; frame type comes from the nearest known ancestor folder name (default Light); filter and date come from headers/EXIF; a session is an observation night (noon cutoff), no longer a directory with a lights folder.
 
@@ -63,9 +63,12 @@ Revision: scanning logic changed — every image in every folder is scanned; fra
 ## Phase 2 — fitsmith (detail the steps after Phase 1)
 
 - [x] 2-pre. File ▸ Open Folder: recursive add (see Phase 2 notes)
-- [ ] 2a. Detail the Phase 2 steps (menu item, `controller/sessions.rs`, session panel, group checkboxes via `set_checked_paths`, add to working set)
-- [ ] 2b. Implement and test
-- [ ] 2c. Docs: `fitsmith/readme.md` Features, `CLAUDE.md` layout
+- [x] 2a. Detail the Phase 2 steps (menu item, `controller/sessions.rs`, session panel, group checkboxes via `set_checked_paths`, add to working set)
+- [x] 2b. Implement and test
+- [x] 2c. Docs: `fitsmith/readme.md` Features, `CLAUDE.md` layout
+- [ ] 2d. Manual GUI check: add a scratch tree to the working set, Tools ▸ Session Summary… with and without checked files
 
 ### Phase 2 notes
 - **Open Folder recursion:** `rfd::FileDialog` has no way to embed a checkbox, so `controller::open_directory` asks a native `rfd::MessageDialog` (Yes = include subfolders, No = this folder only, Cancel = abandon the open) right after the folder pick — only when the folder has direct subfolders (`files::has_subdirectories`). Recursive scan is `files::scan_directory_recursive` = `libfitz::files::find_images(dir, &[])`; the session scan's walker moved there too (`session::scan_images` passes `SKIPPED_EXTENSIONS`), so `.tif` is still skipped by sessions but included by Open Folder, as in the flat scan. Command-line directory args stay non-recursive. Custom button labels (Windows-only in rfd) not used.
+- **Session Summary dialog** (Tools ▸ Session Summary…, enabled when the working set is non-empty; read-only): summarises `operation_targets(|_| true)` (checked files, else all) with `libfitz::session::summarize_files(&[PathBuf]) -> Summary` (shares `summarize_images` with `summarize_dir`; root = deepest common folder of the files, whose own name counts for the frame type; unreadable files go to `errors`). No folder picker, no checkboxes, no action button — just Close; nothing is added to or checked in the working set. The dialog opens at once ("Reading headers…") while the worker runs; `sessions_generation` (also bumped on close) drops a stale result. `flatten` turns the `Summary` into `SessionRow`s (`ui/types.slint`: depth 0 session / 1 type / 2 filter, with pre-formatted count and time) held in `AppState::sessions_model`. Session line shows the night plus start–end clock times; its time column is light integration (as in the CLI). `FilterGroup::label()` supplies "(no filter)" for CLI and GUI. **Copy button:** a copy-glyph icon button (two overlapping rectangles, `CopyIconButton` in `ui/sessions.slint`, no text) in the footer copies `AppState::sessions_report` — `libfitz::session_report::format_summary(&Summary)`, moved out of `fitz-cli` so the CLI and GUI print identical text — to the clipboard through `arboard` (text only, `wayland-data-control`; the `Clipboard` handle is kept in `AppState` because X11 drops the data with the handle). A "Copied to clipboard" / "Copy failed: …" notice appears in the footer (`sessions-notice`). The copy itself is not unit-tested (it would overwrite the real clipboard); the report is covered by the golden tests in `session_report.rs`. History: the first versions picked a folder and added files, then had tick-boxes with a Select button; both were removed.
+- Not done / ideas: no cancel for a slow header read (closing abandons it; the worker still finishes); no per-frame expansion in the tree; only `flatten`/`summary_line` are unit-tested, not the Slint dialog.

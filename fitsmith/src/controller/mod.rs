@@ -18,6 +18,8 @@
 //! - [`convert`] — the compress / decompress batch operations;
 //! - [`export`] — the export dialog and its batch;
 //! - [`analytics`] — the analytics batch and its time-series chart;
+//! - [`sessions`] — File ▸ Session Summary…: scan a folder into sessions / frame types /
+//!   filters and add the ticked groups to the working set;
 //! - [`delete_files`] — Tools ▸ Delete Files…: delete or rename the checked files.
 
 mod analytics;
@@ -27,6 +29,7 @@ mod delete_files;
 mod export;
 mod inspect;
 pub(crate) mod metrics;
+mod sessions;
 mod support;
 mod viewer;
 
@@ -36,6 +39,7 @@ pub use convert::*;
 pub use delete_files::*;
 pub use export::*;
 pub use inspect::*;
+pub use sessions::*;
 pub use viewer::*;
 
 use std::cell::RefCell;
@@ -128,6 +132,18 @@ struct AppState {
     /// knob change re-evaluates in memory with no file re-read. Cleared when
     /// the dialog closes.
     bad_frames: Vec<FileMetrics>,
+    /// The `[SessionRow]` model behind the Session Summary dialog.
+    sessions_model: Rc<VecModel<crate::SessionRow>>,
+    /// The plain-text report behind the open Session Summary dialog, exactly as
+    /// `fitz summary` prints it — what the dialog's copy button puts on the
+    /// clipboard. Empty until the headers are read; cleared on close.
+    sessions_report: String,
+    /// The system clipboard, created on first use and then kept: on X11 the
+    /// copied text vanishes as soon as the handle that set it is dropped.
+    clipboard: Option<arboard::Clipboard>,
+    /// Bumped whenever the dialog opens or closes, so a folder scan that
+    /// finishes afterwards lands as stale and is dropped.
+    sessions_generation: u64,
     /// The paths the bad-frame dialog currently flags, in working-set order —
     /// what its Select button checks in the file list.
     bad_frame_flagged: Vec<PathBuf>,
@@ -168,6 +184,10 @@ impl AppState {
             analytics_generation: 0,
             analytics_cancel: Arc::new(AtomicBool::new(false)),
             analytics_family: MetricFamily::Pixel,
+            sessions_model: Rc::new(VecModel::default()),
+            sessions_report: String::new(),
+            clipboard: None,
+            sessions_generation: 0,
             bad_frames: Vec::new(),
             bad_frame_flagged: Vec::new(),
             batch_cancel: Arc::new(AtomicBool::new(false)),
@@ -184,6 +204,7 @@ thread_local! {
 pub fn init(app: &AppWindow) {
     STATE.with(|s| {
         app.set_files(ModelRc::from(s.borrow().files_model.clone()));
+        app.set_sessions_model(ModelRc::from(s.borrow().sessions_model.clone()));
     });
     update_memory(app);
 }

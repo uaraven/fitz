@@ -72,3 +72,13 @@ export struct StatLine {
 export struct BadFrameRow {
     name: string,
 }
+
+// One line of the Session Summary dialog's tree: a session, one frame type of
+// it, or one filter of that type (`depth` 0, 1, 2). `count` and `time` are
+// pre-formatted ("92 frames", "5h 12m 30s").
+export struct SessionRow {
+    depth: int,
+    label: string,
+    count: string,
+    time: string,
+}

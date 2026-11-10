@@ -125,7 +125,16 @@ pub struct FilterGroup {
     pub integration: f64,
 }
 
+/// Shown in place of a filter name for frames whose header has none (always the
+/// case for camera RAW).
+const NO_FILTER: &str = "(no filter)";
+
 impl FilterGroup {
+    /// The filter's name, or `"(no filter)"` for frames without one.
+    pub fn label(&self) -> &str {
+        self.filter.as_deref().unwrap_or(NO_FILTER)
+    }
+
     fn new(filter: Option<String>, mut frames: Vec<Frame>) -> Self {
         frames.sort_by(|a, b| {
             cmp_option_last(a.observed, b.observed, f64::total_cmp)
@@ -335,8 +344,50 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
     if !root.is_dir() {
         bail!("not a directory");
     }
+    Ok(summarize_images(root.to_path_buf(), scan_images(root)))
+}
 
-    let read: Vec<(ScannedImage, Result<FrameInfo>)> = scan_images(root)
+/// Group an explicit list of image files — a working set rather than a folder
+/// tree — the same way [`summarize_dir`] does. With no folder to scan, the
+/// frame type comes from the folders above each file up to their deepest
+/// common folder (which becomes [`Summary::root`] and whose own name counts,
+/// as a scan root's does). Files that cannot be read land in
+/// [`Summary::errors`]; an empty list gives an empty summary.
+pub fn summarize_files(paths: &[PathBuf]) -> Summary {
+    let root = common_dir(paths);
+    let root_type = folder_type(&root);
+    let images = paths
+        .iter()
+        .map(|path| ScannedImage {
+            frame_type: frame_type_in(path, &root, root_type),
+            path: path.clone(),
+        })
+        .collect();
+    summarize_images(root, images)
+}
+
+/// The deepest folder containing every path (empty when they share none, or
+/// when there are no paths).
+fn common_dir(paths: &[PathBuf]) -> PathBuf {
+    let mut dirs = paths.iter().map(|p| p.parent().unwrap_or(Path::new("")));
+    let Some(first) = dirs.next() else {
+        return PathBuf::new();
+    };
+    let mut common = first.to_path_buf();
+    for dir in dirs {
+        while !dir.starts_with(&common) {
+            if !common.pop() {
+                return PathBuf::new();
+            }
+        }
+    }
+    common
+}
+
+/// Read the headers of `images` (in parallel) and bucket them into a
+/// [`Summary`] rooted at `root`.
+fn summarize_images(root: PathBuf, images: Vec<ScannedImage>) -> Summary {
+    let read: Vec<(ScannedImage, Result<FrameInfo>)> = images
         .into_par_iter()
         .map(|image| {
             let info = read_frame_info(&image.path);
@@ -388,7 +439,7 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
         })
         .collect();
 
-    Ok(Summary::new(root.to_path_buf(), sessions, errors))
+    Summary::new(root, sessions, errors)
 }
 
 /// The filters listed ahead of all others, in this order (compared ignoring
@@ -718,6 +769,13 @@ mod tests {
     }
 
     #[test]
+    fn filter_groups_without_a_filter_are_labelled() {
+        let group = |filter: Option<&str>| FilterGroup::new(filter.map(str::to_string), Vec::new());
+        assert_eq!(group(Some("Ha")).label(), "Ha");
+        assert_eq!(group(None).label(), "(no filter)");
+    }
+
+    #[test]
     fn frame_types_have_singular_nouns() {
         assert_eq!(FrameType::Light.noun(), "light");
         assert_eq!(FrameType::DarkFlat.noun(), "dark flat");
@@ -744,6 +802,116 @@ mod tests {
         assert_eq!(summary.count, 1);
         assert_eq!(summary.integration, 0.0);
         assert_eq!(names(&summary), ["2026-06-22"]);
+    }
+
+    #[test]
+    fn summarizing_files_matches_summarizing_their_folder() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let at = |t: &str| format!("2026-06-22T{t}");
+        let a = frame(
+            root,
+            "Lights/Ha/a.fit",
+            Some("Ha"),
+            300.0,
+            Some(&at("22:00:00")),
+            None,
+        );
+        let b = frame(
+            root,
+            "Lights/Ha/b.fit",
+            Some("Ha"),
+            300.0,
+            Some(&at("22:10:00")),
+            None,
+        );
+        let d = frame(
+            root,
+            "darks/d.fit",
+            None,
+            300.0,
+            Some(&at("23:00:00")),
+            None,
+        );
+
+        let by_dir = summarize_dir(root).unwrap();
+        let by_files = summarize_files(&[d, a, b]);
+
+        assert_eq!(by_files.root, root);
+        assert_eq!((by_files.count, by_files.light_count()), (3, 2));
+        assert_eq!(by_files.integration, by_dir.integration);
+        assert_eq!(names(&by_files), names(&by_dir));
+        let session = &by_files.sessions[0];
+        assert_eq!(session.type_group(FrameType::Dark).unwrap().count, 1);
+        assert_eq!(
+            session.type_group(FrameType::Light).unwrap().filters[0].count,
+            2
+        );
+    }
+
+    #[test]
+    fn a_files_own_folder_names_its_type_when_it_is_the_common_folder() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let a = frame(
+            root,
+            "Flats/a.fit",
+            Some("L"),
+            1.0,
+            Some("2026-06-22T20:00:00"),
+            None,
+        );
+        let b = frame(
+            root,
+            "Flats/sub/b.fit",
+            Some("L"),
+            1.0,
+            Some("2026-06-22T20:01:00"),
+            None,
+        );
+
+        // Both files sit under `Flats`, the deepest common folder.
+        let summary = summarize_files(&[a.clone(), b]);
+        assert_eq!(summary.root, root.join("Flats"));
+        assert_eq!(summary.sessions[0].types[0].frame_type, FrameType::Flat);
+
+        // A single file is its own folder's only content.
+        let one = summarize_files(&[a]);
+        assert_eq!(one.sessions[0].types[0].frame_type, FrameType::Flat);
+    }
+
+    #[test]
+    fn summarizing_files_reports_unreadable_ones_and_handles_none() {
+        let tmp = TempDir::new().unwrap();
+        let good = frame(
+            tmp.path(),
+            "a.fit",
+            None,
+            10.0,
+            Some("2026-06-22T20:00:00"),
+            None,
+        );
+        let bad = tmp.path().join("broken.fit");
+        fs::write(&bad, b"nope").unwrap();
+
+        let summary = summarize_files(&[good, bad.clone()]);
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.errors.len(), 1);
+        assert_eq!(summary.errors[0].0, bad);
+
+        let empty = summarize_files(&[]);
+        assert!(empty.sessions.is_empty() && empty.errors.is_empty());
+    }
+
+    #[test]
+    fn common_dir_is_the_deepest_shared_folder() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(common_dir(&[p("/a/b/x.fit"), p("/a/b/c/y.fit")]), p("/a/b"));
+        assert_eq!(common_dir(&[p("/a/x.fit"), p("/b/y.fit")]), p("/"));
+        assert_eq!(common_dir(&[p("/a/x.fit")]), p("/a"));
+        assert_eq!(common_dir(&[]), PathBuf::new());
+        // `/a/bc` is not under `/a/b`.
+        assert_eq!(common_dir(&[p("/a/b/x.fit"), p("/a/bc/y.fit")]), p("/a"));
     }
 
     #[test]

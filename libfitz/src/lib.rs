@@ -24,6 +24,7 @@ pub mod fits_file;
 mod keywords;
 pub mod raw_fits;
 pub mod session;
+pub mod session_report;
 pub mod stats;
 pub mod summary;
 mod xtrans;
