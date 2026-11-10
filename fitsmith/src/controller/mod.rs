@@ -52,7 +52,10 @@ use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel, Weak};
 
 use crate::controller::support::load_exposure;
 use crate::doc::FileMeta;
-use crate::files::{display_name, expand_inputs, is_compressed, scan_directory};
+use crate::files::{
+    display_name, expand_inputs, has_subdirectories, is_compressed, scan_directory,
+    scan_directory_recursive,
+};
 use crate::{AppWindow, FileRow, view};
 
 /// Key for the rendered-preview cache: a path plus the toggle state it was
@@ -304,18 +307,50 @@ pub fn open_file(app: &AppWindow) {
     }
 }
 
-/// Prompt for a directory, add every FITS file it contains, and select the
-/// first newly added one.
+/// Prompt for a directory, add every image it contains, and select the first
+/// newly added one. When the directory has subfolders, also asks whether to
+/// include their images (the native folder picker has no room for a checkbox);
+/// cancelling that question cancels the open.
 pub fn open_directory(app: &AppWindow) {
     let Some(dir) = rfd::FileDialog::new().pick_folder() else {
         return;
     };
-    let paths = scan_directory(&dir);
+    let recursive = has_subdirectories(&dir)
+        && {
+            let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Info)
+            .set_title("Include images in subfolders?")
+            .set_description(format!(
+                "{} contains subfolders",
+                dir.display()
+            ))
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show();
+            match include_subfolders(&answer) {
+                Some(recursive) => recursive,
+                None => return,
+            }
+        };
+    let paths = if recursive {
+        scan_directory_recursive(&dir)
+    } else {
+        scan_directory(&dir)
+    };
     if paths.is_empty() {
-        app.set_status_text(format!("No FITS files in {}", dir.display()).into());
+        app.set_status_text(format!("No images in {}", dir.display()).into());
         return;
     }
     add_and_select(app, paths);
+}
+
+/// Interpret the "Include subfolders?" answer: `Some(true)` for Yes,
+/// `Some(false)` for No, `None` (abandon the open) for anything else.
+fn include_subfolders(answer: &rfd::MessageDialogResult) -> Option<bool> {
+    match answer {
+        rfd::MessageDialogResult::Yes => Some(true),
+        rfd::MessageDialogResult::No => Some(false),
+        _ => None,
+    }
 }
 
 /// Add the files and directories passed on the command line to the working set
@@ -740,6 +775,14 @@ fn operation_targets(predicate: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subfolder_prompt_answers_map_to_recursion_or_cancel() {
+        use rfd::MessageDialogResult::*;
+        assert_eq!(include_subfolders(&Yes), Some(true));
+        assert_eq!(include_subfolders(&No), Some(false));
+        assert_eq!(include_subfolders(&Cancel), None);
+    }
 
     fn row(name: &str) -> FileRow {
         FileRow {

@@ -41,6 +41,23 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
+/// Every openable image anywhere under `dir`, subfolders included, depth-first
+/// in name order. Same extensions as [`scan_directory`]; unreadable folders are
+/// skipped and symlinked folders are not followed.
+pub fn scan_directory_recursive(dir: &Path) -> Vec<PathBuf> {
+    libfitz::files::find_images(dir, &[])
+}
+
+/// Whether `dir` directly contains at least one subfolder. Decides whether
+/// File ▸ Open Folder offers to include subfolders.
+pub fn has_subdirectories(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+    })
+}
+
 /// The next selection index for blink / arrow scrubbing, wrapping around the
 /// working set. Returns 0 for an empty set (nothing to select).
 pub fn next_index(current: usize, len: usize) -> usize {
@@ -169,6 +186,49 @@ mod tests {
             .map(|p| display_name(p))
             .collect();
         assert_eq!(found, vec!["a.fit", "b.fits", "c.fz"]);
+    }
+
+    #[test]
+    fn recursive_scan_finds_real_images_in_subfolders() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = |name: &str| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("test-data")
+                .join(name)
+        };
+        std::fs::create_dir_all(dir.path().join("Lights/night1")).unwrap();
+        std::fs::copy(fixture("uncompressed.fit"), dir.path().join("top.fit")).unwrap();
+        std::fs::copy(
+            fixture("compressed.fits.fz"),
+            dir.path().join("Lights/night1/deep.fits.fz"),
+        )
+        .unwrap();
+        std::fs::copy(fixture("comet.ARW"), dir.path().join("Lights/raw.ARW")).unwrap();
+        std::fs::write(dir.path().join("Lights/notes.txt"), b"x").unwrap();
+
+        let flat = scan_directory(dir.path());
+        let deep: Vec<String> = scan_directory_recursive(dir.path())
+            .iter()
+            .map(|p| p.strip_prefix(dir.path()).unwrap().display().to_string())
+            .collect();
+
+        assert_eq!(flat.len(), 1);
+        assert_eq!(
+            deep,
+            ["Lights/night1/deep.fits.fz", "Lights/raw.ARW", "top.fit"]
+        );
+    }
+
+    #[test]
+    fn has_subdirectories_only_for_real_subfolders() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.fit"), b"x").unwrap();
+        assert!(!has_subdirectories(dir.path()));
+        assert!(!has_subdirectories(Path::new("/no/such/dir/here")));
+
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        assert!(has_subdirectories(dir.path()));
     }
 
     #[test]
