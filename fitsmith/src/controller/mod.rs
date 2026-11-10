@@ -18,8 +18,8 @@
 //! - [`convert`] — the compress / decompress batch operations;
 //! - [`export`] — the export dialog and its batch;
 //! - [`analytics`] — the analytics batch and its time-series chart;
-//! - [`sessions`] — File ▸ Session Summary…: scan a folder into sessions / frame types /
-//!   filters and add the ticked groups to the working set;
+//! - [`sessions`] — Tools ▸ Session Summary…: group the working set's files into a
+//!   read-only sessions / frame types / filters tree and copy its report;
 //! - [`delete_files`] — Tools ▸ Delete Files…: delete or rename the checked files.
 
 mod analytics;
@@ -145,8 +145,8 @@ struct AppState {
     /// Raised to stop the Session Summary dialog's header read; each opening
     /// gets a fresh flag so stopping one can't silence the next.
     sessions_cancel: Arc<AtomicBool>,
-    /// Bumped whenever the dialog opens or closes, so a folder scan that
-    /// finishes afterwards lands as stale and is dropped.
+    /// Bumped whenever the Session Summary dialog opens or closes, so a header
+    /// read that finishes afterwards lands as stale and is dropped.
     sessions_generation: u64,
     /// The paths the bad-frame dialog currently flags, in working-set order —
     /// what its Select button checks in the file list.

@@ -8,8 +8,9 @@
 //!
 //! Reading the headers runs on a worker thread; closing the dialog stops it
 //! between files, and its result is applied only if the dialog is still
-//! showing that run (a generation guard, like the other batches). The grouping itself is `libfitz`'s — this module only flattens
-//! the [`Summary`] into display rows.
+//! showing that run (a generation guard, like the other batches). The
+//! grouping itself is `libfitz`'s — this module only flattens the [`Summary`]
+//! into display rows.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

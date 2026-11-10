@@ -222,7 +222,6 @@ fn calculate_meta_stats(
     }
     let median = median_in_place(&mut data);
     let mut mad_data: Vec<f64> = data.iter().map(|d| (d - median).abs()).collect();
-    mad_data.sort_by(|a, b| a.total_cmp(b));
 
     let mad = median_in_place(&mut mad_data) * 1.4826;
     MetaStats {

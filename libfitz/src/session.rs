@@ -13,8 +13,10 @@
 //!   blank — always the case for RAW);
 //! - the **session** is the observation *night* of its timestamp (`DATE-LOC`,
 //!   else `DATE-OBS`), cut at local noon so a night that crosses midnight
-//!   stays in one session. Frames without a readable timestamp share one
-//!   "unknown date" session.
+//!   stays in one session. A FITS `DATE-OBS` is UTC, so it is first moved to
+//!   local solar time by the site longitude (`SITELONG`) when the header has
+//!   one. Frames without a readable timestamp share one "unknown date"
+//!   session.
 //!
 //! The result is a [`Summary`] → [`Session`] → [`TypeGroup`] → [`FilterGroup`]
 //! → [`Frame`] tree. Every group above a frame records its frame count and
@@ -22,9 +24,9 @@
 //! report integration for light frames only, the figure that matters for an
 //! astrophoto; their frame counts cover every type.
 
-use crate::files::find_images;
+use crate::files::{find_images, is_fits_path};
 use crate::fits_file::parse_date_obs;
-use crate::keywords::{DATE_LOC, DATE_OBS, EXPTIME, FILTER};
+use crate::keywords::{DATE_LOC, DATE_OBS, EXPTIME, FILTER, SITELONG};
 use crate::loader::load_header_from_file;
 use crate::non_blank;
 use anyhow::{Result, anyhow, bail};
@@ -165,7 +167,7 @@ pub struct TypeGroup {
 }
 
 impl TypeGroup {
-    fn new(frame_type: FrameType, filters: Vec<FilterGroup>) -> Self {
+    pub(crate) fn new(frame_type: FrameType, filters: Vec<FilterGroup>) -> Self {
         Self {
             frame_type,
             count: filters.iter().map(|g| g.count).sum(),
@@ -200,7 +202,7 @@ pub struct Session {
 }
 
 impl Session {
-    fn new(night: Option<i64>, types: Vec<TypeGroup>) -> Self {
+    pub(crate) fn new(night: Option<i64>, types: Vec<TypeGroup>) -> Self {
         let observed = types
             .iter()
             .flat_map(|t| t.frames())
@@ -264,7 +266,11 @@ pub struct Summary {
 }
 
 impl Summary {
-    fn new(root: PathBuf, sessions: Vec<Session>, errors: Vec<(PathBuf, String)>) -> Self {
+    pub(crate) fn new(
+        root: PathBuf,
+        sessions: Vec<Session>,
+        errors: Vec<(PathBuf, String)>,
+    ) -> Self {
         Self {
             root,
             count: sessions.iter().map(|s| s.count).sum(),
@@ -339,8 +345,9 @@ pub fn scan_images(root: &Path) -> Vec<ScannedImage> {
 }
 
 /// Scan every image under `root` (see the module docs) and group it into
-/// sessions, frame types and filters. Headers are read in parallel and never
-/// decode pixels. Fails only if `root` is not a directory.
+/// sessions, frame types and filters. Headers are read in parallel without
+/// decoding pixels (a FITS file's pixel data is not even read; see
+/// [`crate::fits_file::load_header`]). Fails only if `root` is not a directory.
 pub fn summarize_dir(root: &Path) -> Result<Summary> {
     if !root.is_dir() {
         bail!("not a directory");
@@ -422,7 +429,7 @@ fn summarize_images(root: PathBuf, images: Vec<ScannedImage>, cancel: &AtomicBoo
     for (image, info) in read {
         match info {
             Ok(info) => {
-                let night = info.frame.observed.map(night_of);
+                let night = info.night;
                 nights
                     .entry((night.is_none(), night))
                     .or_default()
@@ -481,10 +488,13 @@ fn filter_rank(filter: Option<&str>) -> usize {
 struct FrameInfo {
     frame: Frame,
     filter: Option<String>,
+    /// The observation night (see [`night_of`]); `None` without a timestamp.
+    night: Option<i64>,
 }
 
 fn read_frame_info(path: &Path) -> Result<FrameInfo> {
     let header = load_header_from_file(path)?;
+    let observed = observation_time(&header, is_fits_path(path));
     Ok(FrameInfo {
         frame: Frame {
             path: path.to_path_buf(),
@@ -492,8 +502,9 @@ fn read_frame_info(path: &Path) -> Result<FrameInfo> {
                 .get_float(EXPTIME)
                 .filter(|e| e.is_finite() && *e > 0.0)
                 .unwrap_or(0.0),
-            observed: observed_time(&header),
+            observed: observed.map(|(time, _)| time),
         },
+        night: observed.map(|(time, to_local)| night_of(time + to_local)),
         filter: header
             .get_string(FILTER)
             .and_then(non_blank)
@@ -501,14 +512,74 @@ fn read_frame_info(path: &Path) -> Result<FrameInfo> {
     })
 }
 
-/// `DATE-LOC` if it parses, otherwise `DATE-OBS`.
-fn observed_time(header: &Header) -> Option<f64> {
-    [DATE_LOC, DATE_OBS].into_iter().find_map(|key| {
+/// When the frame was taken, as written (`DATE-LOC` if it parses, otherwise
+/// `DATE-OBS`), and the shift in seconds that brings it to local time for the
+/// night cut. `DATE-LOC` is local already. A FITS `DATE-OBS` is UTC, so it is
+/// moved to local *solar* time by the site longitude (`SITELONG`, east
+/// positive: 15° per hour) when the header has one, and left as UTC when not.
+/// A RAW file's `DATE-OBS` is the camera's own local clock, so `fits_utc` is
+/// false for one and no shift is applied.
+fn observation_time(header: &Header, fits_utc: bool) -> Option<(f64, f64)> {
+    let read = |key| {
         header
             .get_string(key)
             .and_then(non_blank)
             .and_then(parse_date_obs)
+    };
+    if let Some(local) = read(DATE_LOC) {
+        return Some((local, 0.0));
+    }
+    let time = read(DATE_OBS)?;
+    let to_local = if fits_utc {
+        site_longitude(header).map_or(0.0, |lon| lon * SECONDS_PER_DAY / 360.0)
+    } else {
+        0.0
+    };
+    Some((time, to_local))
+}
+
+/// The `SITELONG` header as signed degrees in `[-180, 180]`, east positive:
+/// a number, or a string in decimal (`"-122.33"`) or sexagesimal
+/// (`"+011 34 56.0"`, `"-122:19:55"`) form. A value over 180 is read as
+/// degrees east from 0..360. `None` when absent or not a sane longitude.
+fn site_longitude(header: &Header) -> Option<f64> {
+    let degrees = header
+        .get_float(SITELONG)
+        .or_else(|| header.get_string(SITELONG).and_then(parse_degrees))?;
+    if !degrees.is_finite() || degrees.abs() > 360.0 {
+        return None;
+    }
+    Some(if degrees > 180.0 {
+        degrees - 360.0
+    } else {
+        degrees
     })
+}
+
+/// Signed degrees from `"11.58"`, `"+011 34 56.0"` or `"-122:19:55"`: up to
+/// three unsigned parts (degrees, minutes, seconds) split by `:` or
+/// whitespace, behind an optional sign.
+fn parse_degrees(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let (sign, rest) = match s.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let mut parts = rest
+        .split(|c: char| c == ':' || c.is_whitespace())
+        .filter(|p| !p.is_empty());
+    let mut degrees = 0.0;
+    let mut unit = 1.0;
+    let mut any = false;
+    for part in parts.by_ref().take(3) {
+        if part.starts_with(['+', '-']) {
+            return None;
+        }
+        degrees += part.parse::<f64>().ok()? / unit;
+        unit *= 60.0;
+        any = true;
+    }
+    (any && parts.next().is_none()).then_some(sign * degrees)
 }
 
 /// The observation night a timestamp belongs to: the day (since the Unix
@@ -1183,6 +1254,89 @@ mod tests {
         let unknown = &summary.sessions[1];
         assert_eq!((unknown.night, unknown.count), (None, 2));
         assert_eq!((unknown.start, unknown.end), (None, None));
+    }
+
+    /// Add a `SITELONG` card to a frame written by [`frame`].
+    fn set_site_longitude(path: &Path, value: fitskit::HeaderValue) {
+        let mut fits = fitskit::FitsFile::from_file(path).unwrap();
+        fits.primary_mut().header.set(SITELONG, value, None);
+        fits.to_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_utc_night_is_cut_at_the_sites_local_solar_noon() {
+        let tmp = TempDir::new().unwrap();
+        let r = tmp.path();
+        // Seattle (122.33° W, ~8h 09m behind UTC): 20:00-05:00 local is
+        // 04:00-13:00 UTC, which crosses UTC noon.
+        let utc = |name: &str, time: &str| {
+            let path = frame(r, name, None, 60.0, None, Some(time));
+            set_site_longitude(&path, fitskit::HeaderValue::Float(-122.33));
+        };
+        utc("a.fit", "2026-06-23T04:00:00");
+        utc("b.fit", "2026-06-23T12:30:00");
+        // The same timestamps with no longitude are cut at UTC noon.
+        frame(r, "c.fit", None, 60.0, None, Some("2026-07-23T04:00:00"));
+        frame(r, "d.fit", None, 60.0, None, Some("2026-07-23T12:30:00"));
+
+        let summary = summarize_dir(r).unwrap();
+
+        // One local night (of the 22nd), then the unshifted pair split in two.
+        assert_eq!(names(&summary), ["2026-06-22", "2026-07-22", "2026-07-23"]);
+        assert_eq!(summary.sessions[0].count, 2);
+        // The frames keep their times as written.
+        let first = summary.sessions[0].start.unwrap();
+        assert_eq!(first, parse_date_obs("2026-06-23T04:00:00").unwrap());
+    }
+
+    #[test]
+    fn site_longitude_is_shifted_only_for_a_fits_utc_timestamp() {
+        let mut header = Header::new();
+        let set = |h: &mut Header, key: &str, v: &str| {
+            h.set(key, fitskit::HeaderValue::String(v.into()), None);
+        };
+        set(&mut header, DATE_OBS, "2026-06-23T04:00:00");
+        header.set(SITELONG, fitskit::HeaderValue::Float(90.0), None);
+        let time = parse_date_obs("2026-06-23T04:00:00").unwrap();
+
+        // 90° east is six hours ahead of UTC.
+        assert_eq!(observation_time(&header, true), Some((time, 6.0 * 3600.0)));
+        // A RAW file's DATE-OBS is the camera's local clock: never shifted.
+        assert_eq!(observation_time(&header, false), Some((time, 0.0)));
+        // DATE-LOC is local already.
+        set(&mut header, DATE_LOC, "2026-06-22T22:00:00");
+        let local = parse_date_obs("2026-06-22T22:00:00").unwrap();
+        assert_eq!(observation_time(&header, true), Some((local, 0.0)));
+    }
+
+    #[test]
+    fn site_longitude_reads_numbers_and_decimal_or_sexagesimal_strings() {
+        let lon = |value: fitskit::HeaderValue| {
+            let mut header = Header::new();
+            header.set(SITELONG, value, None);
+            site_longitude(&header)
+        };
+        let s = |v: &str| lon(fitskit::HeaderValue::String(v.into()));
+        let close = |got: Option<f64>, want: f64| {
+            assert!(
+                got.is_some_and(|g| (g - want).abs() < 1e-9),
+                "{got:?} vs {want}"
+            );
+        };
+
+        close(lon(fitskit::HeaderValue::Integer(15)), 15.0);
+        close(lon(fitskit::HeaderValue::Float(-122.33)), -122.33);
+        close(s(" -122.33 "), -122.33);
+        close(s("+011 30 36"), 11.51);
+        close(s("-122:19:48"), -122.33);
+        // 0..360 east: 237.67° E is 122.33° W.
+        close(lon(fitskit::HeaderValue::Float(237.67)), -122.33);
+
+        for bad in ["", "east", "11 -30", "1:2:3:4", "nan", "400", "1e300"] {
+            assert_eq!(s(bad), None, "{bad}");
+        }
+        assert_eq!(lon(fitskit::HeaderValue::Float(f64::INFINITY)), None);
+        assert_eq!(site_longitude(&Header::new()), None);
     }
 
     #[test]
