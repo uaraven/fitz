@@ -58,67 +58,27 @@ pub fn has_subdirectories(dir: &Path) -> bool {
     })
 }
 
-/// Short labels that tell apart the folders `paths` live in, for the file list
-/// to show once the working set spans several of them. `None` when every path
-/// is in one folder (nothing to tell apart); otherwise one label per path: the
-/// shortest trailing part of its folder's path that no other folder shares —
-/// `Lights` when that is unique, `night1/Lights` when another folder is also
-/// called `Lights`.
-pub fn folder_labels(paths: &[PathBuf]) -> Option<Vec<String>> {
-    // Folder names from the root down, per distinct parent folder.
-    let mut dirs: Vec<&Path> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for dir in paths.iter().map(|p| p.parent().unwrap_or(Path::new(""))) {
-        if seen.insert(dir) {
-            dirs.push(dir);
+/// The list names for `paths`: each path relative to the deepest folder they
+/// all share, so one folder's files show bare names and a set spanning
+/// `night1/Lights` and `night2/Lights` shows `night1/Lights/a.fit` and
+/// `night2/Lights/c.fit`. Paths with nothing in common (different drives)
+/// keep their full path.
+pub fn relative_names(paths: &[PathBuf]) -> Vec<String> {
+    let parent = |p: &PathBuf| p.parent().unwrap_or(Path::new("")).to_path_buf();
+    let mut common = paths.first().map(parent).unwrap_or_default();
+    for p in paths.iter().skip(1) {
+        while !p.starts_with(&common) && common.pop() {}
+        if !p.starts_with(&common) {
+            common = PathBuf::new();
         }
     }
-    if dirs.len() < 2 {
-        return None;
-    }
-    let names: Vec<Vec<String>> = dirs
+    paths
         .iter()
-        .map(|dir| {
-            dir.components()
-                .filter_map(|c| match c {
-                    std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
-                    _ => None,
-                })
-                .collect()
+        .map(|p| match p.strip_prefix(&common) {
+            Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+            _ => display_name(p),
         })
-        .collect();
-    let tail = |names: &[String], k: usize| names[names.len().saturating_sub(k)..].join("/");
-
-    // Grow the suffix until each folder's label is unique among all of them.
-    let deepest = names.iter().map(Vec::len).max().unwrap_or(0);
-    let mut labels: Vec<Option<String>> = vec![None; dirs.len()];
-    for k in 1..=deepest {
-        let mut count = std::collections::HashMap::new();
-        for n in &names {
-            *count.entry(tail(n, k)).or_insert(0usize) += 1;
-        }
-        for (label, n) in labels.iter_mut().zip(&names) {
-            if label.is_none() && count[&tail(n, k)] == 1 {
-                *label = Some(tail(n, k));
-            }
-        }
-    }
-    // A folder with no usable name (a drive root) or one still ambiguous (the
-    // same path on two drives) falls back to its full path.
-    let by_dir: std::collections::HashMap<&Path, String> = dirs
-        .iter()
-        .zip(labels)
-        .map(|(dir, label)| {
-            let label = label.filter(|l| !l.is_empty());
-            (*dir, label.unwrap_or_else(|| dir.display().to_string()))
-        })
-        .collect();
-    Some(
-        paths
-            .iter()
-            .map(|p| by_dir[p.parent().unwrap_or(Path::new(""))].clone())
-            .collect(),
-    )
+        .collect()
 }
 
 /// The next selection index for blink / arrow scrubbing, wrapping around the
@@ -284,38 +244,67 @@ mod tests {
     }
 
     #[test]
-    fn folder_labels_are_absent_for_a_single_folder() {
+    fn relative_names_are_bare_file_names_within_one_folder() {
         let p = |s: &str| PathBuf::from(s);
-        assert_eq!(folder_labels(&[]), None);
+        assert!(relative_names(&[]).is_empty());
+        assert_eq!(relative_names(&[p("/d/Lights/a.fit")]), ["a.fit"]);
         assert_eq!(
-            folder_labels(&[p("/d/Lights/a.fit"), p("/d/Lights/b.fit")]),
-            None
+            relative_names(&[p("/d/Lights/a.fit"), p("/d/Lights/b.fit")]),
+            ["a.fit", "b.fit"]
         );
     }
 
     #[test]
-    fn folder_labels_use_the_shortest_unique_trailing_path() {
+    fn relative_names_are_relative_to_the_common_parent() {
         let p = |s: &str| PathBuf::from(s);
-        let labels = folder_labels(&[
+        let names = relative_names(&[
             p("/d/night1/Lights/a.fit"),
             p("/d/night1/Lights/b.fit"),
             p("/d/night2/Lights/c.fit"),
             p("/d/night1/Darks/d.fit"),
-        ])
-        .unwrap();
-        // Two folders are called `Lights`, so they carry their parent too;
-        // `Darks` is unique on its own. Files in one folder share a label.
+        ]);
         assert_eq!(
-            labels,
-            ["night1/Lights", "night1/Lights", "night2/Lights", "Darks"]
+            names,
+            [
+                "night1/Lights/a.fit",
+                "night1/Lights/b.fit",
+                "night2/Lights/c.fit",
+                "night1/Darks/d.fit"
+            ]
+        );
+        // A file in the shared folder itself keeps its bare name; a common
+        // parent must match whole components (`/d/ab` is not under `/d/a`).
+        assert_eq!(
+            relative_names(&[p("/d/a/x.fit"), p("/d/top.fit"), p("/d/ab/y.fit")]),
+            ["a/x.fit", "top.fit", "ab/y.fit"]
+        );
+        assert_eq!(
+            relative_names(&[p("/x/b/a.fit"), p("/a.fit")]),
+            ["x/b/a.fit", "a.fit"]
         );
     }
 
     #[test]
-    fn folder_labels_cope_with_folders_of_different_depth_and_drive_roots() {
-        let p = |s: &str| PathBuf::from(s);
-        let labels = folder_labels(&[p("/x/b/a.fit"), p("/b/a.fit"), p("/a.fit")]).unwrap();
-        assert_eq!(labels, ["x/b", "b", "/"]);
+    fn relative_names_on_a_real_recursive_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("n1/Lights")).unwrap();
+        std::fs::create_dir_all(dir.path().join("n2/Lights")).unwrap();
+        let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-data");
+        for (src, dst) in [
+            ("uncompressed.fit", "n1/Lights/a.fit"),
+            ("compressed.fits.fz", "n2/Lights/b.fits.fz"),
+        ] {
+            std::fs::copy(data.join(src), dir.path().join(dst)).unwrap();
+        }
+        let paths = scan_directory_recursive(dir.path());
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            relative_names(&paths),
+            [
+                format!("n1{sep}Lights{sep}a.fit"),
+                format!("n2{sep}Lights{sep}b.fits.fz")
+            ]
+        );
     }
 
     #[test]
