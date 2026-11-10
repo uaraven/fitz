@@ -10,6 +10,7 @@ Fitz supports following operations on FITS files:
  - Split FITS file into separate per-channel R,G,B files, debayering if needed. 
  - Preview fits file in terminal window
  - Copy FITS header keywords from one file onto another
+ - Summarise a directory tree of images by observing session, frame type and filter
 
 Some of the operations (debayering, stretching, split into RGB, preview and headers) are supported also on RAW files from popular digital cameras. Fitz uses [libraw](https://www.libraw.org/) for reading the RAW files. 
 
@@ -39,7 +40,8 @@ When a command is given several input files, they are processed in parallel acro
  - `split` to debayer a FITS mosaic image (or split an already-debayered RGB image) and save each color channel as a separate FITS file;
  - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics, star metrics);
  - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using the best quality mode available. See [Preview section](#preview) for more details.
- - `copy-header` to copy FITS header keywords from a source file onto a target file, filling in only what the target doesn't already have.
+ - `copy-header` to copy FITS header keywords from a source file onto a target file, filling in only what the target doesn't already have;
+ - `summary` to scan directories and report their images grouped by observing session, frame type and filter, with frame counts and integration times. See [Summary section](#summary).
 
  Use `--help` parameter with any command to see more options.
 
@@ -305,4 +307,48 @@ Options:
   -v, --verbose          Print each file being processed
   -j, --jobs <JOBS>      Number of files to process in parallel (default: number of CPU cores)
   -h, --help             Print help
+```
+
+### summary
+
+Scans one or more directories recursively (a directory's path is printed above its report when several are given) and groups every FITS and camera RAW image in them by **observing session**, **frame type** and **filter**, reporting the number of frames and the total exposure (integration) time of each group.
+
+ - **Frame type** comes from the folder names. Starting at the image's own folder and moving up one level at a time (up to and including the scanned directory itself), the first folder whose name is a known type decides it: `lights`, `darks`, `biases`, `flats` or `darkflats`, singular or plural, in any case (`Lights`, `DARK`, `bias`, …). An image with no such folder above it is treated as a light.
+ - **Filter** is read from the `FILTER` header. Frames without one, including all camera RAW frames, are listed as `(no filter)`.
+ - **Session** is one observing night. It is taken from the frame's timestamp (`DATE-LOC`, otherwise `DATE-OBS`; for RAW files the EXIF capture time), cut at noon so a night that crosses midnight stays together. Frames with no readable timestamp are collected in an `unknown date` session.
+ - Integration time is the sum of `EXPTIME`. Each session is reported with its **light** integration; below it, one line counts the frames of every type in the session, and the light frames are broken down by filter, in the order L, R, G, B, Ha, SII, OIII, then any other filters alphabetically and frames without a filter last. Calibration frames (darks, biases, flats, dark flats) are counted but not broken down. The `Total:` line sums the light frames and their integration time over all sessions.
+
+Files with a `.tif` extension are not scanned. An image that cannot be read is reported on stderr (`fitz: <path>: <error>`) and left out of the report, and the exit code is non-zero.
+
+_Note_ that the night boundary assumes local time. A frame that only has a UTC `DATE-OBS` (no `DATE-LOC`) can have one night split into two sessions when the observing site is far from UTC, for example 20:00-05:00 local time at UTC-8. Capture software such as NINA writes `DATE-LOC`, and RAW files use the camera's local clock, so this mostly affects files from other sources.
+
+```
+Session 2026-10-08 - 5h 49m 00s light integration
+    86 light frames, 20 dark frames, 30 flat frames
+  Lights  86 frames  5h 49m 00s
+    R      9 frames  0h 18m 00s
+    G      9 frames  0h 18m 00s
+    B      9 frames  0h 18m 00s
+    Ha    18 frames  1h 30m 00s
+    SII   22 frames  1h 50m 00s
+    OIII  19 frames  1h 35m 00s
+Session 2026-10-09 - 7h 40m 00s light integration
+    92 light frames
+  Lights  92 frames  7h 40m 00s
+    Ha    32 frames  2h 40m 00s
+    SII   32 frames  2h 40m 00s
+    OIII  28 frames  2h 20m 00s
+Total: 2 sessions, 178 light frames, total integration 13h 29m 00s
+```
+
+```
+Usage: fitz summary [OPTIONS] <DIRS>...
+
+Arguments:
+  <DIRS>...  Directories to scan recursively for FITS and camera RAW images
+
+Options:
+  -v, --verbose      Print each file being processed
+  -j, --jobs <JOBS>  Number of files to process in parallel (default: number of CPU cores)
+  -h, --help         Print help
 ```

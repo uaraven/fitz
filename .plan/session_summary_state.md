@@ -2,7 +2,7 @@
 
 Plan: [session_summary.md](session_summary.md). Update this file after every completed step: check the box, and add any implementation detail a later step needs under that phase's **Notes**. Run `cargo test --workspace` before checking a step off.
 
-Status: Phase 0 implemented (0a/0b committed; 0c–0e written, not yet committed). Next: Phase 1.
+Status: Phase 0 committed. Phase 1 implemented, not yet committed. Next: Phase 2.
 
 Revision: scanning logic changed — every image in every folder is scanned; frame type comes from the nearest known ancestor folder name (default Light); filter and date come from headers/EXIF; a session is an observation night (noon cutoff), no longer a directory with a lights folder.
 
@@ -37,6 +37,7 @@ Revision: scanning logic changed — every image in every folder is scanned; fra
   - Time is `DATE-LOC` else `DATE-OBS`; an unparseable `DATE-LOC` falls back to `DATE-OBS`. A bare-date value does not parse and gives an unknown-date frame. `EXPTIME <= 0` or missing counts as 0.
   - Symlinked dirs are not followed; symlinked files are scanned. Unreadable subfolders are skipped silently (same as fitsmith's `scan_directory`).
   - **Known limitation (decided to leave as is):** the noon cutoff assumes local time. Frames with only a UTC `DATE-OBS` and no `DATE-LOC` can have a night split in two in timezones far from UTC (e.g. 20:00–05:00 at UTC−8). NINA writes `DATE-LOC`; RAW EXIF times are camera-local. Mention this in the `fitz summary` readme section (Phase 1d).
+  - **Filter order** (in `libfitz`, so the GUI gets it too): L, R, G, B, Ha, SII, OIII (names matched exactly but ignoring case, so `Ha 7nm` is *not* `Ha`), then every other filter alphabetically ignoring case, then frames without a filter. Implemented as the `(filter_rank, lowercase name, name)` key of the grouping map in `summarize_dir`.
   - Session and Summary `integration` are light-only; their `count` covers all types. `start`/`end` span all types.
   - Test helper: `test_support::write_frame_fits(path, filter, exptime, date_loc, date_obs)`; in `session.rs` tests the local `frame(root, rel, ...)` also creates folders.
   - For the CLI (Phase 1): the types are `Debug + Clone`; `Summary.errors` holds `(path, "{e:#}")` for `stderr`; `summarize_dir` fails only when `root` is not a directory.
@@ -44,15 +45,20 @@ Revision: scanning logic changed — every image in every folder is scanned; fra
 
 ## Phase 1 — fitz summary
 
-- [ ] 1a. `fitz-cli/src/session_summary.rs`: `format_summary` + print wrapper
-- [ ] 1b. `main.rs`: `Summary(SummaryArgs)` variant, `run_summary`, errors to stderr, FAILURE handling, "no images found" message
-- [ ] 1c. Tests: golden `format_summary`, end-to-end over a temp tree with FITS + `comet.ARW`, clap parse test
-- [ ] 1d. Docs: `fitz-cli/readme.md` (`### summary`, intro and COMMAND lists) and `CLAUDE.md` layout
-- [ ] 1e. Manual run against a scratchpad tree; cross-check numbers with `fitz info`
-- [ ] 1. `cargo test --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt` clean
+- [x] 1a. `fitz-cli/src/session_summary.rs`: `format_summary` + print wrapper
+- [x] 1b. `main.rs`: `Summary(SummaryArgs)` variant, `run_summary`, errors to stderr, FAILURE handling, "no images found" message
+- [x] 1c. Tests: golden `format_summary`, end-to-end over a temp tree with FITS + `comet.ARW`, clap parse test
+- [x] 1d. Docs: `fitz-cli/readme.md` (`### summary`, intro and COMMAND lists) and `CLAUDE.md` layout
+- [x] 1e. Manual run against a scratchpad tree; cross-check numbers with `fitz info`
+- [x] 1. `cargo test --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt` clean
 
 ### Phase 1 notes
-_(none yet)_
+- `fitz summary <DIRS>...` (dirs required by clap). `run_summary` loops the dirs, prints a blank line between reports, reports a dir error as `fitz: <dir>: <err>` and continues; exit code FAILURE if any dir failed, any image was unreadable, or a dir held no images (`fitz: no images found in <dir>` on stderr).
+- `fitz-cli/src/session_summary.rs`: `summary_dir(dir, show_dir, verbose) -> Result<bool>` (prints; `verbose` prints a "scanning" step) and the pure `format_summary(&Summary) -> String`. Report (user-specified template): per session `Session <label> - <light integration> light integration`, a `    X light frames, Y dark frames, …` line (every type present), then a `Lights` row and one row per filter for the **light frames only** (calibration frames are counted in that line, not broken down), with columns aligned across the whole report; closing `Total: N sessions, M light frames, total integration …` (lights only). No start/end time and no root line in `format_summary`; `summary_dir(dir, show_dir, verbose)` prints `<dir>:` above the report only when several dirs are given. The `libfitz` not-a-directory error is now just `not a directory` so the CLI's `fitz: <path>: <err>` form does not repeat the path.
+- CLI `test_support.rs` gained `write_frame_fits(path, filter, exptime, date_loc)`; tests: golden report, empty summary, end-to-end over a temp tree with FITS + real `comet.ARW`, error/empty-dir cases, and clap parse tests in `main.rs`.
+- Docs done: `fitz-cli/readme.md` (intro, COMMAND list, `### summary` with the `.tif` skip and the local-time limitation) and `CLAUDE.md` (libfitz `files`/`loader`/`session`, CLI `session_summary.rs`). No `fitsmith` docs yet (Phase 2).
+- Manual run (scratch tree of symlinks to `test-data/`: `Lights/Ha/{good1,good2}.fits`, `Lights/u.fit`, `DARKS/comet.ARW`, `Flats/rgb.fits`, `misc/cfa_orion.fits`): sessions split by night, `DARKS` → Darks with `(no filter)` for the RAW frame, unfoldered `misc/` image defaulted to Light, and the two `good*.fits` frames summed to 10 min matching `fitz info` (300 s each, `HaOIII 7nm`). Symlinked files are scanned.
+- Verified: `cargo clippy --workspace --all-targets` clean; `cargo test --workspace` passes (fitsmith 114, fitz 113, libfitz 200, doc-test 1).
 
 ## Phase 2 — fitsmith (detail the steps after Phase 1)
 
