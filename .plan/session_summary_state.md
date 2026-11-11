@@ -62,9 +62,10 @@ Revision: scanning logic changed — every image in every folder is scanned; fra
 
 ## Phase 2 — fitsmith (detail the steps after Phase 1)
 
+- [x] 2-pre. File ▸ Open Folder: recursive add (see Phase 2 notes)
 - [ ] 2a. Detail the Phase 2 steps (menu item, `controller/sessions.rs`, session panel, group checkboxes via `set_checked_paths`, add to working set)
 - [ ] 2b. Implement and test
 - [ ] 2c. Docs: `fitsmith/readme.md` Features, `CLAUDE.md` layout
 
 ### Phase 2 notes
-_(none yet)_
+- **Open Folder recursion:** `rfd::FileDialog` has no way to embed a checkbox, so `controller::open_directory` asks a native `rfd::MessageDialog` (Yes = include subfolders, No = this folder only, Cancel = abandon the open) right after the folder pick — only when the folder has direct subfolders (`files::has_subdirectories`). Recursive scan is `files::scan_directory_recursive` = `libfitz::files::find_images(dir, &[])`; the session scan's walker moved there too (`session::scan_images` passes `SKIPPED_EXTENSIONS`), so `.tif` is still skipped by sessions but included by Open Folder, as in the flat scan. Command-line directory args stay non-recursive. Custom button labels (Windows-only in rfd) not used.

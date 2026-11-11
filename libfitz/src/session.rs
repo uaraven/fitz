@@ -22,7 +22,7 @@
 //! report integration for light frames only, the figure that matters for an
 //! astrophoto; their frame counts cover every type.
 
-use crate::files::{has_extension, is_openable_image};
+use crate::files::find_images;
 use crate::fits_file::parse_date_obs;
 use crate::keywords::{DATE_LOC, DATE_OBS, EXPTIME, FILTER};
 use crate::loader::load_header_from_file;
@@ -319,37 +319,13 @@ fn folder_type(dir: &Path) -> Option<FrameType> {
 /// are skipped; symlinked folders are not followed (so a link cannot loop).
 pub fn scan_images(root: &Path) -> Vec<ScannedImage> {
     let root_type = folder_type(root);
-    let mut paths = Vec::new();
-    collect_images(root, &mut paths);
-    paths
+    find_images(root, SKIPPED_EXTENSIONS)
         .into_iter()
         .map(|path| ScannedImage {
             frame_type: frame_type_in(&path, root, root_type),
             path,
         })
         .collect()
-}
-
-fn collect_images(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            collect_images(&path, out);
-        } else if (file_type.is_file() || (file_type.is_symlink() && path.is_file()))
-            && is_openable_image(&path)
-            && !has_extension(&path, SKIPPED_EXTENSIONS)
-        {
-            out.push(path);
-        }
-    }
 }
 
 /// Scan every image under `root` (see the module docs) and group it into

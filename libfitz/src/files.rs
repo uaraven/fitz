@@ -1,8 +1,8 @@
 //! Recognising the image files the tools can open: FITS (including
-//! tile-compressed `.fz`) and camera RAW. Pure path logic — nothing here
-//! touches the file system or decodes a file.
+//! tile-compressed `.fz`) and camera RAW. The predicates are pure path logic;
+//! [`find_images`] walks a folder tree but never opens or decodes a file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Extensions treated as openable FITS images (`.fz` is a tile-compressed
 /// FITS, transparently decompressed on read).
@@ -37,6 +37,39 @@ pub fn is_raw_image(path: &Path) -> bool {
 /// Whether `path` is a FITS or RAW image we can open.
 pub fn is_openable_image(path: &Path) -> bool {
     is_fits_path(path) || is_raw_image(path)
+}
+
+/// Every openable image anywhere under `dir`, depth-first with the entries of
+/// each folder in name order. No file is opened. Images whose extension is in
+/// `skip_extensions` are left out. Folders that cannot be read are skipped;
+/// symlinked folders are not followed (so a link cannot loop), symlinked files
+/// are.
+pub fn find_images(dir: &Path, skip_extensions: &[&str]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_images(dir, skip_extensions, &mut out);
+    out
+}
+
+fn collect_images(dir: &Path, skip_extensions: &[&str], out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_images(&path, skip_extensions, out);
+        } else if (file_type.is_file() || (file_type.is_symlink() && path.is_file()))
+            && is_openable_image(&path)
+            && !has_extension(&path, skip_extensions)
+        {
+            out.push(path);
+        }
+    }
 }
 
 /// macOS litters non-native volumes with AppleDouble `._name` companions that
@@ -82,6 +115,33 @@ mod tests {
         assert!(is_openable_image(Path::new("a.fits")));
         assert!(is_openable_image(Path::new("a.nef")));
         assert!(!is_openable_image(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn find_images_walks_subfolders_in_name_order_and_honours_the_skip_list() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        for rel in ["b.fit", "a/z.fits", "a/y.tif", "a/deep/x.fz", "c/notes.txt"] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"x").unwrap();
+        }
+        let rel = |paths: Vec<PathBuf>| -> Vec<String> {
+            paths
+                .iter()
+                .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+                .collect()
+        };
+
+        assert_eq!(
+            rel(find_images(root, &[])),
+            ["a/deep/x.fz", "a/y.tif", "a/z.fits", "b.fit"]
+        );
+        assert_eq!(
+            rel(find_images(root, &["TIF"])),
+            ["a/deep/x.fz", "a/z.fits", "b.fit"]
+        );
+        assert!(find_images(&root.join("missing"), &[]).is_empty());
     }
 
     #[cfg(target_os = "macos")]

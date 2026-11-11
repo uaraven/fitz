@@ -69,7 +69,9 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
   `image_to_fits`, `export_as_tiff`, the header-only `load_header` -> `ImageMeta` fast path, and
   `find_image_hdu_index`.
 - **`files.rs`** — pure path predicates for openable images (`is_fits_path`, `is_raw_image`,
-  `is_openable_image`, the `FITS_EXTENSIONS`/`RAW_EXTENSIONS` lists); fitsmith re-exports them.
+  `is_openable_image`, the `FITS_EXTENSIONS`/`RAW_EXTENSIONS` lists) and `find_images`, the
+  recursive folder walk shared by the session scan and fitsmith's "include subfolders" open;
+  fitsmith re-exports the predicates.
 - **`loader.rs`** / **`raw_file.rs`** — `load_image_from_file` (FITS or camera RAW via LibRaw) and
   its header-only counterpart `load_header_from_file`, which returns one FITS-style `Header`
   for either format (a RAW file's EXIF is translated to `DATE-OBS`/`EXPTIME`/… by
@@ -178,7 +180,8 @@ side, split by concern:
   geometry (one line per channel: 1 for a star metric or a single-channel pixel source, 3
   R/G/B for an already-debayered RGB source) → the on-screen chart and its colored SVG
   export.
-- **`files.rs`** — pure path helpers (FITS extensions, directory scan, output paths).
+- **`files.rs`** — pure path helpers (FITS extensions, flat and recursive directory scan,
+  output paths).
 - **`image.rs`** — the one RGBA8-buffer → `slint::Image` conversion point.
 
 ### Conventions that span files
