@@ -25,9 +25,13 @@ use crate::raw_fits::{CompressionSettings, load_raw_with_compression, save_raw};
 /// (row 0 is the first row stored in the file).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CropRect {
+    /// Column of the left edge.
     pub x: usize,
+    /// Row of the top edge.
     pub y: usize,
+    /// Pixels across.
     pub width: usize,
+    /// Pixels down.
     pub height: usize,
 }
 

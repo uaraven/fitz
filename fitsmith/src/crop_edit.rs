@@ -16,11 +16,17 @@ const MIN_SIZE: f32 = 8.0;
 
 /// Mouse-cursor codes understood by the window's `crop-cursor` property.
 pub mod cursor {
+    /// Outside the rectangle: a drag draws a new one.
     pub const CROSSHAIR: i32 = 1;
+    /// Inside the rectangle: a drag moves it.
     pub const MOVE: i32 = 2;
+    /// Top and bottom sides.
     pub const NS_RESIZE: i32 = 3;
+    /// Left and right sides.
     pub const EW_RESIZE: i32 = 4;
+    /// Top-left and bottom-right corners.
     pub const NWSE_RESIZE: i32 = 5;
+    /// Top-right and bottom-left corners.
     pub const NESW_RESIZE: i32 = 6;
 }
 
@@ -50,14 +56,21 @@ pub fn aspect_for_index(index: i32) -> Option<f32> {
         .map(|(w, h)| w / h)
 }
 
+/// The crop rectangle in image pixels (fractional while being dragged).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
+    /// Left edge.
     pub x: f32,
+    /// Top edge.
     pub y: f32,
+    /// Width.
     pub w: f32,
+    /// Height.
     pub h: f32,
 }
 
+/// A grab point on the rectangle's border: the four sides (N, S, E, W) and four
+/// corners.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {
     N,
@@ -84,12 +97,16 @@ impl Handle {
 /// What lies under a point, relative to the rectangle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
+    /// On a side or corner: a drag resizes.
     Handle(Handle),
+    /// In the interior: a drag moves.
     Inside,
+    /// Anywhere else: a drag starts a new rectangle.
     Outside,
 }
 
 impl Hit {
+    /// The cursor code (see [`cursor`]) for a gesture started here.
     pub fn cursor(self) -> i32 {
         match self {
             Hit::Handle(h) => h.cursor(),
@@ -130,10 +147,12 @@ pub struct CropEditor {
 }
 
 impl CropEditor {
+    /// The current rectangle, if one is drawn.
     pub fn rect(&self) -> Option<Rect> {
         self.rect
     }
 
+    /// Discard the rectangle and abandon any gesture in progress.
     pub fn clear(&mut self) {
         self.rect = None;
         self.drag = None;
@@ -234,6 +253,8 @@ impl CropEditor {
         Hit::Handle(handle)
     }
 
+    /// Whether a gesture is in progress (between [`press`](Self::press) and
+    /// [`release`](Self::release)).
     pub fn dragging(&self) -> bool {
         self.drag.is_some()
     }
