@@ -407,6 +407,33 @@ mod tests {
     }
 
     #[test]
+    fn shift_wcs_moves_every_crpix_form_and_nothing_else() {
+        let mut header = Header::new();
+        header.set("CRPIX1", HeaderValue::Integer(100), None);
+        header.set("CRPIX2", HeaderValue::Float(50.5), None);
+        header.set("CRPIX1A", HeaderValue::Float(10.0), None);
+        header.set("CRPIX2B", HeaderValue::Float(20.0), None);
+        header.set("CRPIX3", HeaderValue::Float(7.0), None);
+        header.set("CRVAL1", HeaderValue::Float(83.8), None);
+        header.set("CRPIXELS", HeaderValue::String("kept".into()), None);
+
+        shift_wcs(&mut header, rect(30, 20, 10, 10));
+
+        // The card keeps its Integer / Float type.
+        assert_eq!(
+            header.find("CRPIX1").unwrap().value,
+            Some(HeaderValue::Integer(70))
+        );
+        assert_eq!(header.get_float("CRPIX2"), Some(30.5));
+        assert_eq!(header.get_float("CRPIX1A"), Some(-20.0));
+        assert_eq!(header.get_float("CRPIX2B"), Some(0.0));
+        // Other axes, other WCS cards and look-alike names are left alone.
+        assert_eq!(header.get_float("CRPIX3"), Some(7.0));
+        assert_eq!(header.get_float("CRVAL1"), Some(83.8));
+        assert_eq!(header.get_string("CRPIXELS"), Some("kept"));
+    }
+
+    #[test]
     fn validate_survives_rectangles_that_would_overflow() {
         assert!(rect(usize::MAX, 0, 2, 2).validate(10, 10).is_err());
         assert!(rect(0, usize::MAX - 1, 2, 2).validate(10, 10).is_err());
@@ -443,6 +470,15 @@ mod tests {
         let rgb = load_fits(&test_data("rgb.fits")).unwrap();
         let (cropped, used) = rgb.crop(rect(5, 9, 40, 30)).unwrap();
         assert_eq!(used, rect(5, 9, 40, 30));
+        // The Image path moves the WCS reference pixel too.
+        assert_eq!(
+            cropped.header.get_float("CRPIX1"),
+            Some(rgb.header.get_float("CRPIX1").unwrap() - 5.0)
+        );
+        assert_eq!(
+            cropped.header.get_float("CRPIX2"),
+            Some(rgb.header.get_float("CRPIX2").unwrap() - 9.0)
+        );
         assert_eq!((cropped.width, cropped.height), (40, 30));
         let (PixelBuffer::F32(s), PixelBuffer::F32(o)) = (&rgb.pixels, &cropped.pixels) else {
             panic!("rgb.fits should load as f32")
@@ -478,6 +514,8 @@ mod tests {
 
         let cropped = load_fits(&out).unwrap();
         assert_eq!((cropped.width, cropped.height), (600, 400));
+        assert!(cropped.header.keywords.iter().any(|k| k.name == "HISTORY"
+            && k.comment.as_deref() == Some("cropped to 600x400 at (100, 50)")));
         assert!(matches!(
             cropped.image_type,
             ImageType::CFA(_) | ImageType::XTrans(_)
