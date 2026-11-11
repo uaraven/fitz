@@ -7,6 +7,7 @@
 pub use fitskit;
 
 pub mod copy_header;
+pub mod crop;
 pub mod debayer;
 pub mod inspect;
 pub mod preview;

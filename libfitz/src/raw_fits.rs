@@ -24,11 +24,19 @@ fn copy_pixel_scaling(dest: &mut Header, src: &Header) {
 
 /// Loads the FitsFile uncompressing it if necessary
 pub fn load_raw(source: &Path) -> anyhow::Result<FitsFile> {
+    Ok(load_raw_with_compression(source)?.0)
+}
+
+/// Like [`load_raw`], but also reports how the image HDU was stored on disk,
+/// so a caller that rewrites the file can keep its compression
+/// ([`CompressionSettings::NoCompression`] for a plain image).
+pub fn load_raw_with_compression(source: &Path) -> anyhow::Result<(FitsFile, CompressionSettings)> {
     let ff = FitsFile::from_file(source)?;
     let hdu_idx = find_image_hdu_index(&ff)
         .ok_or_else(|| anyhow!("No image data found in {}", source.display()))?;
     let compressed_hdu = &ff.hdus[hdu_idx];
     if let Some(cimg) = compressed_hdu.as_compressed_image() {
+        let settings = stored_compression(cimg.compression());
         let image = cimg.decompress()?;
         let mut u_hdu = Hdu::primary_image(image);
         copy_missing_metadata(
@@ -37,9 +45,9 @@ pub fn load_raw(source: &Path) -> anyhow::Result<FitsFile> {
             COMPRESSION_KEYWORDS,
         );
         copy_pixel_scaling(&mut u_hdu.header, &compressed_hdu.header);
-        Ok(FitsFile { hdus: vec![u_hdu] })
+        Ok((FitsFile { hdus: vec![u_hdu] }, settings))
     } else {
-        Ok(ff)
+        Ok((ff, CompressionSettings::NoCompression))
     }
 }
 
@@ -69,6 +77,9 @@ pub enum CompressionSettings {
     Rice1,
     Gzip1,
     Gzip2,
+    /// `GZIP_1` without float quantization: a float image is stored exactly.
+    /// (The other codecs quantize floats, which changes their values.)
+    GzipLossless,
 }
 
 /// Map a `fitskit` compression algorithm onto the [`CompressionSettings`]
@@ -80,6 +91,16 @@ pub fn compression_settings_for(algorithm: CompressionType) -> CompressionSettin
         CompressionType::Gzip1 => CompressionSettings::Gzip1,
         CompressionType::Gzip2 => CompressionSettings::Gzip2,
         _ => CompressionSettings::NoCompression,
+    }
+}
+
+/// The settings that reproduce how a tile-compressed file was stored. An
+/// algorithm this crate cannot encode (Hcompress, PLIO) falls back to Rice, so
+/// a tile-compressed file is never silently rewritten as a plain one.
+fn stored_compression(algorithm: CompressionType) -> CompressionSettings {
+    match compression_settings_for(algorithm) {
+        CompressionSettings::NoCompression => CompressionSettings::Rice1,
+        settings => settings,
     }
 }
 
@@ -121,6 +142,14 @@ pub fn save_raw(
                 dither_seed: Some(1),
                 blocksize: 32,
             },
+            CompressionSettings::GzipLossless => CompressOptions {
+                algorithm: CompressionType::Gzip1,
+                tile: None,
+                quantize: None,
+                dither: Quantize::SubtractiveDither1,
+                dither_seed: None,
+                blocksize: 32,
+            },
             _ => unreachable!(),
         };
         let mut compressed_fits = FitsFile::with_empty_primary();
@@ -157,6 +186,64 @@ mod tests {
         let compressed = tmp.path().join(name);
         save_raw(&loaded, &compressed, CompressionSettings::Rice1).unwrap();
         compressed
+    }
+
+    #[test]
+    fn a_tile_compressed_file_is_never_reported_as_plain() {
+        for algorithm in [
+            CompressionType::Rice1,
+            CompressionType::Gzip1,
+            CompressionType::Gzip2,
+            CompressionType::Hcompress1,
+            CompressionType::Plio1,
+            CompressionType::NoCompress,
+        ] {
+            assert!(
+                !matches!(
+                    stored_compression(algorithm),
+                    CompressionSettings::NoCompression
+                ),
+                "{algorithm:?}"
+            );
+        }
+        // Encodable algorithms are reproduced as they were.
+        assert!(matches!(
+            stored_compression(CompressionType::Gzip2),
+            CompressionSettings::Gzip2
+        ));
+    }
+
+    #[test]
+    fn lossless_gzip_stores_floats_exactly_where_the_others_quantize() {
+        let tmp = TempDir::new().unwrap();
+        // Values that no 4-sigma quantization step can reproduce exactly.
+        let pixels: Vec<f32> = (0..64 * 64)
+            .map(|i| (i as f32 * 0.123_456_79).sin() * 0.987_654_3)
+            .collect();
+        let image = ImageData::new(vec![64, 64], PixelData::F32(pixels.clone()));
+        let fits = FitsFile::with_primary_image(image);
+
+        let read_back = |settings: CompressionSettings, name: &str| {
+            let path = tmp.path().join(name);
+            save_raw(&fits, &path, settings).unwrap();
+            let loaded = load_raw(&path).unwrap();
+            let HduData::Image(img) = &loaded.hdus[0].data else {
+                panic!("not an image")
+            };
+            let PixelData::F32(v) = &img.pixels else {
+                panic!("not f32")
+            };
+            v.clone()
+        };
+        assert_eq!(
+            read_back(CompressionSettings::GzipLossless, "exact.fits.fz"),
+            pixels
+        );
+        assert_ne!(
+            read_back(CompressionSettings::Gzip1, "quantized.fits.fz"),
+            pixels,
+            "the quantizing codec would not have kept these exactly"
+        );
     }
 
     #[test]

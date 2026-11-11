@@ -3,18 +3,18 @@
 //! through `libfitz`.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use libfitz::fitskit::CompressionType;
 use slint::{ComponentHandle, Model, Weak};
 
 use crate::AppWindow;
-use crate::files::{compressed_output_path, decompressed_output_path, display_name, is_compressed};
+use crate::files::{compressed_output_path, decompressed_output_path, is_compressed};
 
+use super::batch::{Overlay, spawn_batch};
 use super::{
-    STATE, algorithm_for_index, batch_is_current, begin_file_batch, make_row, operation_targets,
-    raise_batch_cancel, require_existing_dir, set_row_status, spawn_header_load, update_memory,
+    STATE, algorithm_for_index, make_row, operation_targets, raise_batch_cancel,
+    require_existing_dir, spawn_header_load, update_memory,
 };
 
 /// The two file operations the Tools menu drives. `Compress` carries the
@@ -141,10 +141,9 @@ pub fn cancel_convert(app: &AppWindow) {
     app.set_status_text("Canceling…".into());
 }
 
-/// Run a compress/decompress batch on a worker thread behind the cancellable
-/// progress overlay, marshaling each result back to the UI thread — a replaced
-/// file updates its working-set row in place, a failed one is badged with the
-/// error, and a cancel stops the batch between files.
+/// Run a compress/decompress batch behind the cancellable progress overlay. A
+/// replaced file updates its working-set row in place, a failed one is badged
+/// with the error, and a cancel stops the batch between files.
 fn spawn_operation(
     weak: Weak<AppWindow>,
     op: Operation,
@@ -152,74 +151,33 @@ fn spawn_operation(
     output_dir: Option<PathBuf>,
     keep: bool,
 ) {
-    let (generation, cancel) = begin_file_batch();
-    let _ = weak.upgrade_in_event_loop(move |app| {
-        app.set_convert_title(format!("{}…", op.progressive()).into());
-        app.set_convert_in_progress(true);
-        app.set_convert_progress(0.0);
-        app.set_convert_progress_text("".into());
-        app.set_convert_progress_detail("".into());
-        app.set_busy(true);
-        app.set_stage_text("".into());
-    });
-    std::thread::spawn(move || {
-        let total = targets.len();
-        let mut ok = 0usize;
-        let mut failed = 0usize;
-        let mut canceled = false;
-        for (i, input) in targets.into_iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                canceled = true;
-                break;
-            }
-            let progress = i as f32 / total as f32;
-            let text = display_name(&input);
-            let detail = format!("{}/{}", i + 1, total);
-            let weak_progress = weak.clone();
-            let _ = weak_progress.upgrade_in_event_loop(move |app| {
-                app.set_convert_progress(progress);
-                app.set_convert_progress_text(text.into());
-                app.set_convert_progress_detail(detail.into());
-            });
-
-            match process_one(op, &input, output_dir.as_deref(), keep) {
-                Ok(new_path) => {
-                    ok += 1;
-                    // In replace mode (source removed) the working-set entry now
-                    // points at the new file; refresh its row on the UI thread.
-                    if !keep {
-                        let _ = weak.upgrade_in_event_loop(move |app| {
-                            replace_working_path(&app, &input, &new_path);
-                        });
-                    }
-                }
-                Err(e) => {
-                    failed += 1;
-                    let msg = e.to_string();
-                    let _ = weak.upgrade_in_event_loop(move |_app| {
-                        set_row_status(&input, "error", &msg);
-                    });
+    spawn_batch(
+        weak,
+        Overlay::Convert,
+        format!("{}…", op.progressive()),
+        targets,
+        move |input| process_one(op, input, output_dir.as_deref(), keep),
+        move |app, run, current| {
+            // In replace mode (source removed) the working-set entry now points
+            // at the new file.
+            if !keep {
+                for (input, new_path) in &run.done {
+                    replace_working_path(app, input, new_path);
                 }
             }
-        }
-        let _ = weak.upgrade_in_event_loop(move |app| {
-            // A later batch owns the UI now; leave its overlay and status alone.
-            if !batch_is_current(generation) {
+            if !current {
                 return;
             }
-            app.set_convert_in_progress(false);
-            app.set_convert_progress(1.0);
-            app.set_busy(false);
-            app.set_stage_text("".into());
-            let summary = if canceled {
+            let (ok, failed) = (run.done.len(), run.failed);
+            let summary = if run.canceled {
                 format!("{} canceled — {ok} done, {failed} failed", op.past())
             } else {
                 format!("{} {ok} file(s), {failed} failed", op.past())
             };
             app.set_status_text(summary.into());
-            update_memory(&app);
-        });
-    });
+            update_memory(app);
+        },
+    );
 }
 
 /// Compress or decompress one file: derive its output path, do the work via

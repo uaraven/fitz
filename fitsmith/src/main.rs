@@ -14,6 +14,7 @@ mod cache;
 mod chart;
 mod chart_svg;
 mod controller;
+mod crop_edit;
 mod doc;
 mod files;
 mod image;
@@ -122,6 +123,17 @@ fn main() -> Result<()> {
     forward!(on_run_compress, |app| controller::run_compress(&app));
     forward!(on_run_decompress, |app| controller::run_decompress(&app));
     forward!(on_cancel_convert, |app| controller::cancel_convert(&app));
+    forward!(on_crop_mode_changed, |app| controller::crop_mode_changed(
+        &app
+    ));
+    forward!(on_crop_aspect_changed, |app| {
+        controller::crop_aspect_changed(&app)
+    });
+    forward!(on_crop_pointer, |app, kind, x, y, tol| {
+        controller::crop_pointer(&app, kind, x, y, tol)
+    });
+    forward!(on_run_crop, |app| controller::run_crop(&app));
+    forward!(on_confirm_crop, |app| controller::confirm_crop(&app));
     forward!(on_open_export_dialog, |app| controller::open_export_dialog(
         &app
     ));

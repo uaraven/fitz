@@ -1,0 +1,71 @@
+import { Button, ComboBox, LineEdit, Switch } from "std-widgets.slint";
+import { AppPalette } from "palette.slint";
+
+// The panel that replaces the stats / info panel while Tools ▸ Crop is on: the
+// rectangle's aspect ratio, whether to overwrite the originals or write copies
+// with a file-name suffix, and the Crop / Cancel buttons. The rectangle itself
+// is drawn and edited on the preview (see `ImageView`).
+export component CropToolbar inherits Rectangle {
+    // Index into the aspect-ratio list (0 = free-form); Rust maps it to a ratio.
+    in-out property <int> aspect-index: 0;
+    in-out property <bool> overwrite: false;
+    in-out property <string> suffix: "_cropped";
+    // Whether a rectangle is currently drawn — Crop needs one.
+    in property <bool> has-rect: false;
+
+    callback crop();
+    callback cancel();
+
+    height: 64px;
+    background: AppPalette.panel-bg;
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 12px;
+        alignment: start;
+
+        Text {
+            text: "Aspect";
+            color: AppPalette.panel-title;
+            vertical-alignment: center;
+        }
+        ComboBox {
+            model: ["Free", "1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16", "16:10", "10:16"];
+            current-index <=> root.aspect-index;
+            width: 100px;
+        }
+        Switch {
+            text: "Overwrite originals";
+            checked <=> root.overwrite;
+        }
+        // Names the copies. Overwriting replaces FITS files in place but still
+        // writes camera RAW files out as new `.fits` copies, so it stays editable.
+        Text {
+            text: "Suffix";
+            color: AppPalette.panel-title;
+            vertical-alignment: center;
+        }
+        LineEdit {
+            text <=> root.suffix;
+            placeholder-text: "_cropped";
+            width: 140px;
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        Button {
+            text: "Crop";
+            primary: true;
+            enabled: root.has-rect;
+            clicked => {
+                root.crop();
+            }
+        }
+        Button {
+            text: "Cancel";
+            clicked => {
+                root.cancel();
+            }
+        }
+    }
+}
