@@ -3,19 +3,16 @@
 //! and encodes it to the chosen format.
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 
 use libfitz::export::{ExportFormat, FitsOptions, TiffOptions};
 use slint::{ComponentHandle, Weak};
 
 use crate::AppWindow;
-use crate::files::{display_name, export_output_path};
+use crate::files::export_output_path;
 
+use super::batch::{Overlay, spawn_batch};
 use super::viewer::apply_pipeline;
-use super::{
-    batch_is_current, begin_file_batch, operation_targets, raise_batch_cancel,
-    require_existing_dir, set_row_status, view_toggles,
-};
+use super::{operation_targets, raise_batch_cancel, require_existing_dir, view_toggles};
 
 /// Map a FITS bit-depth dialog index (the ComboBox order) to a `BITPIX`.
 /// Falls back to 16-bit integer for any out-of-range index.
@@ -152,10 +149,10 @@ fn export_one(
     image.export(output, format)
 }
 
-/// Run an export batch on a worker thread, rendering each file through the
-/// preview pipeline and encoding it to the chosen format in `dir`. Drives the
-/// cancellable modal progress overlay; a failed file is badged with its error
-/// but does not abort the batch, and a cancel stops the batch between files.
+/// Run an export batch, rendering each file through the preview pipeline and
+/// encoding it to the chosen format in `dir`, behind the cancellable modal
+/// progress overlay. A failed file is badged with its error but does not abort
+/// the batch, and a cancel stops the batch between files.
 fn spawn_export(
     weak: Weak<AppWindow>,
     targets: Vec<PathBuf>,
@@ -166,65 +163,28 @@ fn spawn_export(
     invert: bool,
 ) {
     let ext = export_extension(&format);
-    let (generation, cancel) = begin_file_batch();
-    let _ = weak.upgrade_in_event_loop(|app| {
-        app.set_export_in_progress(true);
-        app.set_export_progress(0.0);
-        app.set_export_progress_text("".into());
-        app.set_export_progress_detail("".into());
-        app.set_busy(true);
-        app.set_stage_text("".into());
-    });
-    std::thread::spawn(move || {
-        let total = targets.len();
-        let mut ok = 0usize;
-        let mut failed = 0usize;
-        let mut canceled = false;
-        for (i, input) in targets.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                canceled = true;
-                break;
-            }
-            let progress = i as f32 / total as f32;
-            let text = display_name(input);
-            let detail = format!("{}/{}", i + 1, total);
-            let weak_progress = weak.clone();
-            let _ = weak_progress.upgrade_in_event_loop(move |app| {
-                app.set_export_progress(progress);
-                app.set_export_progress_text(text.into());
-                app.set_export_progress_detail(detail.into());
-            });
-
+    spawn_batch(
+        weak,
+        Overlay::Export,
+        String::new(),
+        targets,
+        move |input| {
             let output = export_output_path(input, &dir, ext);
-            match export_one(input, &output, format, debayer, stretch, invert) {
-                Ok(()) => ok += 1,
-                Err(e) => {
-                    failed += 1;
-                    let input = input.clone();
-                    let msg = e.to_string();
-                    let _ = weak.upgrade_in_event_loop(move |_app| {
-                        set_row_status(&input, "error", &msg);
-                    });
-                }
-            }
-        }
-        let _ = weak.upgrade_in_event_loop(move |app| {
-            // A later batch owns the UI now; leave its overlay and status alone.
-            if !batch_is_current(generation) {
+            export_one(input, &output, format, debayer, stretch, invert)
+        },
+        |app, run, current| {
+            if !current {
                 return;
             }
-            app.set_export_in_progress(false);
-            app.set_export_progress(1.0);
-            app.set_busy(false);
-            app.set_stage_text("".into());
-            let summary = if canceled {
+            let (ok, failed) = (run.done.len(), run.failed);
+            let summary = if run.canceled {
                 format!("Export canceled — {ok} exported, {failed} failed")
             } else {
                 format!("Exported {ok} file(s), {failed} failed")
             };
             app.set_status_text(summary.into());
-        });
-    });
+        },
+    );
 }
 
 #[cfg(test)]

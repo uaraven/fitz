@@ -15,6 +15,8 @@
 //!   the checkbox selection, and the helpers the other submodules lean on
 //!   ([`operation_targets`], [`set_row_status`], [`algorithm_for_index`], …);
 //! - [`viewer`] — selecting, navigating, loading/rendering off-thread, and blink;
+//! - [`batch`] — the worker-thread skeleton the batches below share (progress overlay,
+//!   cancel between files, per-file error badges);
 //! - [`convert`] — the compress / decompress batch operations;
 //! - [`crop`] — Tools ▸ Crop: the crop rectangle on the preview and the batch that applies it;
 //! - [`export`] — the export dialog and its batch;
@@ -26,6 +28,7 @@
 
 mod analytics;
 mod bad_frames;
+mod batch;
 mod convert;
 mod crop;
 mod delete_files;

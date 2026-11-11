@@ -8,7 +8,6 @@
 //! the compress/decompress progress overlay.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 use anyhow::{Result, ensure};
 use libfitz::crop::CropRect;
@@ -18,12 +17,10 @@ use slint::{ComponentHandle, Weak};
 
 use crate::AppWindow;
 use crate::crop_edit::aspect_for_index;
-use crate::files::{cropped_output_path, cropping_temp_path, display_name};
+use crate::files::{cropped_output_path, cropping_temp_path};
 
-use super::{
-    STATE, batch_is_current, begin_file_batch, operation_targets, select_file, set_row_status,
-    spawn_header_load, update_memory,
-};
+use super::batch::{Overlay, spawn_batch};
+use super::{STATE, operation_targets, select_file, spawn_header_load, update_memory};
 
 /// The size of the frame on screen, in image pixels — the crop rectangle's
 /// bounds. Zero until a frame has been shown.
@@ -161,11 +158,10 @@ fn start_crop(app: &AppWindow, targets: Vec<PathBuf>) {
     );
 }
 
-/// Crop `targets` on a worker thread behind the cancellable progress overlay,
-/// marshaling each result back to the UI thread. A failed file is badged with
-/// its error; a cancel stops the batch between files. Every file written joins
-/// the working set (see [`register_outputs`]), and the crop mode ends once the
-/// batch is done.
+/// Crop `targets` behind the cancellable progress overlay. A failed file is
+/// badged with its error; a cancel stops the batch between files. Every file
+/// written joins the working set (see [`register_outputs`]), and the crop mode
+/// ends once the batch is done.
 fn spawn_crop(
     weak: Weak<AppWindow>,
     targets: Vec<PathBuf>,
@@ -173,67 +169,31 @@ fn spawn_crop(
     suffix: String,
     overwrite: bool,
 ) {
-    let (generation, cancel) = begin_file_batch();
-    let _ = weak.upgrade_in_event_loop(move |app| {
-        app.set_convert_title("Cropping…".into());
-        app.set_convert_in_progress(true);
-        app.set_convert_progress(0.0);
-        app.set_convert_progress_text("".into());
-        app.set_convert_progress_detail("".into());
-        app.set_busy(true);
-        app.set_stage_text("".into());
-    });
-    std::thread::spawn(move || {
-        let total = targets.len();
-        let mut ok = 0usize;
-        let mut failed = 0usize;
-        let mut snapped = false;
-        let mut overwritten = 0usize;
-        let mut written = Vec::new();
-        let mut canceled = false;
-        for (i, input) in targets.into_iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                canceled = true;
-                break;
-            }
-            let progress = i as f32 / total as f32;
-            let text = display_name(&input);
-            let detail = format!("{}/{}", i + 1, total);
-            let weak_progress = weak.clone();
-            let _ = weak_progress.upgrade_in_event_loop(move |app| {
-                app.set_convert_progress(progress);
-                app.set_convert_progress_text(text.into());
-                app.set_convert_progress_detail(detail.into());
-            });
-
-            match process_one(&input, rect, &suffix, overwrite) {
-                Ok((output, used)) => {
-                    ok += 1;
-                    snapped |= used != rect;
-                    overwritten += usize::from(output == input);
-                    written.push(output);
-                }
-                Err(e) => {
-                    failed += 1;
-                    let msg = format!("{e:#}");
-                    let _ = weak.upgrade_in_event_loop(move |_app| {
-                        set_row_status(&input, "error", &msg);
-                    });
-                }
-            }
-        }
-        let _ = weak.upgrade_in_event_loop(move |app| {
+    spawn_batch(
+        weak,
+        Overlay::Convert,
+        "Cropping…".into(),
+        targets,
+        move |input| process_one(input, rect, &suffix, overwrite),
+        move |app, run, current| {
+            let (ok, failed, canceled) = (run.done.len(), run.failed, run.canceled);
+            let snapped = run.done.iter().any(|(_, (_, used))| *used != rect);
+            let overwritten = run
+                .done
+                .iter()
+                .filter(|(input, (output, _))| output == input)
+                .count();
             // The files are on disk whatever happened to the batch since, so
             // the working set follows them even if a later batch owns the UI.
-            let stale_index = register_outputs(&app, written);
-            // A later batch owns the UI now; leave its overlay and status alone.
-            if !batch_is_current(generation) {
+            let written = run
+                .done
+                .into_iter()
+                .map(|(_, (output, _))| output)
+                .collect();
+            let stale_index = register_outputs(app, written);
+            if !current {
                 return;
             }
-            app.set_convert_in_progress(false);
-            app.set_convert_progress(1.0);
-            app.set_busy(false);
-            app.set_stage_text("".into());
             let mut summary = if canceled {
                 format!("Crop canceled — {ok} done, {failed} failed")
             } else {
@@ -252,11 +212,11 @@ fn spawn_crop(
             if let Some(index) = stale_index {
                 // The frame on screen was replaced by a smaller one; its caches
                 // are already dropped, so selecting it again re-reads it.
-                select_file(&app, index as i32);
+                select_file(app, index as i32);
             }
-            update_memory(&app);
-        });
-    });
+            update_memory(app);
+        },
+    );
 }
 
 /// Crop one file. FITS is cropped losslessly and, when `overwrite` is set,
