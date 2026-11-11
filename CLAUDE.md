@@ -167,7 +167,10 @@ side, split by concern:
   `export.rs` (export batch), `metrics.rs` (the `fitsmith`-local `Metric`/`FileMetrics`/
   `Series` batch/time-series types built on `Image::stats()`/`detect_stars()` — no `fitz`
   CLI use case, so it isn't in `libfitz`), `analytics.rs` (the chart batches and their
-  per-file `AnalyticsCache`), `inspect.rs` (aberration inspector). `sessions.rs` (Tools ▸ Session Summary…: `libfitz::session::summarize_files_cancellable` over the checked
+  per-file `AnalyticsCache`), `inspect.rs` (aberration inspector), `frame_kinds.rs` (the file list's frame-type
+  icons/tooltips and Selection ▸ by-type, mapping `libfitz::session::resolve_frame_type`
+  onto rows; the header's `IMAGETYP` arrives with `EXPTIME` from `spawn_header_load`).
+  `sessions.rs` (Tools ▸ Session Summary…: `libfitz::session::summarize_files_cancellable` over the checked
   files, or all, with folder types looked up to the working set's common folder, on a worker thread, flattened into a read-only session → type → filter tree; a copy-icon button puts the
   `fitz summary`-style report on the clipboard via `arboard`). Batches run on worker
   threads, marshal results back via `upgrade_in_event_loop`, are generation-guarded against

@@ -222,8 +222,9 @@ pub fn reload_current(app: &AppWindow) {
         "",
     );
     update_memory(app);
-    // The row's exposure readout comes from the header too — refresh it.
-    super::spawn_exposure_load(app.as_weak(), vec![path]);
+    // The row's exposure readout and frame type come from the header too —
+    // refresh them.
+    super::spawn_header_load(app.as_weak(), vec![path]);
     select_file(app, index as i32);
 }
 

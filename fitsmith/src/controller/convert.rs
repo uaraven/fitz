@@ -14,7 +14,7 @@ use crate::files::{compressed_output_path, decompressed_output_path, display_nam
 
 use super::{
     STATE, algorithm_for_index, batch_is_current, begin_file_batch, make_row, operation_targets,
-    raise_batch_cancel, require_existing_dir, set_row_status, spawn_exposure_load, update_memory,
+    raise_batch_cancel, require_existing_dir, set_row_status, spawn_header_load, update_memory,
 };
 
 /// The two file operations the Tools menu drives. `Compress` carries the
@@ -260,8 +260,9 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
         let mut st = s.borrow_mut();
         if let Some(i) = st.paths.iter().position(|p| p == old) {
             st.paths[i] = new.to_path_buf();
-            // Exposure is filled in asynchronously once the rewritten file's
-            // header has been read off the UI thread — see `spawn_exposure_load`.
+            // Exposure and the header's frame type are filled in
+            // asynchronously once the rewritten file's header has been read
+            // off the UI thread — see `spawn_header_load`.
             st.files_model.set_row_data(i, make_row(new, 0.0));
         }
         // The rewritten file lives under a new path, so the stamp check can
@@ -270,9 +271,9 @@ fn replace_working_path(app: &AppWindow, old: &Path, new: &Path) {
         st.analytics_cache.remove(old);
     });
     // The replacement can land in another folder (a chosen output directory).
-    super::refresh_names();
+    super::refresh_rows(app);
     update_memory(app);
-    spawn_exposure_load(app.as_weak(), vec![new.to_path_buf()]);
+    spawn_header_load(app.as_weak(), vec![new.to_path_buf()]);
 }
 
 #[cfg(test)]
