@@ -15,6 +15,10 @@ tiff = "0.11"
 # JPEG/PNG export encoders only — the FITS/TIFF paths use fitskit/tiff directly.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
+[features]
+# Exposes `test_frames`, a synthetic-frame fixture, to other crates' tests.
+test-support = []
+
 [dev-dependencies]
 tempfile = "3"
 sha2 = "0.11"

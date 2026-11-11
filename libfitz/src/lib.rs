@@ -32,6 +32,8 @@ pub mod contrast;
 mod invert;
 pub mod loader;
 pub mod raw_file;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_frames;
 #[cfg(test)]
 pub(crate) mod test_support;
 

@@ -68,6 +68,20 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
   `ZIMAGE` HDU, applying BSCALE/BZERO, and classifying the `ImageType`), `save_fits` /
   `image_to_fits`, `export_as_tiff`, the header-only `load_header` -> `ImageMeta` fast path, and
   `find_image_hdu_index`.
+- **`files.rs`** — pure path predicates for openable images (`is_fits_path`, `is_raw_image`,
+  `is_openable_image`, the `FITS_EXTENSIONS`/`RAW_EXTENSIONS` lists); fitsmith re-exports them.
+- **`loader.rs`** / **`raw_file.rs`** — `load_image_from_file` (FITS or camera RAW via LibRaw) and
+  its header-only counterpart `load_header_from_file`, which returns one FITS-style `Header`
+  for either format (a RAW file's EXIF is translated to `DATE-OBS`/`EXPTIME`/… by
+  `raw_file::load_raw_header`, without decoding pixels).
+- **`session.rs`** — `summarize_dir(root) -> Summary`: scans every image under a folder
+  (`scan_images`; `.tif` skipped) and groups it into a `Summary` → `Session` → `TypeGroup` →
+  `FilterGroup` → `Frame` tree, each level carrying its frame count and integration time
+  (session/summary integration is light frames only). Frame type comes from the nearest
+  known ancestor folder name (`frame_type_for`, default Light), filter from `FILTER`, and a
+  session is an observing night (`night_of`: `DATE-LOC` else `DATE-OBS`, cut at noon; frames
+  with no readable time share an unknown-date session). Also `format_duration`/
+  `format_timestamp` for both frontends. Unreadable files land in `Summary::errors`.
 - **`stats.rs`** — `Image::stats() -> Vec<Stats>`, one `Stats` per colour channel, computed
   from a single parallel value-count pass (mean/median/sigma/avg-dev/MAD, min/max and their
   counts, mode, zero and saturated counts, estimated bit depth, 256-bin histogram). Also
@@ -97,6 +111,8 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
 - **`errors.rs`** / **`fits_bayer.rs`** — `FitsError`, and `BAYERPAT` string ↔ `CFA`.
 - **`test_support.rs`** (test-only) — fixtures: locate bundled `../test-data/`, copy into a
   temp dir, synthesize small FITS images.
+- **`test_frames.rs`** (test / `test-support` feature) — `write_frame_fits`, a tiny header-only
+  fixture shared with `fitz-cli`'s tests through the `test-support` feature.
 
 ### `fitz-cli` layout
 
@@ -116,6 +132,10 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
 - **`summary.rs`** — the curated `info` header summary: which keywords are worth showing, in
   what order, and how each is formatted (sexagesimal coordinates, bit-depth and channel
   labels, the telescope's optical figure, `trim_float`).
+- **`session_summary.rs`** — the `summary` command: calls `libfitz::session::summarize_dir`
+  per directory (no `process_files`; it takes directories, not files) and prints the aligned
+  session report (`format_summary`: per-session light integration, frame counts by type, light
+  frames by filter, and a total over the light frames).
 - **`io_prompt.rs`** — the interactive overwrite-confirmation prompt (`ensure_can_write`),
   the `print_progress`/`print_step` verbose-output helpers, and `print_debayer_notice`.
 - **`preview.rs`**, **`kitty.rs`**, **`terminal.rs`** — terminal-only rendering (ANSI

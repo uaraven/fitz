@@ -354,6 +354,19 @@ pub fn parse_date_obs(s: &str) -> Option<f64> {
         return None;
     }
 
+    // Header text is untrusted: reject out-of-range fields (and `nan`/`inf`,
+    // which `f64::parse` accepts) so the epoch stays finite and the calendar
+    // math cannot overflow. Second 60 allows a leap second.
+    let in_range = (0..=9999).contains(&year)
+        && (1..=12).contains(&month)
+        && (1..=31).contains(&day)
+        && (0.0..24.0).contains(&hour)
+        && (0.0..60.0).contains(&minute)
+        && (0.0..61.0).contains(&second);
+    if !in_range {
+        return None;
+    }
+
     let days = days_from_civil(year, month, day);
     Some(days as f64 * 86400.0 + hour * 3600.0 + minute * 60.0 + second)
 }
@@ -990,6 +1003,30 @@ mod tests {
         assert_eq!(parse_date_obs("2026-06-22"), None); // no time component
         assert_eq!(parse_date_obs("2026-06-22T22:00"), None); // missing seconds
         assert_eq!(parse_date_obs("not-a-date T 00:00:00"), None);
+    }
+
+    #[test]
+    fn parse_date_obs_rejects_out_of_range_fields() {
+        // Hostile header values must not reach the calendar math or yield a
+        // non-finite epoch.
+        for bad in [
+            "99999999999999999-01-01T00:00:00", // year far beyond any calendar
+            "-5-01-01T00:00:00",
+            "2026-00-10T00:00:00",
+            "2026-13-10T00:00:00",
+            "2026-06-00T00:00:00",
+            "2026-06-32T00:00:00",
+            "2026-06-22T24:00:00",
+            "2026-06-22T22:60:00",
+            "2026-06-22T22:00:61",
+            "2026-06-22Tnan:00:00",
+            "2026-06-22T22:00:inf",
+            "2026-06-22T1e300:00:00",
+        ] {
+            assert_eq!(parse_date_obs(bad), None, "{bad}");
+        }
+        // A leap second is still fine.
+        assert!(parse_date_obs("2016-12-31T23:59:60").is_some());
     }
 
     #[test]
