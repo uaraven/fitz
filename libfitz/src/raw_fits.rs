@@ -24,11 +24,19 @@ fn copy_pixel_scaling(dest: &mut Header, src: &Header) {
 
 /// Loads the FitsFile uncompressing it if necessary
 pub fn load_raw(source: &Path) -> anyhow::Result<FitsFile> {
+    Ok(load_raw_with_compression(source)?.0)
+}
+
+/// Like [`load_raw`], but also reports how the image HDU was stored on disk,
+/// so a caller that rewrites the file can keep its compression
+/// ([`CompressionSettings::NoCompression`] for a plain image).
+pub fn load_raw_with_compression(source: &Path) -> anyhow::Result<(FitsFile, CompressionSettings)> {
     let ff = FitsFile::from_file(source)?;
     let hdu_idx = find_image_hdu_index(&ff)
         .ok_or_else(|| anyhow!("No image data found in {}", source.display()))?;
     let compressed_hdu = &ff.hdus[hdu_idx];
     if let Some(cimg) = compressed_hdu.as_compressed_image() {
+        let settings = compression_settings_for(cimg.compression());
         let image = cimg.decompress()?;
         let mut u_hdu = Hdu::primary_image(image);
         copy_missing_metadata(
@@ -37,9 +45,9 @@ pub fn load_raw(source: &Path) -> anyhow::Result<FitsFile> {
             COMPRESSION_KEYWORDS,
         );
         copy_pixel_scaling(&mut u_hdu.header, &compressed_hdu.header);
-        Ok(FitsFile { hdus: vec![u_hdu] })
+        Ok((FitsFile { hdus: vec![u_hdu] }, settings))
     } else {
-        Ok(ff)
+        Ok((ff, CompressionSettings::NoCompression))
     }
 }
 

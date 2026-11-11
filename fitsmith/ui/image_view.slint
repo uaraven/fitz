@@ -12,9 +12,33 @@ export component ImageView inherits Rectangle {
     in property <length> natural-height;
     in-out property <float> zoom: 1.0;
 
+    // Crop mode: a rectangle (in image pixels; a zero width means none) drawn
+    // over the image and edited by pointer gestures. Rust owns the rectangle —
+    // this view only draws it and reports the pointer, converted to image
+    // pixels. `crop-cursor` is the mouse cursor Rust wants (see `crop_edit`).
+    in property <bool> crop-mode: false;
+    in property <float> crop-x;
+    in property <float> crop-y;
+    in property <float> crop-w;
+    in property <float> crop-h;
+    in property <int> crop-cursor: 0;
+    // kind (0 press, 1 move, 2 release), image x, image y, and the handle grab
+    // distance in image pixels.
+    callback crop-pointer(int, float, float, float);
+
     // The displayed image size at the current zoom.
     property <length> scaled-width: root.natural-width * root.zoom;
     property <length> scaled-height: root.natural-height * root.zoom;
+
+    // Where the image's top-left corner sits in this view.
+    property <length> origin-x: flick.content-x + (flick.content-width - root.scaled-width) / 2;
+    property <length> origin-y: flick.content-y + (flick.content-height - root.scaled-height) / 2;
+
+    // The crop rectangle in view coordinates.
+    property <length> crop-left: root.origin-x + root.crop-x * root.zoom * 1px;
+    property <length> crop-top: root.origin-y + root.crop-y * root.zoom * 1px;
+    property <length> crop-width: root.crop-w * root.zoom * 1px;
+    property <length> crop-height: root.crop-h * root.zoom * 1px;
 
     // The zoom that makes the image exactly fit the view, or 1.0 when empty.
     property <float> fit-zoom: (root.natural-width > 0px && root.natural-height > 0px)
@@ -82,6 +106,96 @@ export component ImageView inherits Rectangle {
             height: root.scaled-height;
             source: root.source;
             image-fit: fill;
+        }
+    }
+
+    // The crop rectangle: the frame outside it dimmed, a border, eight handles
+    // and a size readout, all above the image but below the scrollbars. One
+    // TouchArea over the whole view takes the pointer in crop mode (panning
+    // then goes through the scrollbars and wheel).
+    if root.crop-mode && root.crop-w > 0: Rectangle {
+        width: parent.width;
+        height: parent.height;
+        property <color> dim: #00000099;
+        // Four bands around the rectangle.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: clamp(root.crop-top, 0px, parent.height);
+            background: parent.dim;
+        }
+        Rectangle {
+            x: 0px;
+            y: clamp(root.crop-top + root.crop-height, 0px, parent.height);
+            width: parent.width;
+            height: parent.height - self.y;
+            background: parent.dim;
+        }
+        Rectangle {
+            x: 0px;
+            y: clamp(root.crop-top, 0px, parent.height);
+            width: clamp(root.crop-left, 0px, parent.width);
+            height: clamp(root.crop-top + root.crop-height, 0px, parent.height) - self.y;
+            background: parent.dim;
+        }
+        Rectangle {
+            x: clamp(root.crop-left + root.crop-width, 0px, parent.width);
+            y: clamp(root.crop-top, 0px, parent.height);
+            width: parent.width - self.x;
+            height: clamp(root.crop-top + root.crop-height, 0px, parent.height) - self.y;
+            background: parent.dim;
+        }
+        Rectangle {
+            x: root.crop-left;
+            y: root.crop-top;
+            width: root.crop-width;
+            height: root.crop-height;
+            border-width: 1px;
+            border-color: white;
+        }
+        for p in [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0], [0.0, 0.5], [1.0, 0.5], [0.0, 1.0], [0.5, 1.0], [1.0, 1.0]]: Rectangle {
+            x: root.crop-left + root.crop-width * p[0] - self.width / 2;
+            y: root.crop-top + root.crop-height * p[1] - self.height / 2;
+            width: 9px;
+            height: 9px;
+            background: white;
+            border-width: 1px;
+            border-color: #000000b0;
+        }
+        if root.crop-width > 110px && root.crop-height > 40px: Rectangle {
+            x: root.crop-left + 8px;
+            y: root.crop-top + 8px;
+            width: readout.preferred-width + 12px;
+            height: readout.preferred-height + 6px;
+            background: #000000b0;
+            border-radius: 3px;
+            readout := Text {
+                text: Math.round(root.crop-w) + " × " + Math.round(root.crop-h);
+                color: white;
+                font-size: 12px;
+            }
+        }
+    }
+    if root.crop-mode: TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: root.crop-cursor == 1 ? MouseCursor.crosshair
+            : root.crop-cursor == 2 ? MouseCursor.move
+            : root.crop-cursor == 3 ? MouseCursor.ns-resize
+            : root.crop-cursor == 4 ? MouseCursor.ew-resize
+            : root.crop-cursor == 5 ? MouseCursor.nwse-resize
+            : root.crop-cursor == 6 ? MouseCursor.nesw-resize
+            : MouseCursor.default;
+        pointer-event(e) => {
+            // 8 screen pixels of grab distance, as image pixels at this zoom.
+            if (e.kind == PointerEventKind.move) {
+                root.crop-pointer(1, (self.mouse-x - root.origin-x) / (root.zoom * 1px), (self.mouse-y - root.origin-y) / (root.zoom * 1px), 8 / root.zoom);
+            } else if (e.kind == PointerEventKind.cancel || (e.button == PointerEventButton.left && e.kind == PointerEventKind.up)) {
+                root.crop-pointer(2, (self.mouse-x - root.origin-x) / (root.zoom * 1px), (self.mouse-y - root.origin-y) / (root.zoom * 1px), 8 / root.zoom);
+            } else if (e.button == PointerEventButton.left && e.kind == PointerEventKind.down) {
+                root.crop-pointer(0, (self.mouse-x - root.origin-x) / (root.zoom * 1px), (self.mouse-y - root.origin-y) / (root.zoom * 1px), 8 / root.zoom);
+            }
         }
     }
 

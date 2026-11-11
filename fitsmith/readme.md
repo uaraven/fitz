@@ -14,6 +14,15 @@ FitSmith is a desktop viewer for FITS (astronomical image) files. Open a single 
  - Session summary (Tools ▸ Session Summary…): group the files into observing nights, frame types and filters, with frame counts and integration times. The summary can be copied to the clipboard as text
  - Export FITS files to JPEG, PNG or TIFF in batch
  - Compress or decompress FITS files in batch
+ - Crop many files with the same rectangle (Tools ▸ Crop, Cmd/Ctrl+X), keeping every FITS header:
+   - draw the rectangle on the preview
+   - pick a fixed aspect ratio or crop free-form
+   - crops the checked files, or all files if none are checked
+   - cropped copies are added to the file list; overwritten files are reloaded in place
+   - FITS files are cropped losslessly, and `.fz` files stay compressed. 
+   - Bayer mosaics are cut on even pixels so the colour pattern stays valid
+   - camera RAW files are converted to FITS on cropping, and are never overwritten
+   - a file too small to hold the rectangle is reported as an error instead of being cropped
  - View the FITS header
  - View image statistics: mean, median, standard deviation, MAD, contrast, etc.
  - Estimate the real bit depth of an image

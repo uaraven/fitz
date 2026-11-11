@@ -16,6 +16,7 @@ import { AberrationDialog } from "aberration.slint";
 import { ConfirmDialog } from "confirm.slint";
 import { DeleteFilesDialog } from "delete_files.slint";
 import { SessionsDialog } from "sessions.slint";
+import { CropToolbar } from "crop_toolbar.slint";
 import { Toolbar } from "toolbar.slint";
 import { StatusBar } from "status_bar.slint";
 
@@ -41,6 +42,25 @@ export component AppWindow inherits Window {
     // handlers below).
     in-out property <bool> show-stats: false;
     in-out property <bool> show-info: false;
+
+    // Tools ▸ Crop. While `crop-mode` is on the crop toolbar takes the stats /
+    // info panels' place and the preview shows a draggable rectangle. Rust owns
+    // the rectangle (`crop-x/y/w/h`, image pixels; a zero width means none) and
+    // the cursor it wants (`crop-cursor`); the toolbar's settings live here.
+    in-out property <bool> crop-mode: false;
+    in property <float> crop-x;
+    in property <float> crop-y;
+    in property <float> crop-w;
+    in property <float> crop-h;
+    in property <int> crop-cursor: 0;
+    in-out property <int> crop-aspect: 0;
+    in-out property <bool> crop-overwrite: false;
+    // Keep in step with `files::DEFAULT_CROP_SUFFIX`.
+    in-out property <string> crop-suffix: "_cropped";
+    // Overwriting originals is confirmed first; `crop-confirm-count` is how
+    // many FITS files that would replace.
+    in-out property <bool> show-crop-confirm: false;
+    in property <int> crop-confirm-count;
 
     in property <int> checked-file-count;
     // Frames of each kind in the working set, for the Selection menu.
@@ -97,9 +117,10 @@ export component AppWindow inherits Window {
     in-out property <bool> op-keep-source: true;
     in-out property <bool> op-use-custom-dir: false;
     in-out property <string> op-output-dir: "";
-    // The cancellable progress overlay while a compress/decompress batch runs.
-    // One property set serves both operations — only one batch runs at a time —
-    // with `convert-title` saying which ("Compressing…" / "Decompressing…").
+    // The cancellable progress overlay while a compress/decompress/crop batch
+    // runs. One property set serves them all — only one batch runs at a time —
+    // with `convert-title` saying which ("Compressing…" / "Decompressing…" /
+    // "Cropping…").
     in property <bool> convert-in-progress: false;
     in property <string> convert-title: "";
     in property <float> convert-progress: 0;
@@ -256,6 +277,15 @@ export component AppWindow inherits Window {
     callback navigate-first();
     callback navigate-last();
     callback blink-toggled();
+    // Tools ▸ Crop: mode flipped / aspect ratio picked (Rust seeds, refits or
+    // discards the rectangle), a pointer event on the preview (kind 0 press,
+    // 1 move, 2 release; image x and y; grab distance — all in image pixels),
+    // the Crop button, and the overwrite confirmation.
+    callback crop-mode-changed();
+    callback crop-aspect-changed();
+    callback crop-pointer(int, float, float, float);
+    callback run-crop();
+    callback confirm-crop();
     // Fired when a view toggle changes so Rust can re-render the cached image.
     callback toggles-changed();
     // Tools menu: Rust computes the file count and resets the dialog
@@ -330,6 +360,12 @@ export component AppWindow inherits Window {
     }
     changed blinking => {
         root.blink-toggled();
+    }
+    changed crop-mode => {
+        root.crop-mode-changed();
+    }
+    changed crop-aspect => {
+        root.crop-aspect-changed();
     }
     // Stats and info share the dock, so only one shows at a time. The `if`
     // guards stop the paired reset (setting the other to false) from bouncing
@@ -512,6 +548,14 @@ export component AppWindow inherits Window {
 
         Menu {
             title: "Tools";
+            MenuItem {
+                title: "Crop";
+                checkable: true;
+                checked <=> root.crop-mode;
+                enabled: root.files.length > 0;
+                shortcut: @keys(Control + X);
+            }
+            MenuSeparator { }
             MenuItem {
                 title: "Compress…";
                 enabled: root.files.length > 0;
@@ -710,17 +754,39 @@ export component AppWindow inherits Window {
                             source: root.preview-image;
                             natural-width: root.image-width;
                             natural-height: root.image-height;
+                            crop-mode: root.crop-mode;
+                            crop-x: root.crop-x;
+                            crop-y: root.crop-y;
+                            crop-w: root.crop-w;
+                            crop-h: root.crop-h;
+                            crop-cursor: root.crop-cursor;
+                            crop-pointer(kind, x, y, tol) => {
+                                root.crop-pointer(kind, x, y, tol);
+                            }
                         }
                         // Docks below the image when "Stats" or "Info" is on
                         // (mutually exclusive), shrinking the image area to fit.
-                        if root.show-stats: StatsPanel {
+                        // Crop mode takes the same spot with its own toolbar.
+                        if root.crop-mode: CropToolbar {
+                            aspect-index <=> root.crop-aspect;
+                            overwrite <=> root.crop-overwrite;
+                            suffix <=> root.crop-suffix;
+                            has-rect: root.crop-w > 0;
+                            crop => {
+                                root.run-crop();
+                            }
+                            cancel => {
+                                root.crop-mode = false;
+                            }
+                        }
+                        if root.show-stats && !root.crop-mode: StatsPanel {
                             stats: root.stats;
                             stat-channels: root.stat-channels;
                             frame-stats: root.frame-stats;
                             star-stats: root.star-stats;
                             histogram: root.histogram;
                         }
-                        if root.show-info: InfoPanel {
+                        if root.show-info && !root.crop-mode: InfoPanel {
                             info: root.info;
                         }
                     }
@@ -757,6 +823,21 @@ export component AppWindow inherits Window {
         version: root.app-version;
         close => {
             root.show-about = false;
+        }
+    }
+
+    // Overwriting the originals with their cropped versions can't be undone.
+    if root.show-crop-confirm: ConfirmDialog {
+        width: 100%;
+        height: 100%;
+        title: "Overwrite originals?";
+        message: "Replace " + root.crop-confirm-count + " FITS file(s) with their cropped versions? This can't be undone.";
+        confirm-text: "Overwrite";
+        confirm => {
+            root.confirm-crop();
+        }
+        cancel => {
+            root.show-crop-confirm = false;
         }
     }
 

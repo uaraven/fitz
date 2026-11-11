@@ -16,6 +16,7 @@
 //!   ([`operation_targets`], [`set_row_status`], [`algorithm_for_index`], …);
 //! - [`viewer`] — selecting, navigating, loading/rendering off-thread, and blink;
 //! - [`convert`] — the compress / decompress batch operations;
+//! - [`crop`] — Tools ▸ Crop: the crop rectangle on the preview and the batch that applies it;
 //! - [`export`] — the export dialog and its batch;
 //! - [`analytics`] — the analytics batch and its time-series chart;
 //! - [`sessions`] — Tools ▸ Session Summary…: group the working set's files into a
@@ -26,6 +27,7 @@
 mod analytics;
 mod bad_frames;
 mod convert;
+mod crop;
 mod delete_files;
 mod export;
 mod frame_kinds;
@@ -38,6 +40,7 @@ mod viewer;
 pub use analytics::*;
 pub use bad_frames::*;
 pub use convert::*;
+pub use crop::*;
 pub use delete_files::*;
 pub use export::*;
 pub use inspect::*;
@@ -163,6 +166,9 @@ struct AppState {
     /// Bumped when a file batch starts, so a superseded worker's final summary
     /// can't touch the UI of a later batch.
     batch_generation: u64,
+    /// The crop rectangle drawn on the preview, in image pixels. Lives here —
+    /// not per file — so it survives selecting another frame.
+    crop: crate::crop_edit::CropEditor,
 }
 
 impl AppState {
@@ -201,6 +207,7 @@ impl AppState {
             bad_frame_flagged: Vec::new(),
             batch_cancel: Arc::new(AtomicBool::new(false)),
             batch_generation: 0,
+            crop: crate::crop_edit::CropEditor::default(),
         }
     }
 }

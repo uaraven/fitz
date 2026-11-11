@@ -152,6 +152,35 @@ pub fn ignored_output_path(input: &Path) -> PathBuf {
     input.with_file_name(name)
 }
 
+/// The suffix the Crop toolbar starts with, and the one used when it is left blank.
+pub const DEFAULT_CROP_SUFFIX: &str = "_cropped";
+
+/// Where the cropped copy of `input` is written, beside it. The suffix goes
+/// before the extension, and a trailing `.fz` stays last
+/// (`frame.fits.fz` → `frame_cropped.fits.fz`); a blank suffix falls back to
+/// [`DEFAULT_CROP_SUFFIX`] so the copy can never land on the original. A
+/// non-FITS `input` (a camera RAW) is written as FITS: `IMG_1.ARW` →
+/// `IMG_1_cropped.fits`.
+pub fn cropped_output_path(input: &Path, suffix: &str, fits: bool) -> PathBuf {
+    let suffix = match suffix.trim() {
+        "" => DEFAULT_CROP_SUFFIX,
+        s => s,
+    };
+    let name = display_name(input);
+    let (body, fz) = if is_compressed(input) {
+        name.split_at(name.len() - ".fz".len())
+    } else {
+        (name.as_str(), "")
+    };
+    let cropped = match body.rsplit_once('.') {
+        Some((stem, ext)) if fits => format!("{stem}{suffix}.{ext}{fz}"),
+        Some((stem, _)) => format!("{stem}{suffix}.fits"),
+        None if fits => format!("{body}{suffix}{fz}"),
+        None => format!("{body}{suffix}.fits"),
+    };
+    input.with_file_name(cropped)
+}
+
 /// Expand command-line arguments into a flat list of input files: directories
 /// are scanned for FITS files, existing files are kept as-is (a file named
 /// explicitly is honored regardless of extension), and missing paths are
@@ -171,6 +200,34 @@ pub fn expand_inputs(args: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cropped_output_path_puts_the_suffix_before_the_extension() {
+        let p = |name: &str, suffix: &str, fits: bool| {
+            cropped_output_path(Path::new("/d").join(name).as_path(), suffix, fits)
+        };
+        assert_eq!(
+            p("frame.fits", "_cropped", true),
+            Path::new("/d/frame_cropped.fits")
+        );
+        assert_eq!(p("frame.fit", "_c", true), Path::new("/d/frame_c.fit"));
+        assert_eq!(
+            p("frame.fits.fz", "_cropped", true),
+            Path::new("/d/frame_cropped.fits.fz")
+        );
+        // Dots in the base name stay put.
+        assert_eq!(
+            p("M31.LRGB.fit", "_x", true),
+            Path::new("/d/M31.LRGB_x.fit")
+        );
+        // A blank suffix never maps a file onto itself.
+        assert_eq!(p("a.fits", "  ", true), Path::new("/d/a_cropped.fits"));
+        // Camera RAW is written out as FITS.
+        assert_eq!(
+            p("IMG_1.ARW", "_cropped", false),
+            Path::new("/d/IMG_1_cropped.fits")
+        );
+    }
 
     #[test]
     fn detects_compressed_only_for_fz() {
