@@ -101,7 +101,11 @@ export component AnalyticsChart inherits Rectangle {
     property <length> x-axis-h: 34px;
     property <length> title-h: 18px;
     property <length> area-h: root.height - root.x-axis-h - root.title-h;
-    property <length> viewport-w: root.width - root.y-axis-w;
+    // Right gutter for the σ-band labels, so they can't overlap the Y tick
+    // labels on the left. Only reserved while the bands are drawn.
+    property <bool> bands-visible: root.show-std-dev && !root.per-channel;
+    property <length> band-axis-w: root.bands-visible ? 40px : 0px;
+    property <length> viewport-w: root.width - root.y-axis-w - root.band-axis-w;
     // The scrollable plot width: fit at zoom 1, wider beyond.
     property <length> content-w: root.viewport-w * root.zoom;
 
@@ -130,15 +134,16 @@ export component AnalyticsChart inherits Rectangle {
         font-size: 11px;
     }
 
+    // σ-band labels, in the gutter right of the plot.
     for line in root.stat-lines: Text {
-        x: 0;
+        x: root.width - root.band-axis-w + 6px;
         y: root.title-h + line.pos * root.area-h - self.height / 2;
-        width: root.y-axis-w - 8px;
-        horizontal-alignment: right;
+        width: root.band-axis-w - 6px;
+        horizontal-alignment: left;
         text: line.label;
         color: root.stat-line-color;
         font-size: 10px;
-        visible: root.show-std-dev && !root.per-channel;
+        visible: root.bands-visible;
     }
 
     flick := Flickable {
@@ -167,7 +172,7 @@ export component AnalyticsChart inherits Rectangle {
             width: root.content-w;
             height: 1px;
             background: root.stat-line-color;
-            visible: root.show-std-dev && !root.per-channel;
+            visible: root.bands-visible;
         }
 
         // Gridlines: horizontal per Y tick, vertical per X tick. They live in
