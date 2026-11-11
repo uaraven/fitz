@@ -52,7 +52,10 @@ impl CropRect {
         if self.width == 0 || self.height == 0 {
             bail!("crop rectangle is empty");
         }
-        if self.x + self.width > width || self.y + self.height > height {
+        let fits = |origin: usize, extent: usize, limit: usize| {
+            origin.checked_add(extent).is_some_and(|end| end <= limit)
+        };
+        if !fits(self.x, self.width, width) || !fits(self.y, self.height, height) {
             bail!(
                 "crop {}x{} at ({}, {}) does not fit the {width}x{height} image",
                 self.width,
@@ -160,6 +163,17 @@ pub fn crop_fits(fits: &mut FitsFile, rect: CropRect) -> Result<CropRect> {
         [w, h, p] => (*w, *h, *p),
         axes => bail!("cannot crop a {}-axis image", axes.len()),
     };
+    // The geometry comes from the header, which is untrusted: the pixel buffer
+    // must really hold that many samples before anything is sliced out of it.
+    let samples = width
+        .checked_mul(height)
+        .and_then(|n| n.checked_mul(planes));
+    if samples != Some(img.pixels.len()) {
+        bail!(
+            "header says {width}x{height}x{planes} but the file holds {} pixel samples",
+            img.pixels.len()
+        );
+    }
     let grid = if img.axes.len() == 2 {
         header_grid(&hdu.header)
     } else {
@@ -396,6 +410,27 @@ mod tests {
         assert!(fits.hdus[idx].as_compressed_image().is_some());
         let (_, img) = read(&out);
         assert_eq!(&img.axes[..2], &[256, 128]);
+    }
+
+    #[test]
+    fn validate_survives_rectangles_that_would_overflow() {
+        assert!(rect(usize::MAX, 0, 2, 2).validate(10, 10).is_err());
+        assert!(rect(0, usize::MAX - 1, 2, 2).validate(10, 10).is_err());
+        assert!(rect(1, 1, usize::MAX, 1).validate(10, 10).is_err());
+    }
+
+    #[test]
+    fn a_pixel_buffer_that_disagrees_with_the_header_is_an_error_not_a_panic() {
+        // 100x100 declared, but only half the samples present.
+        let lying = ImageData::new(vec![100, 100], PixelData::I16(vec![7; 5_000]));
+        let mut fits = FitsFile::with_primary_image(lying);
+        let err = crop_fits(&mut fits, rect(10, 10, 50, 50)).unwrap_err();
+        assert!(err.to_string().contains("5000 pixel samples"), "{err}");
+
+        // And a declared size whose product overflows.
+        let huge = ImageData::new(vec![usize::MAX, 4], PixelData::I16(vec![0; 16]));
+        let mut fits = FitsFile::with_primary_image(huge);
+        assert!(crop_fits(&mut fits, rect(0, 0, 2, 2)).is_err());
     }
 
     #[test]
