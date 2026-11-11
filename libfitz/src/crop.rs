@@ -19,7 +19,7 @@ use crate::fits_bayer::{BayerHeader, parse_bayer_header};
 use crate::fits_file::{SaveOptions, find_image_hdu_index, save_fits};
 use crate::keywords::{BAYERPAT, add_history};
 use crate::loader::{is_fits_file, load_image_from_file};
-use crate::raw_fits::{load_raw_with_compression, save_raw};
+use crate::raw_fits::{CompressionSettings, load_raw_with_compression, save_raw};
 
 /// A pixel rectangle in image coordinates: `(x, y)` is the top-left corner
 /// (row 0 is the first row stored in the file).
@@ -204,13 +204,32 @@ pub fn crop_fits(fits: &mut FitsFile, rect: CropRect) -> Result<CropRect> {
     Ok(rect)
 }
 
+/// How to write a cropped file: as the source was stored, except that a float
+/// image gets exact GZIP — the other tile codecs quantize floats, which would
+/// change pixels the crop is not meant to touch. An integer image is always
+/// exact, so it keeps the source's own codec.
+fn exact_compression(source: CompressionSettings, fits: &FitsFile) -> CompressionSettings {
+    let is_float = find_image_hdu_index(fits).is_some_and(|i| {
+        matches!(
+            &fits.hdus[i].data,
+            HduData::Image(img) if matches!(img.pixels, PixelData::F32(_) | PixelData::F64(_))
+        )
+    });
+    match source {
+        CompressionSettings::NoCompression => CompressionSettings::NoCompression,
+        _ if is_float => CompressionSettings::GzipLossless,
+        other => other,
+    }
+}
+
 /// Crop the FITS file `input` into `output`, losslessly. A tile-compressed
-/// input is written back with the same compression algorithm. Returns the
-/// rectangle actually used (see [`crop_fits`]).
+/// input is written back tile-compressed (the same algorithm where this crate
+/// can encode it, and exact for floats). Returns the rectangle actually used
+/// (see [`crop_fits`]).
 pub fn crop_fits_file(input: &Path, output: &Path, rect: CropRect) -> Result<CropRect> {
     let (mut fits, compression) = load_raw_with_compression(input)?;
     let used = crop_fits(&mut fits, rect)?;
-    save_raw(&fits, output, compression)?;
+    save_raw(&fits, output, exact_compression(compression, &fits))?;
     Ok(used)
 }
 
@@ -452,6 +471,44 @@ mod tests {
         let huge = ImageData::new(vec![usize::MAX, 4], PixelData::I16(vec![0; 16]));
         let mut fits = FitsFile::with_primary_image(huge);
         assert!(crop_fits(&mut fits, rect(0, 0, 2, 2)).is_err());
+    }
+
+    #[test]
+    fn a_float_fz_is_cropped_without_requantizing_its_pixels() {
+        let tmp = TempDir::new().unwrap();
+        // A small float .fz: crop part of the float cube, then compress it with
+        // the default (quantizing) Rice, so its decoded values are what they are.
+        let plain = tmp.path().join("small.fits");
+        crop_fits_file(&test_data("rgb.fits"), &plain, rect(300, 300, 160, 120)).unwrap();
+        let source = tmp.path().join("small.fits.fz");
+        save_raw(
+            &load_raw(&plain).unwrap(),
+            &source,
+            CompressionSettings::Rice1,
+        )
+        .unwrap();
+
+        let out = tmp.path().join("small_cropped.fits.fz");
+        crop_fits_file(&source, &out, rect(20, 10, 100, 80)).unwrap();
+
+        let fits = FitsFile::from_file(&out).unwrap();
+        let idx = find_image_hdu_index(&fits).unwrap();
+        assert!(fits.hdus[idx].as_compressed_image().is_some());
+        let (_, src_img) = read(&source);
+        let (_, out_img) = read(&out);
+        assert_eq!(out_img.axes, vec![100, 80, 3]);
+        let (PixelData::F32(s), PixelData::F32(o)) = (&src_img.pixels, &out_img.pixels) else {
+            panic!("expected f32 pixels")
+        };
+        for plane in 0..3 {
+            for row in [0, 40, 79] {
+                assert_eq!(
+                    slice_of(o, &out_img.axes, plane, row, 0, 100),
+                    slice_of(s, &src_img.axes, plane, 10 + row, 20, 100),
+                    "plane {plane} row {row}"
+                );
+            }
+        }
     }
 
     #[test]
