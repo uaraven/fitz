@@ -61,6 +61,9 @@ anyhow = "1"
 sysinfo = "0.39.6"
 image = { version = "0.25", default-features = false }
 rayon = "1"
+# System clipboard, text only (the Session Summary dialog's copy button); Wayland
+# needs its data-control protocol, X11 and the other OSes work out of the box.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 # macOS only: used to turn off automatic window tabbing so AppKit stops
 # injecting "Show Tab Bar"/"Show All Tabs" into our View menu, and to hook

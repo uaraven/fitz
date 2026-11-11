@@ -1,0 +1,196 @@
+import { Button, CheckBox } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+import { AppPalette } from "palette.slint";
+import { VScrollArea } from "scrolling.slint";
+import { SessionRow } from "types.slint";
+
+// A small square button showing the classic "copy" glyph (two overlapping
+// sheets), drawn from rectangles so it follows the theme. Dimmed and inert
+// while `enabled` is false.
+component CopyIconButton inherits Rectangle {
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: 32px;
+    height: 28px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: AppPalette.panel-border;
+    background: root.enabled && ta.has-hover ? #80808033 : transparent;
+    opacity: root.enabled ? 1.0 : 0.4;
+    accessible-role: button;
+    accessible-label: "Copy to clipboard";
+
+    // Back sheet.
+    Rectangle {
+        x: 9px;
+        y: 5px;
+        width: 11px;
+        height: 13px;
+        border-width: 1.5px;
+        border-radius: 2px;
+        border-color: AppPalette.body;
+    }
+    // Front sheet, opaque so it hides the back sheet's corner.
+    Rectangle {
+        x: 12px;
+        y: 8px;
+        width: 11px;
+        height: 13px;
+        border-width: 1.5px;
+        border-radius: 2px;
+        border-color: AppPalette.body;
+        background: AppPalette.card-bg;
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+// The Tools ▸ Session Summary… modal: the working set's files as a tree
+// (session → frame type → filter) with frame counts and integration times.
+// Read-only and purely presentational — Rust builds `rows`.
+export component SessionsDialog inherits DialogCard {
+    in property <[SessionRow]> rows;
+    // Which files are summarised ("All 120 files" / "12 checked files"), then
+    // (while reading) a progress line or (afterwards) the report's totals,
+    // worded by the controller.
+    in property <string> source;
+    in property <string> summary;
+    // Brief feedback after Copy ("Copied to clipboard"); empty otherwise.
+    in property <string> notice;
+    // Whether the tree breaks down calibration frames (darks, flats, …) too;
+    // off shows each session's light frames only.
+    in-out property <bool> show-calibration: false;
+    callback copy();
+    callback show-calibration-toggled(bool);
+
+    resizable: true;
+    min-card-width: 560px;
+    min-card-height: 360px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: "Session Summary";
+            font-size: 20px;
+            font-weight: 700;
+            color: AppPalette.title;
+        }
+
+        Text {
+            text: root.source;
+            color: AppPalette.muted;
+            font-size: 12px;
+            overflow: elide;
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            background: AppPalette.panel-bg;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: AppPalette.panel-border;
+            clip: true;
+
+            if root.rows.length == 0: Text {
+                text: "No images";
+                color: AppPalette.muted;
+            }
+            list := VScrollArea {
+                width: 100%;
+                height: 100%;
+                content-height: root.rows.length * 28px;
+                for row[idx] in root.rows: Rectangle {
+                    y: idx * 28px;
+                    width: list.content-width;
+                    height: 28px;
+                    background: mod(idx, 2) == 0 ? transparent : AppPalette.zebra;
+
+                    HorizontalLayout {
+                        padding-left: 14px + row.depth * 20px;
+                        padding-right: 14px;
+                        spacing: 8px;
+
+                        Text {
+                            text: row.label;
+                            color: row.depth == 0 ? AppPalette.title : AppPalette.body;
+                            font-weight: row.depth == 0 ? 700 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+
+                        Text {
+                            text: row.count;
+                            color: AppPalette.body;
+                            width: 90px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: row.time;
+                            color: AppPalette.body;
+                            width: 90px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            CheckBox {
+                checked <=> root.show-calibration;
+                font-size: 12px;
+                horizontal-stretch: 1;
+                text: "Show calibration frames";
+                toggled => {
+                    root.show-calibration-toggled(self.checked);
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.summary;
+                color: AppPalette.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+
+            Text {
+                text: root.notice;
+                color: AppPalette.accent;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+
+            CopyIconButton {
+                enabled: root.rows.length > 0;
+                clicked => {
+                    root.copy();
+                }
+            }
+
+            Button {
+                text: "Close";
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+}

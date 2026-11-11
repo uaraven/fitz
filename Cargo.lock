@@ -1367,6 +1367,7 @@ name = "fitsmith"
 version = "0.7.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "image",
  "libfitz",
  "objc2 0.6.4",

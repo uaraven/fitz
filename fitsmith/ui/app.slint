@@ -1,6 +1,6 @@
 import { VerticalBox, TabWidget } from "std-widgets.slint";
 import { AppPalette } from "palette.slint";
-import { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine, BadFrameRow } from "types.slint";
+import { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine, BadFrameRow, SessionRow } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
 import { StatsPanel } from "stats_panel.slint";
@@ -15,6 +15,7 @@ import { BadFramesDialog } from "bad_frames.slint";
 import { AberrationDialog } from "aberration.slint";
 import { ConfirmDialog } from "confirm.slint";
 import { DeleteFilesDialog } from "delete_files.slint";
+import { SessionsDialog } from "sessions.slint";
 import { Toolbar } from "toolbar.slint";
 import { StatusBar } from "status_bar.slint";
 
@@ -127,6 +128,17 @@ export component AppWindow inherits Window {
     // checked count and resets the action dropdown before showing it; on
     // confirm it performs the chosen action and drops the affected rows from
     // the file list.
+    // The Session Summary dialog (Tools ▸ Session Summary…): the working set's
+    // session → type → filter tree and a status/summary line.
+    in-out property <bool> show-sessions: false;
+    in property <[SessionRow]> sessions-model;
+    in property <string> sessions-source;
+    in property <string> sessions-summary;
+    in property <string> sessions-notice;
+    // The dialog's "Show calibration frames" box; kept across openings.
+    in-out property <bool> sessions-show-calibration: false;
+    in-out property <length> sessions-card-width: 680px;
+    in-out property <length> sessions-card-height: 520px;
     in-out property <bool> show-delete-files: false;
     in property <int> delete-files-count;
     in-out property <int> delete-files-action: 0;
@@ -216,6 +228,10 @@ export component AppWindow inherits Window {
 
     callback open();
     callback open-directory();
+    callback open-sessions-dialog();
+    callback copy-sessions();
+    callback sessions-calibration-toggled(bool);
+    callback close-sessions();
     callback clear-files();
     // Re-read the highlighted file from disk, recomputing its headers,
     // statistics and star analytics.
@@ -463,6 +479,13 @@ export component AppWindow inherits Window {
                 }
             }
             MenuSeparator { }
+            MenuItem {
+                title: "Session Summary…";
+                enabled: root.files.length > 0;
+                activated => {
+                    root.open-sessions-dialog();
+                }
+            }
             MenuItem {
                 title: "Analytics…";
                 enabled: root.files.length > 0;
@@ -894,6 +917,30 @@ export component AppWindow inherits Window {
         cancel => {
             root.show-bad-frames = false;
             root.close-bad-frames();
+        }
+    }
+
+    // The Session Summary dialog: a read-only report. Close (and a scrim
+    // click) hides it and drops the rows.
+    if root.show-sessions: SessionsDialog {
+        width: 100%;
+        height: 100%;
+        rows: root.sessions-model;
+        source: root.sessions-source;
+        summary: root.sessions-summary;
+        notice: root.sessions-notice;
+        show-calibration <=> root.sessions-show-calibration;
+        copy => {
+            root.copy-sessions();
+        }
+        show-calibration-toggled(show) => {
+            root.sessions-calibration-toggled(show);
+        }
+        card-width <=> root.sessions-card-width;
+        card-height <=> root.sessions-card-height;
+        cancel => {
+            root.show-sessions = false;
+            root.close-sessions();
         }
     }
 
