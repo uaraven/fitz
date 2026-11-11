@@ -71,6 +71,28 @@ pub(crate) fn write_mosaic_fits(path: &Path, width: usize, height: usize, patter
     fits.to_file(path).unwrap();
 }
 
+/// Write a tiny 4x4 frame carrying only the keywords session grouping reads:
+/// an optional `FILTER`, `EXPTIME` (seconds), and optional `DATE-LOC` /
+/// `DATE-OBS` timestamp strings.
+pub(crate) fn write_frame_fits(
+    path: &Path,
+    filter: Option<&str>,
+    exptime: f64,
+    date_loc: Option<&str>,
+    date_obs: Option<&str>,
+) {
+    let img = ImageData::new(vec![4, 4], PixelData::I16(vec![0; 16]));
+    let mut fits = FitsFile::with_primary_image(img);
+    let header = &mut fits.primary_mut().header;
+    header.set("EXPTIME", HeaderValue::Float(exptime), None);
+    for (key, value) in [("FILTER", filter), ("DATE-LOC", date_loc), ("DATE-OBS", date_obs)] {
+        if let Some(value) = value {
+            header.set(key, HeaderValue::String(value.to_string()), None);
+        }
+    }
+    fits.to_file(path).unwrap();
+}
+
 /// Like [`write_mosaic_fits`] but also stamps representative metadata (OBJECT,
 /// DATE-OBS, a WCS pair, and a COMMENT card) so header-preservation tests have
 /// something to assert survives the processing commands.
