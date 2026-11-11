@@ -66,7 +66,7 @@ mod tests {
             "{report}"
         );
         assert!(
-            report.contains("    Ha    2 frames  0h 10m 00s\n"),
+            report.contains("    Ha    2x300s    0h 10m 00s\n"),
             "{report}"
         );
         // The RAW frame is a dark, counted but not broken down by filter; its

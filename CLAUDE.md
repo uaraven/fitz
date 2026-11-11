@@ -2,6 +2,110 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## General behavioural guidelines
+Behavioural guidelines to reduce common LLM coding mistakes. Bias toward caution over speed; use judgment on trivial tasks.
+
+### 1. Think before coding
+
+Don't assume. Don't hide confusion. Surface tradeoffs.
+
+- State assumptions explicitly; if uncertain, ask.
+- Multiple interpretations → present them, don't pick silently.
+- Simpler approach exists → say so. Push back when warranted.
+- Unclear → stop, name what's confusing, ask.
+
+### 2. Simplicity first
+
+Minimum code that solves the problem. Nothing speculative.
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility"/"configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- 200 lines when 50 suffice → rewrite.
+
+Test: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical changes
+
+Touch only what you must. Clean up only your own mess.
+
+When editing existing code:
+
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it — don't delete it.
+
+When your changes create orphans:
+
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+Test: every changed line traces directly to the user's request.
+
+### 4. Fix don't silence
+
+Never disable linter/typechecker warnings with comments. Fix the actual issue.
+
+- No `/* eslint-disable */`, `@ts-ignore`, `@ts-expect-error`, `# type: ignore`, or similar.
+- Fix the underlying issue instead:
+  - **Missing globals?** Add env globals to config (e.g. `globals.browser` for Playwright CT tests, `globals.node` for config files).
+  - **Unused variable?** Remove it, or prefix with `_` if intentionally unused per interface contract.
+  - **Type mismatch?** Fix the types or add proper type annotations.
+  - **Wrong pattern?** Refactor to follow the expected pattern.
+- Only exception: a third-party library has a known incorrect type definition AND the fix is filed as an upstream issue. Add a comment linking to the issue.
+
+Why: disable comments hide real problems, rot, and create tech debt. The fix is usually trivial once you understand what the tool is telling you.
+
+### 5. Goal-driven execution
+
+Define success criteria. Loop until verified.
+
+Transform tasks into verifiable goals:
+
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+### 6. Subagent dispatch discipline
+
+Verify tools, fail fast, always have a fallback. Parent agent is responsible for noticing and unblocking permission failures.
+
+**Before dispatching:**
+
+- Identify which tools the subagent needs (WebSearch, WebFetch, Bash with network, Read, etc.).
+- If the task depends on tools often sandboxed away (WebSearch/WebFetch, npm/curl via Bash), tell the subagent: "If a required tool is denied, stop immediately and return a one-line permission report — do not loop retrying."
+
+**While subagent is running:**
+
+- On "permission denied", "tool unavailable", or retry-loops on the same denied tool: take over from the parent session — don't wait it out.
+- Check long-running subagents' output files after a reasonable window. Use `wc -l` and `tail -n 5 | jq` on the JSONL file to see recent activity without reading the whole transcript.
+- Prefer stopping a stuck subagent over letting it burn tokens. Kill with `TaskStop` (or move on and leave it dangling) and do the lookup yourself.
+
+**Always have a fallback:**
+
+- In-distribution knowledge first for well-known libraries (React, Vite, Bun, Hono, commander, etc.).
+- Direct Bash from the parent session for niche packages (`npm view <pkg>`, `npm pack` + inspect, `curl -sS`).
+- Flag fallback as "verify in implementation phase" — don't pretend the assumption is confirmed.
+
+**Never do:**
+
+- Silently proceed while a subagent is stuck — name it, take the work, keep moving.
+- Pretend a subagent's partial output is complete when it bailed on permissions.
+- Retry the same denied tool from a subagent — denial is usually the subagent's sandbox policy, not transient.
+
+
 ## What this is
 
 `fitz` is a Rust CLI utility for FITS (astronomy image) files. It compresses/decompresses
@@ -80,7 +184,8 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
 - **`session.rs`** — `summarize_dir(root) -> Summary`: scans every image under a folder
   (`scan_images`; `.tif` skipped) and groups it into a `Summary` → `Session` → `TypeGroup` →
   `FilterGroup` → `Frame` tree, each level carrying its frame count and integration time
-  (session/summary integration is light frames only). Frame type comes from the `IMAGETYP`
+  (session/summary integration is light frames only); a `FilterGroup` also splits its
+  frames into `ExposureGroup`s (one per `EXPTIME`, longest first, shown as `12x300s`). Frame type comes from the `IMAGETYP`
   header (`FrameType::from_header`), else the nearest known ancestor folder name
   (`folder_frame_type`), else Light — `resolve_frame_type`, which also reports the
   `FrameTypeSource`, filter from `FILTER`, and a
