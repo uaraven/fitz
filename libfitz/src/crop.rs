@@ -222,19 +222,18 @@ pub fn crop_file(input: &Path, output: &Path, rect: CropRect) -> Result<CropRect
     if is_fits_file(input) {
         return crop_fits_file(input, output, rect);
     }
-    let image = load_image_from_file(input)?;
-    let used = rect.aligned(image_grid(image.image_type));
-    let cropped = image.crop(rect)?;
+    let (cropped, used) = load_image_from_file(input)?.crop(rect)?;
     save_fits(output, &cropped, SaveOptions::default())?;
     Ok(used)
 }
 
 impl Image {
     /// A copy of the `rect` region, aligned to the mosaic grid of a CFA or
-    /// X-Trans image so the pattern stays valid. The header is kept, with
-    /// `CRPIX*` shifted and a HISTORY card added. Errors if the (aligned)
-    /// rectangle is empty or not inside the image.
-    pub fn crop(&self, rect: CropRect) -> Result<Image> {
+    /// X-Trans image so the pattern stays valid, together with the rectangle
+    /// actually used. The header is kept, with `CRPIX*` shifted and a HISTORY
+    /// card added. Errors if the (aligned) rectangle is empty or not inside
+    /// the image.
+    pub fn crop(&self, rect: CropRect) -> Result<(Image, CropRect)> {
         let rect = rect.aligned(image_grid(self.image_type));
         rect.validate(self.width, self.height)?;
         let dims = (self.width, self.height);
@@ -245,13 +244,8 @@ impl Image {
         };
         let mut header = self.header.clone();
         stamp_crop(&mut header, rect);
-        Ok(Image::new(
-            self.image_type,
-            header,
-            rect.width,
-            rect.height,
-            pixels,
-        ))
+        let image = Image::new(self.image_type, header, rect.width, rect.height, pixels);
+        Ok((image, rect))
     }
 }
 
@@ -447,7 +441,8 @@ mod tests {
     fn image_crop_handles_interleaved_rgb_and_mosaics() {
         // Interleaved RGB keeps its three samples per pixel together.
         let rgb = load_fits(&test_data("rgb.fits")).unwrap();
-        let cropped = rgb.crop(rect(5, 9, 40, 30)).unwrap();
+        let (cropped, used) = rgb.crop(rect(5, 9, 40, 30)).unwrap();
+        assert_eq!(used, rect(5, 9, 40, 30));
         assert_eq!((cropped.width, cropped.height), (40, 30));
         let (PixelBuffer::F32(s), PixelBuffer::F32(o)) = (&rgb.pixels, &cropped.pixels) else {
             panic!("rgb.fits should load as f32")
@@ -461,7 +456,8 @@ mod tests {
 
         // A CFA image snaps to even, and keeps its pattern.
         let cfa = load_fits(&test_data("cfa_orion.fits")).unwrap();
-        let cropped = cfa.crop(rect(1, 1, 101, 51)).unwrap();
+        let (cropped, used) = cfa.crop(rect(1, 1, 101, 51)).unwrap();
+        assert_eq!(used, rect(0, 0, 100, 50));
         assert_eq!((cropped.width, cropped.height), (100, 50));
         assert_eq!(cropped.image_type, cfa.image_type);
         let (PixelBuffer::U16(s), PixelBuffer::U16(o)) = (&cfa.pixels, &cropped.pixels) else {
