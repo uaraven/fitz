@@ -71,6 +71,8 @@ pub(crate) fn write_mosaic_fits(path: &Path, width: usize, height: usize, patter
     fits.to_file(path).unwrap();
 }
 
+pub(crate) use crate::test_frames::{write_frame_fits, write_typed_frame_fits};
+
 /// Like [`write_mosaic_fits`] but also stamps representative metadata (OBJECT,
 /// DATE-OBS, a WCS pair, and a COMMENT card) so header-preservation tests have
 /// something to assert survives the processing commands.

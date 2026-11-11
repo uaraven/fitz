@@ -1,10 +1,35 @@
 // Data structs shared between the Rust controller and the UI.
 
-// One entry in the file list: its display name, a short status badge
+// What a frame is for — mirrors `libfitz::session::FrameType`.
+export enum FrameKind {
+    light,
+    dark,
+    bias,
+    flat,
+    dark-flat,
+}
+
+// How many frames of each kind the working set holds — the Selection menu's
+// by-type entries show these and are disabled at zero.
+export struct FrameCounts {
+    light: int,
+    dark: int,
+    bias: int,
+    flat: int,
+    dark-flat: int,
+}
+
+// One entry in the file list: its display name (the path relative to the
+// folder the whole working set shares), a short status badge
 // ("compressed" / "error" / ""), the full path, and — when the file failed
-// to load — the error message (empty otherwise), shown as a hover tooltip.
+// to load — the error message (empty otherwise). The full path and any error
+// are shown as a hover tooltip.
 // `checked` is the row's independent selection state (its checkbox), separate
 // from the single highlighted/previewed row tracked by `selected-index`.
+// `kind` is the frame type shown as an icon, with `kind-tip` (its name) as
+// the icon's tooltip; `kind-from-header` is set once the
+// IMAGETYP header has decided it, so a change of the working set's common
+// folder re-derives only the folder-based types.
 export struct FileRow {
     name: string,
     status: string,
@@ -12,6 +37,9 @@ export struct FileRow {
     error: string,
     checked: bool,
     exposure: float,
+    kind: FrameKind,
+    kind-from-header: bool,
+    kind-tip: string,
 }
 
 // One FITS header card, split into the Headers tab's display columns.
@@ -71,4 +99,14 @@ export struct StatLine {
 // One flagged frame in the "Detect bad frames" dialog: its display name 
 export struct BadFrameRow {
     name: string,
+}
+
+// One line of the Session Summary dialog's tree: a session, one frame type of
+// it, or one filter of that type (`depth` 0, 1, 2). `count` and `time` are
+// pre-formatted ("92 frames", "5h 12m 30s").
+export struct SessionRow {
+    depth: int,
+    label: string,
+    count: string,
+    time: string,
 }

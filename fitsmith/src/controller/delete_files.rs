@@ -85,7 +85,7 @@ fn delete_one(path: &Path, rename: bool) -> std::io::Result<()> {
 /// Drop the given paths from the working set, resolving each to its current
 /// index by path (rather than a captured index) since that's what the
 /// controller already does for a mutation driven by outside-the-model work —
-/// see `convert::replace_working_path`/`apply_loaded_exposures`.
+/// see `convert::replace_working_path`/`apply_loaded_headers`.
 fn drop_paths(app: &AppWindow, paths: &[PathBuf]) {
     let targets = STATE.with(|s| {
         let st = s.borrow();

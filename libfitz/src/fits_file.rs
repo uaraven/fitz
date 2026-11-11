@@ -1,12 +1,16 @@
 use crate::data::{Image, ImageType, PixelBuffer};
 use anyhow::{Result, anyhow};
 use std::borrow::Cow;
+use std::fs::File;
+use std::io::{BufReader, ErrorKind, Read, Seek};
 use std::path::Path;
 
 use crate::fits_bayer::{bayerpat_value, image_type_for_2d, parse_bayer_header};
 use crate::keywords::{
     BAYERPAT, BSCALE, BZERO, CFA_KEYWORDS, DATAMAX, DATAMIN, add_history, copy_missing_metadata,
 };
+use fitskit::io_utils::skip_data_block;
+use fitskit::tile_compress::CompressedImage;
 use fitskit::{
     Bitpix, CompressOptions, FitsFile, HduData, Header, HeaderValue, ImageData, PixelData,
 };
@@ -354,6 +358,19 @@ pub fn parse_date_obs(s: &str) -> Option<f64> {
         return None;
     }
 
+    // Header text is untrusted: reject out-of-range fields (and `nan`/`inf`,
+    // which `f64::parse` accepts) so the epoch stays finite and the calendar
+    // math cannot overflow. Second 60 allows a leap second.
+    let in_range = (0..=9999).contains(&year)
+        && (1..=12).contains(&month)
+        && (1..=31).contains(&day)
+        && (0.0..24.0).contains(&hour)
+        && (0.0..60.0).contains(&minute)
+        && (0.0..61.0).contains(&second);
+    if !in_range {
+        return None;
+    }
+
     let days = days_from_civil(year, month, day);
     Some(days as f64 * 86400.0 + hour * 3600.0 + minute * 60.0 + second)
 }
@@ -370,26 +387,26 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
-/// Read `source`'s image metadata without decoding (or decompressing) its
-/// pixels — the header-only counterpart to [`load_fits`], for callers that only
-/// report on a frame rather than process it.
+/// Read `source`'s image metadata without reading its pixels — the
+/// header-only counterpart to [`load_fits`], for callers that only report on a
+/// frame rather than process it. Only header blocks are read; every data block
+/// in front of the image HDU is seeked past, so the cost does not grow with
+/// the image size and a file truncated inside its pixel data still reports.
 pub fn load_header(source: &Path) -> Result<ImageMeta> {
-    let fits_file = FitsFile::from_file(source)?;
-    let hdu = fits_file
-        .iter()
-        .find(|hdu| is_image_hdu(hdu))
-        .ok_or_else(|| anyhow!("Image HDU not found"))?;
+    let mut reader = BufReader::new(File::open(source)?);
+    let header = read_image_header(&mut reader)?;
 
     // A tile-compressed HDU describes the image it holds in its `Z*` keywords;
     // its own NAXIS/BITPIX describe the binary table wrapping it.
-    let (naxis, bitpix) = match hdu.as_compressed_image() {
-        Some(_) => ("ZNAXIS", "ZBITPIX"),
-        None => ("NAXIS", "BITPIX"),
+    let (naxis, bitpix) = if CompressedImage::detect(&header) {
+        ("ZNAXIS", "ZBITPIX")
+    } else {
+        ("NAXIS", "BITPIX")
     };
-    let axis = |i: usize| hdu.header.get_int(&format!("{naxis}{i}"));
+    let axis = |i: usize| header.get_int(&format!("{naxis}{i}"));
 
-    let axes = hdu.header.get_int(naxis).unwrap_or(0);
-    let bayer_pat = hdu.header.get_string(BAYERPAT).and_then(parse_bayer_header);
+    let axes = header.get_int(naxis).unwrap_or(0);
+    let bayer_pat = header.get_string(BAYERPAT).and_then(parse_bayer_header);
     let image_type = if axes == 3 && axis(3) == Some(3) {
         ImageType::RGB
     } else {
@@ -397,12 +414,37 @@ pub fn load_header(source: &Path) -> Result<ImageMeta> {
     };
 
     Ok(ImageMeta {
-        header: hdu.header.clone(),
         image_type,
         width: axis(1).unwrap_or(0) as usize,
         height: axis(2).unwrap_or(0) as usize,
-        bitpix: hdu.header.get_int(bitpix).unwrap_or(0),
+        bitpix: header.get_int(bitpix).unwrap_or(0),
+        header,
     })
+}
+
+/// The header of the first HDU holding image pixels — the same HDU
+/// [`find_image_hdu_index`] picks from a fully read file: a primary or `IMAGE`
+/// extension with a non-empty data block, or a tile-compressed (`ZIMAGE`)
+/// binary table. Other HDUs' data blocks are skipped unread.
+fn read_image_header<R: Read + Seek>(reader: &mut R) -> Result<Header> {
+    loop {
+        let header = match Header::read_from(reader) {
+            Ok(header) => header,
+            Err(fitskit::Error::Io(e)) if e.kind() == ErrorKind::UnexpectedEof => {
+                return Err(anyhow!("Image HDU not found"));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let data_bytes = header.data_byte_count()?;
+        let xtension = header.get_string("XTENSION");
+        let plain_image =
+            (header.find("SIMPLE").is_some() || xtension == Some("IMAGE")) && data_bytes > 0;
+        let compressed = xtension == Some("BINTABLE") && CompressedImage::detect(&header);
+        if plain_image || compressed {
+            return Ok(header);
+        }
+        skip_data_block(reader, data_bytes)?;
+    }
 }
 
 #[cfg(test)]
@@ -993,6 +1035,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_date_obs_rejects_out_of_range_fields() {
+        // Hostile header values must not reach the calendar math or yield a
+        // non-finite epoch.
+        for bad in [
+            "99999999999999999-01-01T00:00:00", // year far beyond any calendar
+            "-5-01-01T00:00:00",
+            "2026-00-10T00:00:00",
+            "2026-13-10T00:00:00",
+            "2026-06-00T00:00:00",
+            "2026-06-32T00:00:00",
+            "2026-06-22T24:00:00",
+            "2026-06-22T22:60:00",
+            "2026-06-22T22:00:61",
+            "2026-06-22Tnan:00:00",
+            "2026-06-22T22:00:inf",
+            "2026-06-22T1e300:00:00",
+        ] {
+            assert_eq!(parse_date_obs(bad), None, "{bad}");
+        }
+        // A leap second is still fine.
+        assert!(parse_date_obs("2016-12-31T23:59:60").is_some());
+    }
+
+    #[test]
     fn days_from_civil_matches_known_epoch_offsets() {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         assert_eq!(days_from_civil(1969, 12, 31), -1);
@@ -1015,6 +1081,49 @@ mod tests {
             // A tile-compressed HDU's own BITPIX describes its binary table;
             // the image's own bit depth is in ZBITPIX.
             assert_eq!(meta.bitpix, 16, "{name}");
+            // The very header `load_fits` keeps, card for card.
+            let cards = |h: &Header| h.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>();
+            assert_eq!(cards(&meta.header), cards(&full.header), "{name}");
         }
+    }
+
+    #[test]
+    fn load_header_reads_no_pixel_data_so_a_truncated_frame_still_reports() {
+        // Cut each file well inside its pixel data: a full read fails, the
+        // header-only read never gets that far. For the `.fz`, the empty
+        // primary HDU is skipped and the compressed table's header is found.
+        let tmp = TempDir::new().unwrap();
+        for name in ["uncompressed.fit", "compressed.fits.fz"] {
+            let bytes = std::fs::read(test_data(name)).unwrap();
+            let cut = tmp.path().join(name);
+            std::fs::write(&cut, &bytes[..1 << 20]).unwrap();
+
+            let meta = load_header(&cut).unwrap();
+            let full = load_header(&test_data(name)).unwrap();
+
+            assert!(load_fits(&cut).is_err(), "{name}");
+            assert_eq!(meta.image_type, full.image_type, "{name}");
+            assert_eq!((meta.width, meta.height), (full.width, full.height));
+            assert_eq!(
+                meta.header.get_string("DATE-OBS"),
+                full.header.get_string("DATE-OBS"),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn load_header_fails_without_an_image_hdu() {
+        let tmp = TempDir::new().unwrap();
+        let empty = tmp.path().join("empty.fits");
+        FitsFile::with_primary_image(ImageData::new(vec![], PixelData::U8(vec![])))
+            .to_file(&empty)
+            .unwrap();
+        let garbage = tmp.path().join("garbage.fits");
+        std::fs::write(&garbage, b"not a fits file").unwrap();
+
+        let err = load_header(&empty).err().unwrap();
+        assert_eq!(err.to_string(), "Image HDU not found");
+        assert!(load_header(&garbage).is_err());
     }
 }

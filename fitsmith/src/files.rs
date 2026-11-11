@@ -1,55 +1,15 @@
 //! Pure, UI-free helpers for the working set of files: recognizing FITS paths,
 //! scanning a directory, deriving display names, and stepping the blink
-//! selection. Kept free of Slint and `libfitz` so the logic is unit-testable
-//! without an event loop.
+//! selection. Kept free of Slint so the logic is unit-testable without an
+//! event loop.
 
 use std::path::{Path, PathBuf};
 
-/// Extensions FitSmith treats as openable FITS images (`.fz` is a
-/// tile-compressed FITS, transparently decompressed on read).
-pub const FITS_EXTENSIONS: &[&str] = &["fit", "fits", "fts", "fz"];
-
-pub const RAW_EXTENSIONS: &[&str] = &[
-"3fr", "ari", "arw", "bay", "braw", "crw", "cr2", "cr3", "cap", "data", "dcs", "dcr",
-"dng", "drf", "eip", "erf", "fff", "gpr", "iiq", "k25", "kdc", "mdc", "mef", "mos",
-"mrw", "nef", "nrw", "obm", "orf", "pef", "ptx", "pxn", "r3d", "raf", "raw", "rwl",
-"rw2", "rwz", "sr2", "srf", "srw", "tif", "x3f",
-];
-
-fn has_extension(path: &Path, candidates: &[&str]) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| candidates.iter().any(|c| c.eq_ignore_ascii_case(e)))
-        .unwrap_or(false)
-}
-
-/// Whether `path` looks like a FITS image we can open.
-pub fn is_fits_path(path: &Path) -> bool {
-    has_extension(path, FITS_EXTENSIONS) && !macos_special_file(path)
-}
-
-pub fn is_raw_image(path: &Path) -> bool {
-    has_extension(path, RAW_EXTENSIONS) && !macos_special_file(path)
-}
-
-/// Whether `path` is a FITS or RAW image FitSmith can open.
-pub fn is_openable_image(path: &Path) -> bool {
-    is_fits_path(path) || is_raw_image(path)
-}
-
-#[cfg(target_os = "macos")]
-fn macos_special_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|f| f.to_str())
-        .map(|f| f.starts_with("._"))
-        .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn macos_special_file(_path: &Path) -> bool {
-    false
-}
-
+// The extension lists and FITS/RAW path predicates live in `libfitz` so the
+// CLI's session scan recognises exactly the same files; re-exported here so
+// existing `crate::files::…` callers are unchanged.
+use libfitz::files::has_extension;
+pub use libfitz::files::{FITS_EXTENSIONS, RAW_EXTENSIONS, is_fits_path, is_openable_image};
 
 /// Whether `path` is a tile-compressed FITS (`.fz`), used to badge the file row.
 pub fn is_compressed(path: &Path) -> bool {
@@ -79,6 +39,39 @@ pub fn scan_directory(dir: &Path) -> Vec<PathBuf> {
         .collect();
     paths.sort();
     paths
+}
+
+/// Every openable image anywhere under `dir`, subfolders included, depth-first
+/// in name order. Same extensions as [`scan_directory`]; unreadable folders are
+/// skipped and symlinked folders are not followed.
+pub fn scan_directory_recursive(dir: &Path) -> Vec<PathBuf> {
+    libfitz::files::find_images(dir, &[])
+}
+
+/// Whether `dir` directly contains at least one subfolder. Decides whether
+/// File ▸ Open Folder offers to include subfolders.
+pub fn has_subdirectories(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+    })
+}
+
+/// The list names for `paths`: each path relative to the deepest folder they
+/// all share, so one folder's files show bare names and a set spanning
+/// `night1/Lights` and `night2/Lights` shows `night1/Lights/a.fit` and
+/// `night2/Lights/c.fit`. Paths with nothing in common (different drives)
+/// keep their full path.
+pub fn relative_names(paths: &[PathBuf]) -> Vec<String> {
+    let common = libfitz::files::common_dir(paths);
+    paths
+        .iter()
+        .map(|p| match p.strip_prefix(&common) {
+            Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+            _ => display_name(p),
+        })
+        .collect()
 }
 
 /// The next selection index for blink / arrow scrubbing, wrapping around the
@@ -180,16 +173,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recognizes_fits_extensions_case_insensitively() {
-        assert!(is_fits_path(Path::new("a.fit")));
-        assert!(is_fits_path(Path::new("a.FITS")));
-        assert!(is_fits_path(Path::new("a.Fts")));
-        assert!(is_fits_path(Path::new("a.fz")));
-        assert!(!is_fits_path(Path::new("a.png")));
-        assert!(!is_fits_path(Path::new("noext")));
-    }
-
-    #[test]
     fn detects_compressed_only_for_fz() {
         assert!(is_compressed(Path::new("a.FZ")));
         assert!(!is_compressed(Path::new("a.fits")));
@@ -219,6 +202,113 @@ mod tests {
             .map(|p| display_name(p))
             .collect();
         assert_eq!(found, vec!["a.fit", "b.fits", "c.fz"]);
+    }
+
+    #[test]
+    fn recursive_scan_finds_real_images_in_subfolders() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = |name: &str| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("test-data")
+                .join(name)
+        };
+        std::fs::create_dir_all(dir.path().join("Lights/night1")).unwrap();
+        std::fs::copy(fixture("uncompressed.fit"), dir.path().join("top.fit")).unwrap();
+        std::fs::copy(
+            fixture("compressed.fits.fz"),
+            dir.path().join("Lights/night1/deep.fits.fz"),
+        )
+        .unwrap();
+        std::fs::copy(fixture("comet.ARW"), dir.path().join("Lights/raw.ARW")).unwrap();
+        std::fs::write(dir.path().join("Lights/notes.txt"), b"x").unwrap();
+
+        let flat = scan_directory(dir.path());
+        let deep: Vec<String> = scan_directory_recursive(dir.path())
+            .iter()
+            .map(|p| p.strip_prefix(dir.path()).unwrap().display().to_string())
+            .collect();
+
+        assert_eq!(flat.len(), 1);
+        assert_eq!(
+            deep,
+            ["Lights/night1/deep.fits.fz", "Lights/raw.ARW", "top.fit"]
+        );
+    }
+
+    #[test]
+    fn relative_names_are_bare_file_names_within_one_folder() {
+        let p = |s: &str| PathBuf::from(s);
+        assert!(relative_names(&[]).is_empty());
+        assert_eq!(relative_names(&[p("/d/Lights/a.fit")]), ["a.fit"]);
+        assert_eq!(
+            relative_names(&[p("/d/Lights/a.fit"), p("/d/Lights/b.fit")]),
+            ["a.fit", "b.fit"]
+        );
+    }
+
+    #[test]
+    fn relative_names_are_relative_to_the_common_parent() {
+        let p = |s: &str| PathBuf::from(s);
+        let names = relative_names(&[
+            p("/d/night1/Lights/a.fit"),
+            p("/d/night1/Lights/b.fit"),
+            p("/d/night2/Lights/c.fit"),
+            p("/d/night1/Darks/d.fit"),
+        ]);
+        assert_eq!(
+            names,
+            [
+                "night1/Lights/a.fit",
+                "night1/Lights/b.fit",
+                "night2/Lights/c.fit",
+                "night1/Darks/d.fit"
+            ]
+        );
+        // A file in the shared folder itself keeps its bare name; a common
+        // parent must match whole components (`/d/ab` is not under `/d/a`).
+        assert_eq!(
+            relative_names(&[p("/d/a/x.fit"), p("/d/top.fit"), p("/d/ab/y.fit")]),
+            ["a/x.fit", "top.fit", "ab/y.fit"]
+        );
+        assert_eq!(
+            relative_names(&[p("/x/b/a.fit"), p("/a.fit")]),
+            ["x/b/a.fit", "a.fit"]
+        );
+    }
+
+    #[test]
+    fn relative_names_on_a_real_recursive_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("n1/Lights")).unwrap();
+        std::fs::create_dir_all(dir.path().join("n2/Lights")).unwrap();
+        let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-data");
+        for (src, dst) in [
+            ("uncompressed.fit", "n1/Lights/a.fit"),
+            ("compressed.fits.fz", "n2/Lights/b.fits.fz"),
+        ] {
+            std::fs::copy(data.join(src), dir.path().join(dst)).unwrap();
+        }
+        let paths = scan_directory_recursive(dir.path());
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            relative_names(&paths),
+            [
+                format!("n1{sep}Lights{sep}a.fit"),
+                format!("n2{sep}Lights{sep}b.fits.fz")
+            ]
+        );
+    }
+
+    #[test]
+    fn has_subdirectories_only_for_real_subfolders() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.fit"), b"x").unwrap();
+        assert!(!has_subdirectories(dir.path()));
+        assert!(!has_subdirectories(Path::new("/no/such/dir/here")));
+
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        assert!(has_subdirectories(dir.path()));
     }
 
     #[test]

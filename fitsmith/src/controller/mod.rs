@@ -18,15 +18,20 @@
 //! - [`convert`] — the compress / decompress batch operations;
 //! - [`export`] — the export dialog and its batch;
 //! - [`analytics`] — the analytics batch and its time-series chart;
-//! - [`delete_files`] — Tools ▸ Delete Files…: delete or rename the checked files.
+//! - [`sessions`] — Tools ▸ Session Summary…: group the working set's files into a
+//!   read-only sessions / frame types / filters tree and copy its report;
+//! - [`delete_files`] — Tools ▸ Delete Files…: delete or rename the checked files;
+//! - [`frame_kinds`] — the list's frame-type icons and Selection ▸ by-type.
 
 mod analytics;
 mod bad_frames;
 mod convert;
 mod delete_files;
 mod export;
+mod frame_kinds;
 mod inspect;
 pub(crate) mod metrics;
+mod sessions;
 mod support;
 mod viewer;
 
@@ -36,6 +41,7 @@ pub use convert::*;
 pub use delete_files::*;
 pub use export::*;
 pub use inspect::*;
+pub use sessions::*;
 pub use viewer::*;
 
 use std::cell::RefCell;
@@ -50,10 +56,15 @@ use metrics::{FileMetrics, MetricFamily};
 use rayon::prelude::*;
 use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel, Weak};
 
-use crate::controller::support::load_exposure;
+use crate::controller::support::load_frame_header;
 use crate::doc::FileMeta;
-use crate::files::{display_name, expand_inputs, is_compressed, scan_directory};
-use crate::{AppWindow, FileRow, view};
+use crate::files::{
+    display_name, expand_inputs, has_subdirectories, is_compressed, relative_names, scan_directory,
+    scan_directory_recursive,
+};
+use crate::{AppWindow, FileRow, FrameKind, view};
+use libfitz::files::common_dir;
+use libfitz::session::FrameType;
 
 /// Key for the rendered-preview cache: a path plus the toggle state it was
 /// rendered under. Keying on the toggles (rather than clearing the cache on
@@ -125,6 +136,22 @@ struct AppState {
     /// knob change re-evaluates in memory with no file re-read. Cleared when
     /// the dialog closes.
     bad_frames: Vec<FileMetrics>,
+    /// The `[SessionRow]` model behind the Session Summary dialog.
+    sessions_model: Rc<VecModel<crate::SessionRow>>,
+    /// The summary behind the open Session Summary dialog — re-flattened when
+    /// "Show calibration frames" flips, and formatted (exactly as `fitz summary`
+    /// prints it) by the copy button. `None` until the headers are read;
+    /// cleared on close.
+    sessions_summary: Option<libfitz::session::Summary>,
+    /// The system clipboard, created on first use and then kept: on X11 the
+    /// copied text vanishes as soon as the handle that set it is dropped.
+    clipboard: Option<arboard::Clipboard>,
+    /// Raised to stop the Session Summary dialog's header read; each opening
+    /// gets a fresh flag so stopping one can't silence the next.
+    sessions_cancel: Arc<AtomicBool>,
+    /// Bumped whenever the Session Summary dialog opens or closes, so a header
+    /// read that finishes afterwards lands as stale and is dropped.
+    sessions_generation: u64,
     /// The paths the bad-frame dialog currently flags, in working-set order —
     /// what its Select button checks in the file list.
     bad_frame_flagged: Vec<PathBuf>,
@@ -165,6 +192,11 @@ impl AppState {
             analytics_generation: 0,
             analytics_cancel: Arc::new(AtomicBool::new(false)),
             analytics_family: MetricFamily::Pixel,
+            sessions_model: Rc::new(VecModel::default()),
+            sessions_summary: None,
+            clipboard: None,
+            sessions_cancel: Arc::new(AtomicBool::new(false)),
+            sessions_generation: 0,
             bad_frames: Vec::new(),
             bad_frame_flagged: Vec::new(),
             batch_cancel: Arc::new(AtomicBool::new(false)),
@@ -181,6 +213,7 @@ thread_local! {
 pub fn init(app: &AppWindow) {
     STATE.with(|s| {
         app.set_files(ModelRc::from(s.borrow().files_model.clone()));
+        app.set_sessions_model(ModelRc::from(s.borrow().sessions_model.clone()));
     });
     update_memory(app);
 }
@@ -254,6 +287,10 @@ fn view_toggles(app: &AppWindow) -> (bool, bool, bool) {
 }
 
 /// Build the list row for a path: base name plus a "compressed" badge for `.fz`.
+/// The name becomes a path relative to the working set's common folder, and
+/// the frame kind is derived from the folders, once `refresh_rows` sees the
+/// whole set; the header's `IMAGETYP` and `EXPTIME` arrive later still, from
+/// `spawn_header_load`.
 fn make_row(path: &Path, exposure: f32) -> FileRow {
     FileRow {
         name: display_name(path).into(),
@@ -267,6 +304,7 @@ fn make_row(path: &Path, exposure: f32) -> FileRow {
         error: "".into(),
         checked: false,
         exposure,
+        ..Default::default()
     }
 }
 
@@ -304,18 +342,54 @@ pub fn open_file(app: &AppWindow) {
     }
 }
 
-/// Prompt for a directory, add every FITS file it contains, and select the
-/// first newly added one.
+/// Prompt for a directory, add every image it contains, and select the first
+/// newly added one. When the directory has subfolders, also asks whether to
+/// include their images (the native folder picker has no room for a checkbox);
+/// cancelling that question cancels the open.
 pub fn open_directory(app: &AppWindow) {
     let Some(dir) = rfd::FileDialog::new().pick_folder() else {
         return;
     };
-    let paths = scan_directory(&dir);
-    if paths.is_empty() {
-        app.set_status_text(format!("No FITS files in {}", dir.display()).into());
-        return;
+    let recursive = has_subdirectories(&dir) && {
+        let answer = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Info)
+            .set_title("Include images in subfolders?")
+            .set_description(format!("{} contains subfolders", dir.display()))
+            .set_buttons(rfd::MessageButtons::YesNoCancel)
+            .show();
+        match include_subfolders(&answer) {
+            Some(recursive) => recursive,
+            None => return,
+        }
+    };
+    // The walk can take a while on a big tree or a network drive, so it runs
+    // off the UI thread.
+    app.set_status_text(format!("Scanning {}…", dir.display()).into());
+    let weak = app.as_weak();
+    std::thread::spawn(move || {
+        let paths = if recursive {
+            scan_directory_recursive(&dir)
+        } else {
+            scan_directory(&dir)
+        };
+        let _ = weak.upgrade_in_event_loop(move |app| {
+            if paths.is_empty() {
+                app.set_status_text(format!("No images in {}", dir.display()).into());
+            } else {
+                add_and_select(&app, paths);
+            }
+        });
+    });
+}
+
+/// Interpret the "Include subfolders?" answer: `Some(true)` for Yes,
+/// `Some(false)` for No, `None` (abandon the open) for anything else.
+fn include_subfolders(answer: &rfd::MessageDialogResult) -> Option<bool> {
+    match answer {
+        rfd::MessageDialogResult::Yes => Some(true),
+        rfd::MessageDialogResult::No => Some(false),
+        _ => None,
     }
-    add_and_select(app, paths);
 }
 
 /// Add the files and directories passed on the command line to the working set
@@ -335,14 +409,51 @@ fn add_and_select(app: &AppWindow, paths: Vec<PathBuf>) {
     if let Some(index) = target {
         select_file(app, index as i32);
     }
+    refresh_rows(app);
     update_exposure(app);
-    spawn_exposure_load(app.as_weak(), added);
+    spawn_header_load(app.as_weak(), added);
+}
+
+/// Re-derive what every list row takes from the working set's common folder:
+/// its name (the path relative to that folder, so files from several folders
+/// read as `night1/Lights/a.fit`) and — unless its header's `IMAGETYP` already
+/// decided it — its folder-based frame kind. Then refresh the Selection menu's
+/// per-kind counts. Call after any change to the set's paths. Rows already
+/// right are left untouched.
+fn refresh_rows(app: &AppWindow) {
+    STATE.with(|s| {
+        let st = s.borrow();
+        let root = common_dir(&st.paths);
+        let names = relative_names(&st.paths);
+        for (i, (want, path)) in names.iter().zip(&st.paths).enumerate() {
+            let Some(mut row) = st.files_model.row_data(i) else {
+                continue;
+            };
+            let mut changed = row.name != want;
+            if changed {
+                row.name = want.into();
+            }
+            if !row.kind_from_header {
+                changed |= frame_kinds::classify_row(&mut row, None, path, &root);
+            }
+            if changed {
+                st.files_model.set_row_data(i, row);
+            }
+        }
+    });
+    update_frame_counts(app);
+}
+
+/// Refresh the Selection menu's per-kind frame counts.
+fn update_frame_counts(app: &AppWindow) {
+    let counts = STATE.with(|s| frame_kinds::count_kinds(&s.borrow().files_model));
+    app.set_frame_counts(counts);
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
 /// model. Returns the index of the first newly added path (for auto-select, or
 /// `None` if every path was already present), plus every newly added path so
-/// the caller can kick off an async exposure load for them.
+/// the caller can kick off an async header load for them.
 fn add_paths(new_paths: Vec<PathBuf>) -> (Option<usize>, Vec<PathBuf>) {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
@@ -352,8 +463,9 @@ fn add_paths(new_paths: Vec<PathBuf>) -> (Option<usize>, Vec<PathBuf>) {
             if st.paths.iter().any(|p| p == &path) {
                 continue;
             }
-            // Exposure is filled in asynchronously once its header has been
-            // read off the UI thread — see `spawn_exposure_load`.
+            // Exposure and the header's frame type are filled in
+            // asynchronously once its header has been read off the UI thread
+            // — see `spawn_header_load`.
             st.files_model.push(make_row(&path, 0.0));
             st.paths.push(path.clone());
             first_added.get_or_insert(st.paths.len() - 1);
@@ -367,43 +479,48 @@ fn index_of(path: &Path) -> Option<usize> {
     STATE.with(|s| s.borrow().paths.iter().position(|p| p == path))
 }
 
-/// Read the header of each newly added path off the UI thread
-/// and fill in its row's exposure once done, then refresh the status
-/// bar totals. A no-op for an empty list.
-fn spawn_exposure_load(weak: Weak<AppWindow>, paths: Vec<PathBuf>) {
+/// Read the header of each newly added path off the UI thread and fill in its
+/// row's exposure and `IMAGETYP` frame type once done, then refresh the status
+/// bar totals and the Selection menu's counts. A no-op for an empty list.
+fn spawn_header_load(weak: Weak<AppWindow>, paths: Vec<PathBuf>) {
     if paths.is_empty() {
         return;
     }
     std::thread::spawn(move || {
-        let loaded: Vec<(PathBuf, f32)> = paths
+        let loaded: Vec<(PathBuf, f32, Option<FrameType>)> = paths
             .into_par_iter()
             .map(|path| {
-                let exposure = load_exposure(&path);
-                (path, exposure)
+                let (exposure, frame_type) = load_frame_header(&path);
+                (path, exposure, frame_type)
             })
             .collect();
-        let _ = weak.upgrade_in_event_loop(move |app| apply_loaded_exposures(&app, loaded));
+        let _ = weak.upgrade_in_event_loop(move |app| apply_loaded_headers(&app, loaded));
     });
 }
 
-/// Apply the results of `spawn_exposure_load` to the rows that are still in
-/// the working set — a row removed, or the set cleared, while its header was
-/// still loading is looked up by path and silently skipped, since the working
-/// set may have changed shape by the time this runs — then refresh the
-/// total/checked exposure readouts.
-fn apply_loaded_exposures(app: &AppWindow, loaded: Vec<(PathBuf, f32)>) {
+/// Apply the results of `spawn_header_load` to the rows that are still in the
+/// working set — a row removed, or the set cleared, while its header was still
+/// loading is looked up by path and silently skipped, since the working set
+/// may have changed shape by the time this runs — then refresh the
+/// total/checked exposure readouts and the per-kind counts. A header without a
+/// frame type leaves the kind to the folders (and drops one a rewritten file's
+/// old header had decided).
+fn apply_loaded_headers(app: &AppWindow, loaded: Vec<(PathBuf, f32, Option<FrameType>)>) {
     STATE.with(|s| {
         let st = s.borrow();
-        for (path, exposure) in loaded {
+        let root = common_dir(&st.paths);
+        for (path, exposure, frame_type) in loaded {
             if let Some(i) = st.paths.iter().position(|p| *p == path)
                 && let Some(mut row) = st.files_model.row_data(i)
             {
                 row.exposure = exposure;
+                frame_kinds::classify_row(&mut row, frame_type, &path, &root);
                 st.files_model.set_row_data(i, row);
             }
         }
     });
     update_exposure(app);
+    update_frame_counts(app);
     app.window().request_redraw();
 }
 
@@ -438,6 +555,7 @@ pub fn clear_files(app: &AppWindow) {
         st.generation += 1;
     });
     show_empty(app);
+    refresh_rows(app);
     update_memory(app);
     update_exposure(app);
     update_checked_count(app);
@@ -533,6 +651,7 @@ fn drop_rows(mut targets: Vec<usize>) -> Option<Option<usize>> {
 /// refresh the memory/exposure/checked readouts and re-home the highlight to
 /// the row it resolved on (or show the empty state when the set emptied).
 fn finish_removal(app: &AppWindow, target: Option<usize>) {
+    refresh_rows(app);
     update_memory(app);
     update_exposure(app);
     update_checked_count(app);
@@ -609,44 +728,67 @@ pub fn update_exposure(_app: &AppWindow) {
     })
 }
 
-/// Check every row in the working set — Tools ▸ Select All (Ctrl/Cmd+A).
+/// Check every row in the working set — Selection ▸ Select All (Ctrl/Cmd+A).
 pub fn select_all(_app: &AppWindow) {
     STATE.with(|s| set_all_checked(&s.borrow().files_model, true));
     update_checked_count(_app);
     update_exposure(_app);
 }
 
-/// Uncheck every row in the working set — Tools ▸ Deselect All (Ctrl/Cmd+D).
+/// Uncheck every row in the working set — Selection ▸ Deselect All (Ctrl/Cmd+D).
 pub fn deselect_all(_app: &AppWindow) {
     STATE.with(|s| set_all_checked(&s.borrow().files_model, false));
     update_checked_count(_app);
     update_exposure(_app);
 }
 
-/// Set every file row's `checked` flag to `checked`, only rewriting rows that
-/// actually change (avoiding needless model updates). Split out from
+/// Flip every row's checkbox — View ▸ Invert Selection (Ctrl/Cmd+Shift+I).
+pub fn invert_selection(app: &AppWindow) {
+    STATE.with(|s| invert_checked(&s.borrow().files_model));
+    update_checked_count(app);
+    update_exposure(app);
+}
+
+/// Check exactly the rows of one frame kind — Selection ▸ Lights / Darks / ….
+pub fn select_frame_kind(app: &AppWindow, kind: FrameKind) {
+    STATE.with(|s| set_checked_kind(&s.borrow().files_model, kind));
+    update_checked_count(app);
+    update_exposure(app);
+}
+
+/// Set every file row's `checked` flag to `checked`. Split out from
 /// [`select_all`]/[`deselect_all`] so it needs no window and is unit-testable.
 fn set_all_checked(model: &VecModel<FileRow>, checked: bool) {
-    for i in 0..model.row_count() {
-        if let Some(mut row) = model.row_data(i)
-            && row.checked != checked
-        {
-            row.checked = checked;
-            model.set_row_data(i, row);
-        }
-    }
+    set_checked_where(model, |_| checked);
 }
 
 /// Check exactly the rows whose path is in `paths` and uncheck every other
-/// row, only rewriting rows that actually change (like [`set_all_checked`]).
-/// The bad-frame dialog's Select button uses this to turn its verdict into the
-/// file-list selection.
+/// row. The bad-frame dialog's Select button uses this to turn its verdict
+/// into the file-list selection.
 fn set_checked_paths(model: &VecModel<FileRow>, paths: &std::collections::HashSet<String>) {
+    set_checked_where(model, |row| paths.contains(row.path.as_str()));
+}
+
+/// Flip every row's `checked` flag (the window-free half of
+/// [`invert_selection`]).
+fn invert_checked(model: &VecModel<FileRow>) {
+    set_checked_where(model, |row| !row.checked);
+}
+
+/// Check exactly the rows of `kind` and uncheck the rest (the window-free half
+/// of [`select_frame_kind`]).
+fn set_checked_kind(model: &VecModel<FileRow>, kind: FrameKind) {
+    set_checked_where(model, |row| row.kind == kind);
+}
+
+/// Set each row's `checked` flag to what `want` says for that row, only
+/// rewriting rows that actually change (avoiding needless model updates).
+fn set_checked_where(model: &VecModel<FileRow>, want: impl Fn(&FileRow) -> bool) {
     for i in 0..model.row_count() {
         if let Some(mut row) = model.row_data(i) {
-            let want = paths.contains(row.path.as_str());
-            if row.checked != want {
-                row.checked = want;
+            let checked = want(&row);
+            if row.checked != checked {
+                row.checked = checked;
                 model.set_row_data(i, row);
             }
         }
@@ -741,14 +883,19 @@ fn operation_targets(predicate: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    fn row(name: &str) -> FileRow {
+    #[test]
+    fn subfolder_prompt_answers_map_to_recursion_or_cancel() {
+        use rfd::MessageDialogResult::*;
+        assert_eq!(include_subfolders(&Yes), Some(true));
+        assert_eq!(include_subfolders(&No), Some(false));
+        assert_eq!(include_subfolders(&Cancel), None);
+    }
+
+    pub(super) fn row(name: &str) -> FileRow {
         FileRow {
             name: name.into(),
-            status: "".into(),
             path: name.into(),
-            error: "".into(),
-            checked: false,
-            exposure: 0.0,
+            ..Default::default()
         }
     }
 
@@ -828,6 +975,51 @@ mod tests {
 
         set_all_checked(&model, false);
         assert!((0..3).all(|i| !model.row_data(i).unwrap().checked));
+    }
+
+    #[test]
+    fn invert_checked_flips_every_row() {
+        let model = VecModel::from(vec![row("a"), row("b"), row("c")]);
+        toggle_check_row(&model, 1);
+        invert_checked(&model);
+        let checked: Vec<bool> = model.iter().map(|r| r.checked).collect();
+        assert_eq!(checked, [true, false, true]);
+    }
+
+    #[test]
+    fn selecting_a_kind_checks_exactly_its_real_frames() {
+        // A real light (`IMAGETYP= 'LIGHT'`) filed under Darks, and a real
+        // frame with no IMAGETYP under Darks — typed by its folder.
+        let tmp = tempfile::tempdir().unwrap();
+        let darks = tmp.path().join("Darks");
+        std::fs::create_dir_all(&darks).unwrap();
+        let paths = vec![darks.join("light.fit"), darks.join("dark.fits")];
+        std::fs::copy(test_data("uncompressed.fit"), &paths[0]).unwrap();
+        std::fs::copy(test_data("cfa_orion.fits"), &paths[1]).unwrap();
+        let root = common_dir(&paths);
+        let rows = paths
+            .iter()
+            .map(|p| {
+                let mut r = make_row(p, 0.0);
+                let (_, header) = load_frame_header(p);
+                frame_kinds::classify_row(&mut r, header, p, &root);
+                r
+            })
+            .collect::<Vec<_>>();
+        let model = VecModel::from(rows);
+        toggle_check_row(&model, 0); // a stale check on the light must clear
+
+        set_checked_kind(&model, FrameKind::Dark);
+        let checked: Vec<bool> = model.iter().map(|r| r.checked).collect();
+        assert_eq!(checked, [false, true]);
+
+        set_checked_kind(&model, FrameKind::Light);
+        let checked: Vec<bool> = model.iter().map(|r| r.checked).collect();
+        assert_eq!(checked, [true, false]);
+
+        // No frame of that kind: nothing ends up checked.
+        set_checked_kind(&model, FrameKind::Flat);
+        assert!(model.iter().all(|r| !r.checked));
     }
 
     #[test]

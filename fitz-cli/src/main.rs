@@ -9,6 +9,7 @@ mod io_prompt;
 mod kitty;
 mod options;
 mod preview;
+mod session_summary;
 mod split_channel;
 mod stretch;
 mod terminal;
@@ -152,6 +153,8 @@ enum Command {
     /// Copy FITS header keywords from one image onto another, filling in only what the target is missing
     #[command(name = "copy-header")]
     CopyHeader(CopyHeaderArgs),
+    /// Summarise the sessions, frame types and filters of the images in a directory tree
+    Summary(SummaryArgs),
     /// Calculate SHA-256 hash of a FITS file
     #[command(hide = true)]
     Hash(HashArgs),
@@ -356,6 +359,13 @@ struct InfoArgs {
     headers: bool,
     /// FITS files to inspect
     files: Vec<PathBuf>,
+}
+
+#[derive(clap::Args)]
+struct SummaryArgs {
+    /// Directories to scan recursively for FITS and camera RAW images
+    #[arg(required = true)]
+    dirs: Vec<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -573,6 +583,7 @@ fn main() -> ExitCode {
         Command::Info(a) => run_info(a, verbose),
         Command::Preview(a) => run_preview(a, verbose),
         Command::CopyHeader(a) => run_copy_header(a, verbose),
+        Command::Summary(a) => run_summary(a, verbose),
         Command::Hash(a) => run_hash(a),
         Command::Experimental(a) => run_experimental(a),
     }
@@ -779,6 +790,30 @@ fn run_info(args: InfoArgs, verbose: bool) -> ExitCode {
     process_files(&files, |path| info_file(path, &opts))
 }
 
+/// Unlike the batch commands, `summary` takes directories and scans each one
+/// recursively; a directory that cannot be scanned is reported and the next one
+/// still runs.
+fn run_summary(args: SummaryArgs, verbose: bool) -> ExitCode {
+    let mut ok = true;
+    for (i, dir) in args.dirs.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        match session_summary::summary_dir(dir, args.dirs.len() > 1, verbose) {
+            Ok(clean) => ok &= clean,
+            Err(e) => {
+                eprintln!("fitz: {}: {e:#}", dir.display());
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 /// Unlike the other commands, `preview` renders to the terminal and so accepts
 /// exactly one file (enforced by clap's single `PathBuf` argument).
 fn run_preview(args: PreviewArgs, verbose: bool) -> ExitCode {
@@ -869,6 +904,20 @@ fn run_copy_header(args: CopyHeaderArgs, verbose: bool) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_takes_one_or_more_directories() {
+        let cli = Cli::try_parse_from(["fitz", "summary", "/a", "b"]).unwrap();
+        let Command::Summary(args) = cli.command else {
+            panic!("expected the summary command");
+        };
+        assert_eq!(args.dirs, [PathBuf::from("/a"), PathBuf::from("b")]);
+    }
+
+    #[test]
+    fn summary_requires_a_directory() {
+        assert!(Cli::try_parse_from(["fitz", "summary"]).is_err());
+    }
 
     #[test]
     fn parse_brightness_accepts_open_interval() {

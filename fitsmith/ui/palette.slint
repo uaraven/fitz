@@ -36,6 +36,10 @@ export global AppPalette {
     out property <color> muted: dark-theme ? #a0a0a0 : #707070;
     out property <color> zebra: dark-theme ? #ffffff08 : #00000008;
     out property <color> accent: dark-theme ? #9ecbff : #0a5ea8;
+    // Foreground for glyphs drawn on an `accent` background (the highlighted
+    // list row): the accent is pale in the dark theme and deep in the light one,
+    // so the glyph flips to dark / white to stay readable in both.
+    out property <color> on-accent: dark-theme ? #101820 : white;
     out property <color> danger: dark-theme ? #e08080 : #c02020;
 
     // Tooltip surface.

@@ -18,10 +18,13 @@ pub mod stretch;
 mod convert;
 pub mod data;
 pub mod export;
+pub mod files;
 mod fits_bayer;
 pub mod fits_file;
 mod keywords;
 pub mod raw_fits;
+pub mod session;
+pub mod session_report;
 pub mod stats;
 pub mod summary;
 mod xtrans;
@@ -30,6 +33,8 @@ pub mod contrast;
 mod invert;
 pub mod loader;
 pub mod raw_file;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_frames;
 #[cfg(test)]
 pub(crate) mod test_support;
 

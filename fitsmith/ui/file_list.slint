@@ -1,6 +1,68 @@
 import { VScrollArea } from "scrolling.slint";
-import { FileRow } from "types.slint";
+import { FileRow, FrameKind } from "types.slint";
 import { AppPalette } from "palette.slint";
+
+// The tooltip surface shared by the file list's hover tips: its children are
+// stacked in a padded column.
+component TipBox inherits Rectangle {
+    background: AppPalette.tooltip-bg;
+    border-width: 1px;
+    border-color: AppPalette.tooltip-border;
+    border-radius: 4px;
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        @children
+    }
+}
+
+// One line (or wrapped paragraph) of tooltip text.
+component TipText inherits Text {
+    wrap: word-wrap;
+    font-size: 12px;
+    color: AppPalette.tooltip-fg;
+}
+
+// A hover area that asks for its tooltip after a short dwell and dismisses it
+// as soon as the cursor leaves.
+component TipArea inherits TouchArea {
+    callback show-tip();
+    callback hide-tip();
+    property <bool> pending: false;
+    changed has-hover => {
+        self.pending = self.has-hover;
+        if (!self.has-hover) {
+            root.hide-tip();
+        }
+    }
+    Timer {
+        interval: 600ms;
+        running: root.pending;
+        triggered => {
+            root.pending = false;
+            root.show-tip();
+        }
+    }
+}
+
+// The glyph for a frame kind: a star for a light, a crescent moon for a dark,
+// a zero for a bias, an empty (evenly lit) square for a flat, and a
+// half-filled disc for a dark flat. Drawn on a 24×24 grid.
+component FrameKindIcon inherits Path {
+    in property <FrameKind> kind;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    fill-rule: evenodd;
+    commands: root.kind == FrameKind.dark
+        ? "M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"
+        : root.kind == FrameKind.bias
+        ? "M12 3.5A5.5 8.5 0 1 1 12 20.5A5.5 8.5 0 1 1 12 3.5ZM12 5.9A3.3 6.1 0 1 0 12 18.1A3.3 6.1 0 1 0 12 5.9Z"
+        : root.kind == FrameKind.flat
+        ? "M18 4H6c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H6V6h12v12z"
+        : root.kind == FrameKind.dark-flat
+        ? "M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm1-17.93c3.94.49 7 3.86 7 7.93s-3.06 7.44-7 7.93V4.07z"
+        : "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z";
+}
 
 // The working-set file list. Rows are click-to-highlight; the highlighted row
 // is drawn with an accent background and drives the preview. Each row also
@@ -103,93 +165,181 @@ export component FileList inherits Rectangle {
                     : (self.is-error
                         ? (touch.has-hover ? root.err-hover : root.err-bg)
                         : (touch.has-hover ? root.row-hover : transparent));
+                // The row's own hover/click area. The row's content sits inside
+                // it so the row stays hover-highlighted while the cursor is over
+                // the name or the badge, whose own areas show their tooltips.
                 touch := TouchArea {
                     clicked => {
                         fs.focus();
                         root.select(idx);
                     }
-                    // Show the failure reason as a tooltip while hovering an
-                    // errored row; hide it as soon as the cursor leaves.
-                    changed has-hover => {
-                        if (self.has-hover && rowrect.is-error) {
-                            tooltip.show();
-                        } else {
-                            tooltip.close();
-                        }
-                    }
-                }
-                // Checkbox, name on the left, an optional status badge on the
-                // right — one line.
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    spacing: 6px;
-                    // A small checkbox reflecting the row's selection state. Its
-                    // own TouchArea sits above the row's, so ticking a box does
-                    // not change which row is highlighted.
-                    VerticalLayout {
-                        alignment: center;
-                        checkbox := Rectangle {
-                            width: 16px;
-                            height: 16px;
-                            border-width: 1px;
-                            border-radius: 3px;
-                            border-color: row.checked ? AppPalette.accent : #8a8a8a;
-                            background: row.checked ? AppPalette.accent : transparent;
-                            Text {
-                                text: "✓";
-                                visible: row.checked;
-                                font-size: 12px;
-                                color: white;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            TouchArea {
-                                clicked => {
-                                    root.toggle-check(idx);
+                    // Checkbox, frame-kind icon and name on the left, an
+                    // optional status badge on the right — one line.
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 6px;
+                        // A small checkbox reflecting the row's selection state.
+                        // Its own TouchArea takes the click, so ticking a box
+                        // does not change which row is highlighted.
+                        VerticalLayout {
+                            alignment: center;
+                            checkbox := Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                border-width: 1px;
+                                border-radius: 3px;
+                                border-color: row.checked ? AppPalette.accent : #8a8a8a;
+                                background: row.checked ? AppPalette.accent : transparent;
+                                Text {
+                                    text: "✓";
+                                    visible: row.checked;
+                                    font-size: 12px;
+                                    color: white;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        root.toggle-check(idx);
+                                    }
                                 }
                             }
                         }
-                    }
-                    Text {
-                        text: row.name;
-                        // White on the selected row's blue background in either
-                        // theme; dark text on the pale-red error background used
-                        // by light themes; the theme's row color otherwise.
-                        color: rowrect.selected
-                            ? white
-                            : (rowrect.is-error ? root.err-text : AppPalette.panel-value);
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Text {
-                        text: row.status;
-                        visible: row.status != "";
-                        font-size: 11px;
-                        color: row.status == "error" ? AppPalette.danger : AppPalette.muted;
-                        vertical-alignment: center;
+                        // The frame kind's icon, with its name as a tooltip.
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                accessible-role: image;
+                                accessible-label: row.kind-tip;
+                                FrameKindIcon {
+                                    kind: row.kind;
+                                    fill: rowrect.selected ? AppPalette.on-accent : AppPalette.muted;
+                                }
+                                TipArea {
+                                    clicked => {
+                                        fs.focus();
+                                        root.select(idx);
+                                    }
+                                    show-tip => {
+                                        kind-tip.show();
+                                    }
+                                    hide-tip => {
+                                        kind-tip.close();
+                                    }
+                                }
+                                kind-tip := PopupWindow {
+                                    x: 0;
+                                    y: (root.row-height + 16px) / 2 - 2px;
+                                    TipBox {
+                                        TipText {
+                                            text: row.kind-tip;
+                                            wrap: no-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // The path relative to the working set's common folder,
+                        // elided when the list is too narrow for it. Hovering the
+                        // name itself (not the empty space after it) shows the
+                        // full path.
+                        name-text := Text {
+                            text: row.name;
+                            // White on the selected row's blue background in
+                            // either theme; dark text on the pale-red error
+                            // background used by light themes; the theme's row
+                            // color otherwise.
+                            color: rowrect.selected
+                                ? white
+                                : (rowrect.is-error ? root.err-text : AppPalette.panel-value);
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            TipArea {
+                                x: 0;
+                                width: min(name-text.width, name-text.preferred-width);
+                                clicked => {
+                                    fs.focus();
+                                    root.select(idx);
+                                }
+                                show-tip => {
+                                    path-tip.show();
+                                }
+                                hide-tip => {
+                                    path-tip.close();
+                                }
+                            }
+                        }
+                        // A compressed (.fz) file gets a small "compress" glyph —
+                        // two chevrons pointing inward — instead of a word; any
+                        // other status ("error") is still spelled out.
+                        if row.status == "compressed": VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                accessible-role: image;
+                                accessible-label: "Compressed FITS file";
+                                Path {
+                                    commands: "M7.4,22L6,20.6l6-6l6,6L16.6,22L12,17.4L7.4,22ZM12,9.4l-6-6L7.4,2L12,6.6L16.6,2L18,3.4l-6,6Z";
+                                    viewbox-width: 24;
+                                    viewbox-height: 24;
+                                    fill: rowrect.selected ? AppPalette.on-accent : AppPalette.muted;
+                                }
+                                TipArea {
+                                    clicked => {
+                                        fs.focus();
+                                        root.select(idx);
+                                    }
+                                    show-tip => {
+                                        badge-tip.show();
+                                    }
+                                    hide-tip => {
+                                        badge-tip.close();
+                                    }
+                                }
+                                // Right-aligned under the glyph, which sits at the
+                                // row's right edge.
+                                badge-tip := PopupWindow {
+                                    x: 16px - self.width;
+                                    y: (root.row-height + 16px) / 2 - 2px;
+                                    TipBox {
+                                        TipText {
+                                            text: "Compressed FITS file";
+                                            wrap: no-wrap;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if row.status != "compressed": Text {
+                            text: row.status;
+                            visible: row.status != "";
+                            font-size: 11px;
+                            color: row.status == "error" ? AppPalette.danger : AppPalette.muted;
+                            vertical-alignment: center;
+                        }
                     }
                 }
 
-                // Hover tooltip carrying the load error. A PopupWindow renders in
-                // a top-level overlay, so it isn't clipped by the (narrow) list.
-                tooltip := PopupWindow {
+                // Tooltip over the name carrying the full path and, for a row
+                // that failed to load, the error. A PopupWindow renders in a
+                // top-level overlay, so it isn't clipped by the (narrow) list.
+                path-tip := PopupWindow {
                     x: 12px;
                     y: root.row-height - 2px;
-                    Rectangle {
-                        width: 280px;
-                        background: AppPalette.tooltip-bg;
-                        border-width: 1px;
-                        border-color: AppPalette.tooltip-border;
-                        border-radius: 4px;
-                        VerticalLayout {
-                            padding: 8px;
-                            Text {
-                                text: row.error;
-                                wrap: word-wrap;
-                                font-size: 12px;
-                                color: AppPalette.tooltip-fg;
-                            }
+                    TipBox {
+                        // Snug around a short path, wrapping a long one; an
+                        // error message gets room to wrap legibly.
+                        width: min(420px, max(path-text.preferred-width + 16px, rowrect.is-error ? 280px : 0px));
+                        path-text := TipText {
+                            text: row.path;
+                        }
+                        if rowrect.is-error: TipText {
+                            text: row.error;
                         }
                     }
                 }

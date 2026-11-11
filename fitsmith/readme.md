@@ -10,6 +10,11 @@ It allows preview of multiple FITS files with debayering and screen stretch, if 
 
  - View FITS file. duh.
  - Blink through the working set of the FITS files.
+ - Session summary (Tools ▸ Session Summary…): group the checked files (or the whole working set) into observing nights, frame types (lights, darks, flats, …) and filters, with frame counts and integration times — light frames only unless "Show calibration frames" is checked; a copy button puts the same text report `fitz summary` prints on the clipboard
+ - Add Folder can include the folder's subfolders
+ - The file list names each file by its path relative to the folder the whole working set shares (just the file name when they are all in one folder, `night1/Lights/a.fit` when they span several), and a compressed file is marked with an icon
+ - Each file in the list shows its frame type as an icon — light (star), dark (moon), bias (zero), flat (square) or dark flat (half-filled disc) — with a tooltip naming the type. The type comes from the `IMAGETYP` header, else from a `Lights`/`Darks`/`Biases`/`Flats`/`DarkFlats` folder above the file (up to the folder the working set shares), else the frame is assumed a light — the same rule `fitz summary` and the Session Summary use
+ - Selection menu: Select All (Ctrl+A), Deselect All (Ctrl+D), and select just the Lights, Darks, Biases, Flats or Dark Flats (each entry shows how many the working set holds); View ▸ Invert Selection (Ctrl+Shift+I) flips every checkbox
  - Batch export FITS to JPG, PNG or TIFF
  - Batch compression or decompression of FITS files
  - View headers
