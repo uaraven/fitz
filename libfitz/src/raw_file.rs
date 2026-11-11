@@ -161,8 +161,38 @@ fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h
         header.set(BAYERPAT, value, Some("Bayer color pattern"));
     }
 
-    set_if(
+    add_exif_fields(&mut header, raw_info);
+
+    add_history(
         &mut header,
+        &format!("Converted from RAW file ({w}x{h} sensor crop)"),
+    );
+    add_history(
+        &mut header,
+        "Black level subtracted, white point scaled to full range",
+    );
+
+    header
+}
+
+/// Read just the FITS-style header a RAW file would convert to — the
+/// EXIF-derived acquisition fields (`DATE-OBS`, `EXPTIME`, `INSTRUME`, …) —
+/// without unpacking or decoding any pixels. The pixel-dependent parts of
+/// [`load_raw_image`]'s header (`BAYERPAT`, the conversion `HISTORY` cards)
+/// are not included. Still reads the whole file, since LibRaw opens from a
+/// memory buffer.
+pub fn load_raw_header(source: &Path) -> Result<Header> {
+    let data = std::fs::read(source)?;
+    let raw_image = RawImage::open(&data)?;
+    let mut header = Header::new();
+    add_exif_fields(&mut header, raw_image.full_info());
+    Ok(header)
+}
+
+/// Write every EXIF-derived field LibRaw managed to parse into `header`.
+fn add_exif_fields(header: &mut Header, raw_info: FullRawInfo) {
+    set_if(
+        header,
         "DATE-OBS",
         raw_info
             .datetime
@@ -170,25 +200,25 @@ fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h
         Some("Date/time of observation, UT"),
     );
     set_if(
-        &mut header,
+        header,
         "EXPTIME",
         (raw_info.shutter > 0.0).then_some(HeaderValue::Float(raw_info.shutter as f64)),
         Some("[s] Exposure duration"),
     );
     set_if(
-        &mut header,
+        header,
         "ISOSPEED",
         (raw_info.iso_speed > 0).then_some(HeaderValue::Integer(raw_info.iso_speed as i64)),
         Some("ISO camera sensitivity"),
     );
     set_if(
-        &mut header,
+        header,
         "FOCRATIO",
         (raw_info.aperture > 0.0).then_some(HeaderValue::Float(raw_info.aperture as f64)),
         Some("Focal ratio (f-number)"),
     );
     set_if(
-        &mut header,
+        header,
         "FOCALLEN",
         (raw_info.focal_len > 0.0).then_some(HeaderValue::Float(raw_info.focal_len as f64)),
         Some("[mm] Focal length"),
@@ -200,31 +230,31 @@ fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h
         .collect::<Vec<_>>()
         .join(" ");
     set_if(
-        &mut header,
+        header,
         "INSTRUME",
         non_blank(&camera).map(|s| HeaderValue::String(s.to_string())),
         Some("Camera make and model"),
     );
     set_if(
-        &mut header,
+        header,
         "TELESCOP",
         non_blank(&raw_info.lens_info.lens_name).map(|s| HeaderValue::String(s.to_string())),
         Some("Lens used"),
     );
     set_if(
-        &mut header,
+        header,
         "OBSERVER",
         non_blank(&raw_info.artist).map(|s| HeaderValue::String(s.to_string())),
         None,
     );
     set_if(
-        &mut header,
+        header,
         "OBJECT",
         non_blank(&raw_info.desc).map(|s| HeaderValue::String(s.to_string())),
         None,
     );
     set_if(
-        &mut header,
+        header,
         "SWCREATE",
         non_blank(&raw_info.software).map(|s| HeaderValue::String(s.to_string())),
         Some("Camera firmware/software"),
@@ -249,17 +279,6 @@ fn metadata_to_headers(raw_info: FullRawInfo, image_type: ImageType, w: usize, h
             );
         }
     }
-
-    add_history(
-        &mut header,
-        &format!("Converted from RAW file ({w}x{h} sensor crop)"),
-    );
-    add_history(
-        &mut header,
-        "Black level subtracted, white point scaled to full range",
-    );
-
-    header
 }
 
 /// Sets `key` to `value`'s inner value when present; a no-op for `None` —

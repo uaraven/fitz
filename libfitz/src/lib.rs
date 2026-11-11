@@ -18,6 +18,7 @@ pub mod stretch;
 mod convert;
 pub mod data;
 pub mod export;
+pub mod files;
 mod fits_bayer;
 pub mod fits_file;
 mod keywords;
