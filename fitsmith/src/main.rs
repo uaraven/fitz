@@ -86,6 +86,12 @@ fn main() -> Result<()> {
     forward!(on_remove_selected, |app| controller::remove_selected(&app));
     forward!(on_select_all, |app| controller::select_all(&app));
     forward!(on_deselect_all, |app| controller::deselect_all(&app));
+    forward!(on_invert_selection, |app| controller::invert_selection(
+        &app
+    ));
+    forward!(on_select_frame_kind, |app, kind| {
+        controller::select_frame_kind(&app, kind)
+    });
     forward!(on_select_file, |app, index| controller::select_file(
         &app, index
     ));

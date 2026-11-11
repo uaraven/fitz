@@ -1,6 +1,6 @@
 import { VerticalBox, TabWidget } from "std-widgets.slint";
 import { AppPalette } from "palette.slint";
-import { FileRow, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine, BadFrameRow, SessionRow } from "types.slint";
+import { FileRow, FrameKind, FrameCounts, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine, BadFrameRow, SessionRow } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
 import { StatsPanel } from "stats_panel.slint";
@@ -43,6 +43,8 @@ export component AppWindow inherits Window {
     in-out property <bool> show-info: false;
 
     in property <int> checked-file-count;
+    // Frames of each kind in the working set, for the Selection menu.
+    in property <FrameCounts> frame-counts;
     in property <int> total-exposure: 0;
     in property <int> checked-exposure: 0;
 
@@ -241,6 +243,10 @@ export component AppWindow inherits Window {
     // Check / uncheck every row in the working set.
     callback select-all();
     callback deselect-all();
+    // Flip every row's checkbox.
+    callback invert-selection();
+    // Check exactly the rows of one frame kind.
+    callback select-frame-kind(FrameKind);
     callback request-exit();
     callback select-file(int);
     // Toggle a row's checkbox (selection) state — by index into the file list.
@@ -430,6 +436,15 @@ export component AppWindow inherits Window {
             }
             MenuSeparator { }
             MenuItem {
+                title: "Invert Selection";
+                enabled: root.files.length > 0;
+                shortcut: @keys(Control + Shift + I);
+                activated => {
+                    root.invert-selection();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
                 title: "Blink";
                 checkable: true;
                 checked <=> root.blinking;
@@ -438,7 +453,7 @@ export component AppWindow inherits Window {
         }
 
         Menu {
-            title: "Tools";
+            title: "Selection";
             MenuItem {
                 title: "Select All";
                 enabled: root.files.length > 0;
@@ -456,6 +471,47 @@ export component AppWindow inherits Window {
                 }
             }
             MenuSeparator { }
+            // Each checks exactly the frames of its kind; the count is the
+            // working set's, and an absent kind is disabled.
+            MenuItem {
+                title: "Lights (\{root.frame-counts.light})";
+                enabled: root.frame-counts.light > 0;
+                activated => {
+                    root.select-frame-kind(FrameKind.light);
+                }
+            }
+            MenuItem {
+                title: "Darks (\{root.frame-counts.dark})";
+                enabled: root.frame-counts.dark > 0;
+                activated => {
+                    root.select-frame-kind(FrameKind.dark);
+                }
+            }
+            MenuItem {
+                title: "Biases (\{root.frame-counts.bias})";
+                enabled: root.frame-counts.bias > 0;
+                activated => {
+                    root.select-frame-kind(FrameKind.bias);
+                }
+            }
+            MenuItem {
+                title: "Flats (\{root.frame-counts.flat})";
+                enabled: root.frame-counts.flat > 0;
+                activated => {
+                    root.select-frame-kind(FrameKind.flat);
+                }
+            }
+            MenuItem {
+                title: "Dark Flats (\{root.frame-counts.dark-flat})";
+                enabled: root.frame-counts.dark-flat > 0;
+                activated => {
+                    root.select-frame-kind(FrameKind.dark-flat);
+                }
+            }
+        }
+
+        Menu {
+            title: "Tools";
             MenuItem {
                 title: "Compress…";
                 enabled: root.files.length > 0;
