@@ -26,16 +26,20 @@ use crate::{AppWindow, SessionRow};
 use libfitz::files::common_dir;
 
 /// Flatten `summary` depth-first into display lines: each session (depth 0),
-/// then its frame types (1), then each type's filters (2). With `calibration`
+/// then its frame types (1), then each type's filters (2) — one line per
+/// exposure time, longest first, counted as `"12x300s"`. With `calibration`
 /// off only the light frames are listed, and a session line counts just those.
 /// A session's time is its light integration; every other line shows its own
 /// total.
 fn flatten(summary: &Summary, calibration: bool) -> Vec<SessionRow> {
-    let row = |depth: i32, label: String, count: usize, integration: f64| SessionRow {
+    let line = |depth: i32, label: &str, count: String, integration: f64| SessionRow {
         depth,
         label: label.into(),
-        count: count_noun(count, "frame").into(),
+        count: count.into(),
         time: format_duration(integration).into(),
+    };
+    let row = |depth: i32, label: String, count: usize, integration: f64| {
+        line(depth, &label, count_noun(count, "frame"), integration)
     };
     let mut rows = Vec::new();
     for session in &summary.sessions {
@@ -57,8 +61,14 @@ fn flatten(summary: &Summary, calibration: bool) -> Vec<SessionRow> {
             let label = group.frame_type.label().to_string();
             rows.push(row(1, label, group.count, group.integration));
             for filter in &group.filters {
-                let label = filter.label().to_string();
-                rows.push(row(2, label, filter.count, filter.integration));
+                for exposure in &filter.exposures {
+                    rows.push(line(
+                        2,
+                        filter.label(),
+                        exposure.label(),
+                        exposure.integration,
+                    ));
+                }
             }
         }
     }
@@ -226,8 +236,9 @@ mod tests {
         summarize_files(&files)
     }
 
+    /// The frame count of a row: `"2 frames"` or `"2x180s"`.
     fn frames(row: &SessionRow) -> usize {
-        row.count.split(' ').next().unwrap().parse().unwrap()
+        row.count.split([' ', 'x']).next().unwrap().parse().unwrap()
     }
 
     #[test]
@@ -246,8 +257,10 @@ mod tests {
         assert_eq!(lights.iter().map(|r| frames(r)).sum::<usize>(), 2);
         assert_eq!(line("Darks").count, "1 frame");
         assert_eq!(line("Narrowband 7nm").depth, 2);
+        // A filter line counts its frames with their exposure time.
+        assert_eq!(line("Narrowband 7nm").count, "1x180s");
         assert_eq!(line("Narrowband 7nm").time, "0h 03m 00s"); // EXPTIME 180 s
-        assert_eq!(line("HaOIII 7nm").count, "1 frame");
+        assert_eq!(line("HaOIII 7nm").count, "1x300s");
         assert_eq!(line("(no filter)").depth, 2); // the RAW dark
 
         // Every frame is counted once at the filter level.

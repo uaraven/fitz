@@ -35,7 +35,7 @@ use crate::non_blank;
 use anyhow::{Result, anyhow, bail};
 use fitskit::Header;
 use rayon::prelude::*;
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -218,6 +218,46 @@ pub struct FilterGroup {
     pub count: usize,
     /// Total exposure, seconds.
     pub integration: f64,
+    /// The frames split by exposure time, longest first.
+    pub exposures: Vec<ExposureGroup>,
+}
+
+/// The frames of one [`FilterGroup`] that share an exposure time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExposureGroup {
+    /// The frames' `EXPTIME`, seconds; 0 for frames without one.
+    pub exposure: f64,
+    /// Number of frames.
+    pub count: usize,
+    /// Total exposure, seconds.
+    pub integration: f64,
+}
+
+/// Exposures are told apart to the microsecond (the precision
+/// [`format_exposure`] shows), so header float noise never splits a group.
+const EXPOSURE_STEPS_PER_SECOND: f64 = 1e6;
+
+impl ExposureGroup {
+    /// `"12x300s"`: the frame count and the exposure of each frame.
+    pub fn label(&self) -> String {
+        format!("{}x{}", self.count, format_exposure(self.exposure))
+    }
+
+    /// One group per distinct exposure of `frames`, longest first.
+    fn split(frames: &[Frame]) -> Vec<Self> {
+        let mut groups: BTreeMap<Reverse<u64>, Self> = BTreeMap::new();
+        for frame in frames {
+            let step = (frame.exposure * EXPOSURE_STEPS_PER_SECOND).round() as u64;
+            let group = groups.entry(Reverse(step)).or_insert(Self {
+                exposure: step as f64 / EXPOSURE_STEPS_PER_SECOND,
+                count: 0,
+                integration: 0.0,
+            });
+            group.count += 1;
+            group.integration += frame.exposure;
+        }
+        groups.into_values().collect()
+    }
 }
 
 /// Shown in place of a filter name for frames whose header has none (always the
@@ -230,7 +270,7 @@ impl FilterGroup {
         self.filter.as_deref().unwrap_or(NO_FILTER)
     }
 
-    fn new(filter: Option<String>, mut frames: Vec<Frame>) -> Self {
+    pub(crate) fn new(filter: Option<String>, mut frames: Vec<Frame>) -> Self {
         frames.sort_by(|a, b| {
             cmp_option_last(a.observed, b.observed, f64::total_cmp)
                 .then_with(|| a.path.cmp(&b.path))
@@ -239,6 +279,7 @@ impl FilterGroup {
             filter,
             count: frames.len(),
             integration: frames.iter().map(|f| f.exposure).sum(),
+            exposures: ExposureGroup::split(&frames),
             frames,
         }
     }
@@ -698,6 +739,14 @@ pub fn format_duration(seconds: f64) -> String {
         total % 3600 / 60,
         total % 60
     )
+}
+
+/// One frame's exposure time as `"300s"`, `"2.5s"` or `"0.00025s"`: seconds to
+/// the microsecond, trailing zeros dropped.
+pub fn format_exposure(seconds: f64) -> String {
+    let fixed = format!("{:.6}", seconds.max(0.0));
+    let trimmed = fixed.trim_end_matches('0').trim_end_matches('.');
+    format!("{trimmed}s")
 }
 
 /// A Unix-epoch timestamp as `"2026-06-22 21:30"` (to the minute, no timezone:
@@ -1212,6 +1261,57 @@ mod tests {
         let wide = summarize_files_cancellable(&subset, root, &AtomicBool::new(false));
         assert_eq!(wide.root, root);
         assert_eq!(wide.sessions[0].types[0].frame_type, FrameType::Dark);
+    }
+
+    #[test]
+    fn format_exposure_shows_seconds_without_trailing_zeros() {
+        assert_eq!(format_exposure(300.0), "300s");
+        assert_eq!(format_exposure(2.5), "2.5s");
+        assert_eq!(format_exposure(1.0 / 4000.0), "0.00025s");
+        assert_eq!(format_exposure(0.0), "0s");
+    }
+
+    #[test]
+    fn a_filters_frames_are_split_by_exposure_time_longest_first() {
+        let tmp = TempDir::new().unwrap();
+        let r = tmp.path();
+        let at = |name: &str, exptime: f64, time: &str| {
+            frame(r, name, Some("Ha"), exptime, Some(time), None);
+        };
+        at("a1.fit", 60.0, "2026-06-22T22:00:00");
+        at("a2.fit", 300.0, "2026-06-22T22:05:00");
+        at("a3.fit", 60.0, "2026-06-22T22:10:00");
+        at("a4.fit", 300.0, "2026-06-22T22:15:00");
+        at("a5.fit", 300.0, "2026-06-22T22:20:00");
+
+        let summary = summarize_dir(r).unwrap();
+        let ha = &summary.sessions[0].types[0].filters[0];
+
+        assert_eq!(
+            ha.exposures,
+            vec![
+                ExposureGroup {
+                    exposure: 300.0,
+                    count: 3,
+                    integration: 900.0
+                },
+                ExposureGroup {
+                    exposure: 60.0,
+                    count: 2,
+                    integration: 120.0
+                },
+            ]
+        );
+        assert_eq!(ha.exposures[0].label(), "3x300s");
+        // The split covers the filter's frames exactly.
+        assert_eq!(
+            ha.exposures.iter().map(|e| e.count).sum::<usize>(),
+            ha.count
+        );
+        assert_eq!(
+            ha.exposures.iter().map(|e| e.integration).sum::<f64>(),
+            ha.integration
+        );
     }
 
     #[test]
