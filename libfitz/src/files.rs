@@ -39,6 +39,24 @@ pub fn is_openable_image(path: &Path) -> bool {
     is_fits_path(path) || is_raw_image(path)
 }
 
+/// The deepest folder containing every path (empty when they share none, or
+/// when there are no paths).
+pub fn common_dir(paths: &[PathBuf]) -> PathBuf {
+    let mut dirs = paths.iter().map(|p| p.parent().unwrap_or(Path::new("")));
+    let Some(first) = dirs.next() else {
+        return PathBuf::new();
+    };
+    let mut common = first.to_path_buf();
+    for dir in dirs {
+        while !dir.starts_with(&common) {
+            if !common.pop() {
+                return PathBuf::new();
+            }
+        }
+    }
+    common
+}
+
 /// Every openable image anywhere under `dir`, depth-first with the entries of
 /// each folder in name order. No file is opened. Images whose extension is in
 /// `skip_extensions` are left out. Folders that cannot be read are skipped;
@@ -90,6 +108,17 @@ fn macos_special_file(_path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_dir_is_the_deepest_shared_folder() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(common_dir(&[p("/a/b/x.fit"), p("/a/b/c/y.fit")]), p("/a/b"));
+        assert_eq!(common_dir(&[p("/a/x.fit"), p("/b/y.fit")]), p("/"));
+        assert_eq!(common_dir(&[p("/a/x.fit")]), p("/a"));
+        assert_eq!(common_dir(&[]), PathBuf::new());
+        // `/a/bc` is not under `/a/b`.
+        assert_eq!(common_dir(&[p("/a/b/x.fit"), p("/a/bc/y.fit")]), p("/a"));
+    }
 
     #[test]
     fn recognizes_fits_extensions_case_insensitively() {

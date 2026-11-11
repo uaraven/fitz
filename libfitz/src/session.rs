@@ -5,10 +5,13 @@
 //! whose EXIF is translated to FITS-style keywords by
 //! [`crate::loader::load_header_from_file`]. For each image:
 //!
-//! - the **frame type** comes from the folder names: the nearest enclosing
-//!   folder (up to and including the scan root) whose name is a known type
-//!   (`lights`, `darks`, `biases`, `flats`, … in any case) decides it, and an
-//!   image with no such folder is a [`FrameType::Light`];
+//! - the **frame type** comes from the `IMAGETYP` header (`LIGHT`,
+//!   `Dark Frame`, `Flat Field`, `DARKFLAT`, … — see
+//!   [`FrameType::from_imagetyp`]). Without a recognised one, the folder names
+//!   decide: the nearest enclosing folder (up to and including the scan root)
+//!   whose name is a known type (`lights`, `darks`, `biases`, `flats`, … in any
+//!   case). An image with neither is assumed a [`FrameType::Light`] (see
+//!   [`resolve_frame_type`]);
 //! - the **filter** comes from the `FILTER` header (`None` when absent or
 //!   blank — always the case for RAW);
 //! - the **session** is the observation *night* of its timestamp (`DATE-LOC`,
@@ -24,9 +27,9 @@
 //! report integration for light frames only, the figure that matters for an
 //! astrophoto; their frame counts cover every type.
 
-use crate::files::{find_images, is_fits_path};
+use crate::files::{common_dir, find_images, is_fits_path};
 use crate::fits_file::parse_date_obs;
-use crate::keywords::{DATE_LOC, DATE_OBS, EXPTIME, FILTER, SITELONG};
+use crate::keywords::{DATE_LOC, DATE_OBS, EXPTIME, FILTER, IMAGETYP, SITELONG};
 use crate::loader::load_header_from_file;
 use crate::non_blank;
 use anyhow::{Result, anyhow, bail};
@@ -64,16 +67,62 @@ pub enum FrameType {
 }
 
 impl FrameType {
-    /// The type a folder name stands for, ignoring case and surrounding
-    /// whitespace (`Lights`, `LIGHT`, `biases`, `dark_flats`, …); `None` for
-    /// any other name.
+    /// Every type, in display order.
+    pub const ALL: [Self; 5] = [
+        Self::Light,
+        Self::Dark,
+        Self::Bias,
+        Self::Flat,
+        Self::DarkFlat,
+    ];
+
+    /// The type a folder name stands for, ignoring case and any spaces,
+    /// underscores or dashes, singular or plural (`Lights`, `LIGHT`, `biases`,
+    /// `dark_flats`, `Dark Flats`, …); `None` for any other name.
     pub fn from_folder_name(name: &str) -> Option<Self> {
-        match name.trim().to_ascii_lowercase().as_str() {
-            "light" | "lights" => Some(Self::Light),
-            "dark" | "darks" => Some(Self::Dark),
-            "bias" | "biases" => Some(Self::Bias),
-            "flat" | "flats" => Some(Self::Flat),
-            "darkflat" | "darkflats" | "dark_flat" | "dark_flats" => Some(Self::DarkFlat),
+        let name = squash(name);
+        ["", "s", "es"]
+            .iter()
+            .find_map(|plural| Self::from_base_name(name.strip_suffix(plural)?))
+    }
+
+    /// The type an `IMAGETYP` header value stands for, ignoring case and any
+    /// spaces, underscores or dashes. Accepts the spellings capture and
+    /// processing software write — `LIGHT`, `Light Frame`, `Object`, `Dark
+    /// Frame`, `Bias Frame`, `Offset`, `Zero`, `Flat Field`, `DARKFLAT`,
+    /// `Flat Dark`, a `Master` prefix (`MasterDark`), … — and gives `None`
+    /// for any other value.
+    pub fn from_imagetyp(value: &str) -> Option<Self> {
+        let value = squash(value);
+        let value = value.strip_prefix("master").unwrap_or(&value);
+        let value = ["frame", "field"]
+            .iter()
+            .find_map(|suffix| value.strip_suffix(suffix).filter(|v| !v.is_empty()))
+            .unwrap_or(value);
+        Self::from_base_name(value).or(match value {
+            "object" | "science" => Some(Self::Light),
+            "offset" | "zero" => Some(Self::Bias),
+            "skyflat" | "domeflat" | "twilightflat" => Some(Self::Flat),
+            "flatdark" => Some(Self::DarkFlat),
+            _ => None,
+        })
+    }
+
+    /// The type a header's `IMAGETYP` names (see [`Self::from_imagetyp`]);
+    /// `None` when it is absent or not recognised.
+    pub fn from_header(header: &Header) -> Option<Self> {
+        header.get_string(IMAGETYP).and_then(Self::from_imagetyp)
+    }
+
+    /// The singular type names shared by folder names and `IMAGETYP` values,
+    /// already [`squash`]ed.
+    fn from_base_name(name: &str) -> Option<Self> {
+        match name {
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            "bias" => Some(Self::Bias),
+            "flat" => Some(Self::Flat),
+            "darkflat" => Some(Self::DarkFlat),
             _ => None,
         }
     }
@@ -100,6 +149,49 @@ impl FrameType {
             Self::DarkFlat => "Dark flats",
         }
     }
+}
+
+/// Lowercase ASCII with everything but letters and digits dropped, so
+/// `"Dark Flat"`, `"dark_flat"` and `"DARK-FLAT"` all read `"darkflat"`.
+fn squash(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// What decided a frame's type (see [`resolve_frame_type`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FrameTypeSource {
+    /// The `IMAGETYP` header.
+    Header,
+    /// The name of a folder above the file.
+    Folder,
+    /// Neither said anything, so the frame is taken for a light.
+    Assumed,
+}
+
+/// A frame's type from what its header says (`header`, see
+/// [`FrameType::from_header`]), else from what its folders say (`folder`, see
+/// [`folder_frame_type`]), else [`FrameType::Light`] — with which of the three
+/// decided it.
+pub fn resolve_frame_type(
+    header: Option<FrameType>,
+    folder: Option<FrameType>,
+) -> (FrameType, FrameTypeSource) {
+    match (header, folder) {
+        (Some(t), _) => (t, FrameTypeSource::Header),
+        (None, Some(t)) => (t, FrameTypeSource::Folder),
+        (None, None) => (FrameType::Light, FrameTypeSource::Assumed),
+    }
+}
+
+/// A header's `EXPTIME` in seconds; 0 when absent, non-finite or not positive.
+pub fn exposure_of(header: &Header) -> f64 {
+    header
+        .get_float(EXPTIME)
+        .filter(|e| e.is_finite() && *e > 0.0)
+        .unwrap_or(0.0)
 }
 
 /// One image: where it is, how long it exposed for, and when it was taken.
@@ -295,29 +387,31 @@ impl Summary {
 pub struct ScannedImage {
     /// The image file.
     pub path: PathBuf,
-    /// The type its enclosing folders give it (see [`frame_type_for`]).
-    pub frame_type: FrameType,
+    /// The type its enclosing folders give it (see [`folder_frame_type`]);
+    /// `None` when no folder names one. The header, read later, takes
+    /// precedence (see [`resolve_frame_type`]).
+    pub folder_type: Option<FrameType>,
 }
 
-/// The frame type for the image at `path` under `root`: the nearest folder
-/// above the image, up to and including `root` itself, whose name is a known
-/// type. [`FrameType::Light`] when none is.
-pub fn frame_type_for(path: &Path, root: &Path) -> FrameType {
-    frame_type_in(path, root, folder_type(root))
+/// The frame type the folders above the image at `path` give it: the nearest
+/// one, up to and including `root` itself, whose name is a known type. `None`
+/// when none is.
+pub fn folder_frame_type(path: &Path, root: &Path) -> Option<FrameType> {
+    folder_type_in(path, root, folder_type(root))
 }
 
-/// [`frame_type_for`] with the root folder's own type already resolved, so a
-/// scan resolves it once rather than per image.
-fn frame_type_in(path: &Path, root: &Path, root_type: Option<FrameType>) -> FrameType {
+/// [`folder_frame_type`] with the root folder's own type already resolved, so
+/// a scan resolves it once rather than per image.
+fn folder_type_in(path: &Path, root: &Path, root_type: Option<FrameType>) -> Option<FrameType> {
     for dir in path.ancestors().skip(1) {
         if dir == root {
-            return root_type.unwrap_or(FrameType::Light);
+            return root_type;
         }
         if let Some(frame_type) = folder_type(dir) {
-            return frame_type;
+            return Some(frame_type);
         }
     }
-    FrameType::Light
+    None
 }
 
 /// The type a folder's own name stands for. A root such as `.` has no name of
@@ -338,7 +432,7 @@ pub fn scan_images(root: &Path) -> Vec<ScannedImage> {
     find_images(root, SKIPPED_EXTENSIONS)
         .into_iter()
         .map(|path| ScannedImage {
-            frame_type: frame_type_in(&path, root, root_type),
+            folder_type: folder_type_in(&path, root, root_type),
             path,
         })
         .collect()
@@ -360,49 +454,33 @@ pub fn summarize_dir(root: &Path) -> Result<Summary> {
 }
 
 /// Group an explicit list of image files — a working set rather than a folder
-/// tree — the same way [`summarize_dir`] does. With no folder to scan, the
-/// frame type comes from the folders above each file up to their deepest
-/// common folder (which becomes [`Summary::root`] and whose own name counts,
-/// as a scan root's does). Files that cannot be read land in
-/// [`Summary::errors`]; an empty list gives an empty summary.
+/// tree — the same way [`summarize_dir`] does. With no folder to scan, a frame
+/// without a recognised `IMAGETYP` takes its type from the folders above it up
+/// to the files' deepest common folder (which becomes [`Summary::root`] and
+/// whose own name counts, as a scan root's does). Files that cannot be read
+/// land in [`Summary::errors`]; an empty list gives an empty summary.
 pub fn summarize_files(paths: &[PathBuf]) -> Summary {
-    summarize_files_cancellable(paths, &AtomicBool::new(false))
+    summarize_files_cancellable(paths, &common_dir(paths), &AtomicBool::new(false))
 }
 
-/// [`summarize_files`] that gives up early: once `cancel` is set, the files not
-/// yet read are skipped (counted in [`Summary::errors`] as "cancelled"), so a
-/// caller that has stopped caring about the result stops paying for it. Set the
-/// flag from another thread; the returned summary is then incomplete and only
-/// good for discarding.
-pub fn summarize_files_cancellable(paths: &[PathBuf], cancel: &AtomicBool) -> Summary {
-    let root = common_dir(paths);
-    let root_type = folder_type(&root);
+/// [`summarize_files`] with the folder-name lookup stopping at `root` (which
+/// must hold every path) rather than the files' own common folder — so a
+/// subset of a working set gets the same folder-derived types as the whole
+/// set — that gives up early: once `cancel` is set, the files not yet read are
+/// skipped (counted in [`Summary::errors`] as "cancelled"), so a caller that
+/// has stopped caring about the result stops paying for it. Set the flag from
+/// another thread; the returned summary is then incomplete and only good for
+/// discarding.
+pub fn summarize_files_cancellable(paths: &[PathBuf], root: &Path, cancel: &AtomicBool) -> Summary {
+    let root_type = folder_type(root);
     let images = paths
         .iter()
         .map(|path| ScannedImage {
-            frame_type: frame_type_in(path, &root, root_type),
+            folder_type: folder_type_in(path, root, root_type),
             path: path.clone(),
         })
         .collect();
-    summarize_images(root, images, cancel)
-}
-
-/// The deepest folder containing every path (empty when they share none, or
-/// when there are no paths).
-fn common_dir(paths: &[PathBuf]) -> PathBuf {
-    let mut dirs = paths.iter().map(|p| p.parent().unwrap_or(Path::new("")));
-    let Some(first) = dirs.next() else {
-        return PathBuf::new();
-    };
-    let mut common = first.to_path_buf();
-    for dir in dirs {
-        while !dir.starts_with(&common) {
-            if !common.pop() {
-                return PathBuf::new();
-            }
-        }
-    }
-    common
+    summarize_images(root.to_path_buf(), images, cancel)
 }
 
 /// Read the headers of `images` (in parallel, skipping the rest once `cancel`
@@ -414,7 +492,7 @@ fn summarize_images(root: PathBuf, images: Vec<ScannedImage>, cancel: &AtomicBoo
             let info = if cancel.load(AtomicOrdering::Relaxed) {
                 Err(anyhow!("cancelled"))
             } else {
-                read_frame_info(&image.path)
+                read_frame_info(&image.path, image.folder_type)
             };
             (image, info)
         })
@@ -433,7 +511,7 @@ fn summarize_images(root: PathBuf, images: Vec<ScannedImage>, cancel: &AtomicBoo
                 nights
                     .entry((night.is_none(), night))
                     .or_default()
-                    .entry(image.frame_type)
+                    .entry(info.frame_type)
                     .or_default()
                     .entry((
                         filter_rank(info.filter.as_deref()),
@@ -487,23 +565,23 @@ fn filter_rank(filter: Option<&str>) -> usize {
 /// What the headers of one image contribute to a summary.
 struct FrameInfo {
     frame: Frame,
+    /// From the header, else the folders (see [`resolve_frame_type`]).
+    frame_type: FrameType,
     filter: Option<String>,
     /// The observation night (see [`night_of`]); `None` without a timestamp.
     night: Option<i64>,
 }
 
-fn read_frame_info(path: &Path) -> Result<FrameInfo> {
+fn read_frame_info(path: &Path, folder_type: Option<FrameType>) -> Result<FrameInfo> {
     let header = load_header_from_file(path)?;
     let observed = observation_time(&header, is_fits_path(path));
     Ok(FrameInfo {
         frame: Frame {
             path: path.to_path_buf(),
-            exposure: header
-                .get_float(EXPTIME)
-                .filter(|e| e.is_finite() && *e > 0.0)
-                .unwrap_or(0.0),
+            exposure: exposure_of(&header),
             observed: observed.map(|(time, _)| time),
         },
+        frame_type: resolve_frame_type(FrameType::from_header(&header), folder_type).0,
         night: observed.map(|(time, to_local)| night_of(time + to_local)),
         filter: header
             .get_string(FILTER)
@@ -649,7 +727,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{test_data, write_frame_fits};
+    use crate::test_support::{test_data, write_frame_fits, write_typed_frame_fits};
     use std::fs;
     use tempfile::TempDir;
 
@@ -695,45 +773,133 @@ mod tests {
             FrameType::from_folder_name("dark_flat"),
             Some(FrameType::DarkFlat)
         );
+        assert_eq!(
+            FrameType::from_folder_name("Dark Flats"),
+            Some(FrameType::DarkFlat)
+        );
         assert_eq!(FrameType::from_folder_name("M31"), None);
         assert_eq!(FrameType::from_folder_name(""), None);
+        // Header-only spellings are not folder names.
+        assert_eq!(FrameType::from_folder_name("Object"), None);
+        assert_eq!(FrameType::from_folder_name("Offset"), None);
+    }
+
+    #[test]
+    fn imagetyp_values_map_to_frame_types() {
+        let cases = [
+            ("LIGHT", FrameType::Light),
+            ("Light Frame", FrameType::Light),
+            ("Object", FrameType::Light),
+            ("science", FrameType::Light),
+            ("DARK", FrameType::Dark),
+            ("Dark Frame", FrameType::Dark),
+            ("MasterDark", FrameType::Dark),
+            ("BIAS", FrameType::Bias),
+            ("Bias Frame", FrameType::Bias),
+            ("Offset", FrameType::Bias),
+            ("zero", FrameType::Bias),
+            ("FLAT", FrameType::Flat),
+            ("Flat Field", FrameType::Flat),
+            ("Flat Frame", FrameType::Flat),
+            ("SKYFLAT", FrameType::Flat),
+            ("DARKFLAT", FrameType::DarkFlat),
+            ("Dark Flat", FrameType::DarkFlat),
+            ("dark_flat frame", FrameType::DarkFlat),
+            ("FlatDark", FrameType::DarkFlat),
+            ("  light  ", FrameType::Light),
+        ];
+        for (value, want) in cases {
+            assert_eq!(FrameType::from_imagetyp(value), Some(want), "{value}");
+        }
+        for value in ["", "Frame", "Tricolor", "lights", "M31"] {
+            assert_eq!(FrameType::from_imagetyp(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn the_header_type_wins_over_the_folder_and_light_is_the_fallback() {
+        use FrameTypeSource::*;
+        let (dark, flat) = (Some(FrameType::Dark), Some(FrameType::Flat));
+        assert_eq!(resolve_frame_type(dark, flat), (FrameType::Dark, Header));
+        assert_eq!(resolve_frame_type(None, flat), (FrameType::Flat, Folder));
+        assert_eq!(resolve_frame_type(None, None), (FrameType::Light, Assumed));
+    }
+
+    #[test]
+    fn a_real_frames_imagetyp_header_is_read() {
+        // uncompressed.fit carries `IMAGETYP= 'LIGHT'`.
+        let header = load_header_from_file(&test_data("uncompressed.fit")).unwrap();
+        assert_eq!(FrameType::from_header(&header), Some(FrameType::Light));
+        assert_eq!(exposure_of(&header), 180.0);
+        // A RAW frame's EXIF has no frame type.
+        let raw = load_header_from_file(&test_data("comet.ARW")).unwrap();
+        assert_eq!(FrameType::from_header(&raw), None);
+    }
+
+    #[test]
+    fn imagetyp_decides_the_summary_type_over_the_folder() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let at = Some("2026-06-22T22:00:00");
+        // A dark that was filed under Lights, and an unmarked flat.
+        fs::create_dir_all(root.join("Lights")).unwrap();
+        fs::create_dir_all(root.join("misc")).unwrap();
+        fs::create_dir_all(root.join("Darks")).unwrap();
+        write_typed_frame_fits(&root.join("Lights/d.fit"), "Dark Frame", 300.0, at);
+        write_typed_frame_fits(&root.join("misc/f.fit"), "FLAT", 2.0, at);
+        frame(root, "Lights/l.fit", None, 60.0, at, None);
+        // The real (`IMAGETYP= 'LIGHT'`) frame filed under Darks stays a light.
+        fs::copy(test_data("uncompressed.fit"), root.join("Darks/real.fit")).unwrap();
+
+        let summary = summarize_dir(root).unwrap();
+        let typed: Vec<(FrameType, usize)> = summary
+            .sessions
+            .iter()
+            .flat_map(|s| s.types.iter().map(|t| (t.frame_type, t.count)))
+            .fold(Vec::new(), |mut acc, (t, n)| {
+                match acc.iter_mut().find(|(k, _)| *k == t) {
+                    Some((_, c)) => *c += n,
+                    None => acc.push((t, n)),
+                }
+                acc
+            });
+        assert!(typed.contains(&(FrameType::Light, 2)), "{typed:?}");
+        assert!(typed.contains(&(FrameType::Dark, 1)), "{typed:?}");
+        assert!(typed.contains(&(FrameType::Flat, 1)), "{typed:?}");
     }
 
     #[test]
     fn frame_type_comes_from_the_nearest_known_ancestor() {
         let root = Path::new("/data/M31");
-        let of = |p: &str| frame_type_for(Path::new(p), root);
+        let of = |p: &str| folder_frame_type(Path::new(p), root);
 
-        assert_eq!(of("/data/M31/darks/a.fit"), FrameType::Dark);
+        assert_eq!(of("/data/M31/darks/a.fit"), Some(FrameType::Dark));
         // An unknown folder is walked past.
-        assert_eq!(of("/data/M31/darks/batch1/a.fit"), FrameType::Dark);
-        assert_eq!(of("/data/M31/Flats/Ha/night1/a.fit"), FrameType::Flat);
+        assert_eq!(of("/data/M31/darks/batch1/a.fit"), Some(FrameType::Dark));
+        assert_eq!(of("/data/M31/Flats/Ha/night1/a.fit"), Some(FrameType::Flat));
         // The nearest known folder wins over a farther one.
-        assert_eq!(of("/data/M31/lights/darks/a.fit"), FrameType::Dark);
-        assert_eq!(of("/data/M31/darks/lights/a.fit"), FrameType::Light);
-        // No known folder at all: the default.
-        assert_eq!(of("/data/M31/a.fit"), FrameType::Light);
-        assert_eq!(of("/data/M31/night1/a.fit"), FrameType::Light);
+        assert_eq!(of("/data/M31/lights/darks/a.fit"), Some(FrameType::Dark));
+        assert_eq!(of("/data/M31/darks/lights/a.fit"), Some(FrameType::Light));
+        // No known folder at all.
+        assert_eq!(of("/data/M31/a.fit"), None);
+        assert_eq!(of("/data/M31/night1/a.fit"), None);
     }
 
     #[test]
     fn the_scan_roots_own_name_counts_but_nothing_above_it() {
         let darks = Path::new("/data/darks");
         assert_eq!(
-            frame_type_for(Path::new("/data/darks/a.fit"), darks),
-            FrameType::Dark
+            folder_frame_type(Path::new("/data/darks/a.fit"), darks),
+            Some(FrameType::Dark)
         );
         assert_eq!(
-            frame_type_for(Path::new("/data/darks/x/a.fit"), darks),
-            FrameType::Dark
+            folder_frame_type(Path::new("/data/darks/x/a.fit"), darks),
+            Some(FrameType::Dark)
         );
 
         // `darks` is above the root, so it is not consulted.
         let root = Path::new("/darks/M31");
-        assert_eq!(
-            frame_type_for(Path::new("/darks/M31/a.fit"), root),
-            FrameType::Light
-        );
+        assert_eq!(folder_frame_type(Path::new("/darks/M31/a.fit"), root), None);
     }
 
     #[test]
@@ -822,7 +988,7 @@ mod tests {
         fs::write(root.join("notes.txt"), b"x").unwrap();
         fs::write(root.join("lights.fit.bak"), b"x").unwrap();
 
-        let found: Vec<(String, FrameType)> = scan_images(root)
+        let found: Vec<(String, Option<FrameType>)> = scan_images(root)
             .into_iter()
             .map(|i| {
                 let rel = i
@@ -831,18 +997,18 @@ mod tests {
                     .unwrap()
                     .to_string_lossy()
                     .into_owned();
-                (rel, i.frame_type)
+                (rel, i.folder_type)
             })
             .collect();
 
         assert_eq!(
             found,
             vec![
-                ("Biases/c.fz".to_string(), FrameType::Bias),
-                ("DARKS/b.fits".to_string(), FrameType::Dark),
-                ("LiGhTs/Ha/a.fit".to_string(), FrameType::Light),
-                ("e.fit".to_string(), FrameType::Light),
-                ("misc/d.fit".to_string(), FrameType::Light),
+                ("Biases/c.fz".to_string(), Some(FrameType::Bias)),
+                ("DARKS/b.fits".to_string(), Some(FrameType::Dark)),
+                ("LiGhTs/Ha/a.fit".to_string(), Some(FrameType::Light)),
+                ("e.fit".to_string(), None),
+                ("misc/d.fit".to_string(), None),
             ]
         );
     }
@@ -1000,17 +1166,6 @@ mod tests {
     }
 
     #[test]
-    fn common_dir_is_the_deepest_shared_folder() {
-        let p = |s: &str| PathBuf::from(s);
-        assert_eq!(common_dir(&[p("/a/b/x.fit"), p("/a/b/c/y.fit")]), p("/a/b"));
-        assert_eq!(common_dir(&[p("/a/x.fit"), p("/b/y.fit")]), p("/"));
-        assert_eq!(common_dir(&[p("/a/x.fit")]), p("/a"));
-        assert_eq!(common_dir(&[]), PathBuf::new());
-        // `/a/bc` is not under `/a/b`.
-        assert_eq!(common_dir(&[p("/a/b/x.fit"), p("/a/bc/y.fit")]), p("/a"));
-    }
-
-    #[test]
     fn a_cancelled_summary_skips_the_remaining_files() {
         let tmp = TempDir::new().unwrap();
         let a = frame(
@@ -1032,13 +1187,31 @@ mod tests {
         let files = [a, b];
 
         // An unset flag changes nothing.
-        let normal = summarize_files_cancellable(&files, &AtomicBool::new(false));
+        let normal = summarize_files_cancellable(&files, tmp.path(), &AtomicBool::new(false));
         assert_eq!((normal.count, normal.errors.len()), (2, 0));
 
         // A flag set up front reads nothing: every file is skipped.
-        let cancelled = summarize_files_cancellable(&files, &AtomicBool::new(true));
+        let cancelled = summarize_files_cancellable(&files, tmp.path(), &AtomicBool::new(true));
         assert_eq!((cancelled.count, cancelled.errors.len()), (0, 2));
         assert!(cancelled.errors.iter().all(|(_, why)| why == "cancelled"));
+    }
+
+    #[test]
+    fn a_wider_root_gives_a_subset_the_folder_types_of_the_whole_set() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let at = Some("2026-06-22T22:00:00");
+        let a = frame(root, "Darks/x/a.fit", None, 60.0, at, None);
+        frame(root, "Darks/y/b.fit", None, 60.0, at, None);
+        let subset = [a];
+
+        // On its own, the subset's common folder is `Darks/x`: no type.
+        let own = summarize_files(&subset);
+        assert_eq!(own.sessions[0].types[0].frame_type, FrameType::Light);
+        // Looked up to the whole set's folder, `Darks` decides it.
+        let wide = summarize_files_cancellable(&subset, root, &AtomicBool::new(false));
+        assert_eq!(wide.root, root);
+        assert_eq!(wide.sessions[0].types[0].frame_type, FrameType::Dark);
     }
 
     #[test]

@@ -64,14 +64,7 @@ pub fn has_subdirectories(dir: &Path) -> bool {
 /// `night2/Lights/c.fit`. Paths with nothing in common (different drives)
 /// keep their full path.
 pub fn relative_names(paths: &[PathBuf]) -> Vec<String> {
-    let parent = |p: &PathBuf| p.parent().unwrap_or(Path::new("")).to_path_buf();
-    let mut common = paths.first().map(parent).unwrap_or_default();
-    for p in paths.iter().skip(1) {
-        while !p.starts_with(&common) && common.pop() {}
-        if !p.starts_with(&common) {
-            common = PathBuf::new();
-        }
-    }
+    let common = libfitz::files::common_dir(paths);
     paths
         .iter()
         .map(|p| match p.strip_prefix(&common) {
