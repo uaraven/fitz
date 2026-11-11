@@ -57,7 +57,7 @@ use slint::{ComponentHandle, Model, ModelRc, Timer, VecModel, Weak};
 use crate::controller::support::load_exposure;
 use crate::doc::FileMeta;
 use crate::files::{
-    display_name, expand_inputs, has_subdirectories, is_compressed, scan_directory,
+    display_name, expand_inputs, has_subdirectories, is_compressed, relative_names, scan_directory,
     scan_directory_recursive,
 };
 use crate::{AppWindow, FileRow, view};
@@ -283,6 +283,8 @@ fn view_toggles(app: &AppWindow) -> (bool, bool, bool) {
 }
 
 /// Build the list row for a path: base name plus a "compressed" badge for `.fz`.
+/// The name becomes a path relative to the working set's common folder once
+/// `refresh_names` sees the whole set.
 fn make_row(path: &Path, exposure: f32) -> FileRow {
     FileRow {
         name: display_name(path).into(),
@@ -400,8 +402,28 @@ fn add_and_select(app: &AppWindow, paths: Vec<PathBuf>) {
     if let Some(index) = target {
         select_file(app, index as i32);
     }
+    refresh_names();
     update_exposure(app);
     spawn_exposure_load(app.as_weak(), added);
+}
+
+/// Name every list row by its path relative to the folder the whole working
+/// set shares, so files from several folders read as `night1/Lights/a.fit`.
+/// Call after any change to the set's paths. Rows already right are left
+/// untouched.
+fn refresh_names() {
+    STATE.with(|s| {
+        let st = s.borrow();
+        let names = relative_names(&st.paths);
+        for (i, want) in names.iter().enumerate() {
+            if let Some(mut row) = st.files_model.row_data(i)
+                && row.name != want
+            {
+                row.name = want.into();
+                st.files_model.set_row_data(i, row);
+            }
+        }
+    });
 }
 
 /// Append any paths not already in the working set to both `paths` and the list
@@ -503,6 +525,7 @@ pub fn clear_files(app: &AppWindow) {
         st.generation += 1;
     });
     show_empty(app);
+    refresh_names();
     update_memory(app);
     update_exposure(app);
     update_checked_count(app);
@@ -598,6 +621,7 @@ fn drop_rows(mut targets: Vec<usize>) -> Option<Option<usize>> {
 /// refresh the memory/exposure/checked readouts and re-home the highlight to
 /// the row it resolved on (or show the empty state when the set emptied).
 fn finish_removal(app: &AppWindow, target: Option<usize>) {
+    refresh_names();
     update_memory(app);
     update_exposure(app);
     update_checked_count(app);

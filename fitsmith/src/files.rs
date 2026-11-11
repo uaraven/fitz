@@ -58,6 +58,29 @@ pub fn has_subdirectories(dir: &Path) -> bool {
     })
 }
 
+/// The list names for `paths`: each path relative to the deepest folder they
+/// all share, so one folder's files show bare names and a set spanning
+/// `night1/Lights` and `night2/Lights` shows `night1/Lights/a.fit` and
+/// `night2/Lights/c.fit`. Paths with nothing in common (different drives)
+/// keep their full path.
+pub fn relative_names(paths: &[PathBuf]) -> Vec<String> {
+    let parent = |p: &PathBuf| p.parent().unwrap_or(Path::new("")).to_path_buf();
+    let mut common = paths.first().map(parent).unwrap_or_default();
+    for p in paths.iter().skip(1) {
+        while !p.starts_with(&common) && common.pop() {}
+        if !p.starts_with(&common) {
+            common = PathBuf::new();
+        }
+    }
+    paths
+        .iter()
+        .map(|p| match p.strip_prefix(&common) {
+            Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+            _ => display_name(p),
+        })
+        .collect()
+}
+
 /// The next selection index for blink / arrow scrubbing, wrapping around the
 /// working set. Returns 0 for an empty set (nothing to select).
 pub fn next_index(current: usize, len: usize) -> usize {
@@ -217,6 +240,70 @@ mod tests {
         assert_eq!(
             deep,
             ["Lights/night1/deep.fits.fz", "Lights/raw.ARW", "top.fit"]
+        );
+    }
+
+    #[test]
+    fn relative_names_are_bare_file_names_within_one_folder() {
+        let p = |s: &str| PathBuf::from(s);
+        assert!(relative_names(&[]).is_empty());
+        assert_eq!(relative_names(&[p("/d/Lights/a.fit")]), ["a.fit"]);
+        assert_eq!(
+            relative_names(&[p("/d/Lights/a.fit"), p("/d/Lights/b.fit")]),
+            ["a.fit", "b.fit"]
+        );
+    }
+
+    #[test]
+    fn relative_names_are_relative_to_the_common_parent() {
+        let p = |s: &str| PathBuf::from(s);
+        let names = relative_names(&[
+            p("/d/night1/Lights/a.fit"),
+            p("/d/night1/Lights/b.fit"),
+            p("/d/night2/Lights/c.fit"),
+            p("/d/night1/Darks/d.fit"),
+        ]);
+        assert_eq!(
+            names,
+            [
+                "night1/Lights/a.fit",
+                "night1/Lights/b.fit",
+                "night2/Lights/c.fit",
+                "night1/Darks/d.fit"
+            ]
+        );
+        // A file in the shared folder itself keeps its bare name; a common
+        // parent must match whole components (`/d/ab` is not under `/d/a`).
+        assert_eq!(
+            relative_names(&[p("/d/a/x.fit"), p("/d/top.fit"), p("/d/ab/y.fit")]),
+            ["a/x.fit", "top.fit", "ab/y.fit"]
+        );
+        assert_eq!(
+            relative_names(&[p("/x/b/a.fit"), p("/a.fit")]),
+            ["x/b/a.fit", "a.fit"]
+        );
+    }
+
+    #[test]
+    fn relative_names_on_a_real_recursive_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("n1/Lights")).unwrap();
+        std::fs::create_dir_all(dir.path().join("n2/Lights")).unwrap();
+        let data = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-data");
+        for (src, dst) in [
+            ("uncompressed.fit", "n1/Lights/a.fit"),
+            ("compressed.fits.fz", "n2/Lights/b.fits.fz"),
+        ] {
+            std::fs::copy(data.join(src), dir.path().join(dst)).unwrap();
+        }
+        let paths = scan_directory_recursive(dir.path());
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            relative_names(&paths),
+            [
+                format!("n1{sep}Lights{sep}a.fit"),
+                format!("n2{sep}Lights{sep}b.fits.fz")
+            ]
         );
     }
 

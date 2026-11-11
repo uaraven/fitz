@@ -1,8 +1,10 @@
 // Data structs shared between the Rust controller and the UI.
 
-// One entry in the file list: its display name, a short status badge
+// One entry in the file list: its display name (the path relative to the
+// folder the whole working set shares), a short status badge
 // ("compressed" / "error" / ""), the full path, and — when the file failed
-// to load — the error message (empty otherwise), shown as a hover tooltip.
+// to load — the error message (empty otherwise). The full path and any error
+// are shown as a hover tooltip.
 // `checked` is the row's independent selection state (its checkbox), separate
 // from the single highlighted/previewed row tracked by `selected-index`.
 export struct FileRow {
