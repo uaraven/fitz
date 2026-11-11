@@ -1,22 +1,20 @@
 # fitz
 
-Fitz is a CLI utility for working with FITS (astronomic images) files.
+Fitz is a command-line tool for working with FITS (astronomical image) files.
 
-Fitz supports following operations on FITS files:
- - compression using RICE_1 and GZIP1/2 algorithms
- - decompression using the same algorithms
- - debayering a mosaic image and saving it as a FITS, TIFF, PNG or JPEG file
- - auto-stretching an image and saving it as a FITS, TIFF, PNG or JPEG file
- - Split FITS file into separate per-channel R,G,B files, debayering if needed. 
- - Preview fits file in terminal window
- - Copy FITS header keywords from one file onto another
- - Summarise a directory tree of images by observing session, frame type and filter
+With fitz you can:
+ - compress FITS files (RICE_1, GZIP_1 and GZIP_2) and decompress them again
+ - debayer a colour (mosaic) image and save it as FITS, TIFF, PNG or JPEG
+ - auto-stretch an image and save it as FITS, TIFF, PNG or JPEG
+ - split an image into separate red, green and blue FITS files
+ - show image information, pixel statistics and star metrics (HFR, FWHM, eccentricity)
+ - preview an image right in the terminal
+ - copy FITS header keywords from one file onto another
+ - summarise a folder of images by observing night, frame type and filter
 
-Some of the operations (debayering, stretching, split into RGB, preview and headers) are supported also on RAW files from popular digital cameras. Fitz uses [libraw](https://www.libraw.org/) for reading the RAW files. 
+Debayering, stretching, splitting, preview and info also work on RAW files from popular digital cameras.
 
-_Note_ that Sigma Foveon sensors are not supported.
-
-I started fitz to quickly uncompress files created by NINA, because some of the tools and Siril scripts have problems with compressed files, after couple of days the project expanded into what it is now.
+_Note_ that cameras with Sigma Foveon sensors are not supported.
 
 ## Usage
 
@@ -24,28 +22,32 @@ I started fitz to quickly uncompress files created by NINA, because some of the 
 fitz [options] COMMAND [command-options]
 ```
 
-`options`:
+Global options:
  - `-v`, `--verbose` - print each file being processed
  - `-j`, `--jobs` - number of files to process in parallel (default: number of CPU cores)
- - `-V`, `--version` - print the application name and version, then exit
+ - `-V`, `--version` - print the version and exit
  - `-h`, `--help` - print help
 
-When a command is given several input files, they are processed in parallel across up to `--jobs` worker threads (defaulting to the number of CPU cores). Each file is independent, so a failure on one file is reported and the rest still run. Pass `-j 1` to force sequential processing. 
+Most commands accept several files at once and process them in parallel. If one file fails, the error is reported and the remaining files are still processed. Use `-j 1` to process files one at a time.
 
-`COMMAND` - one of the following:
- - `compress` to compress the FITS file;
- - `decompress` to decompress the compressed FITS file;
- - `debayer` to debayer a FITS mosaic image and save it as a FITS, TIFF, PNG or JPEG file;
- - `stretch` to auto-stretch a FITS image and save it as a FITS, TIFF, PNG or JPEG file;
- - `split` to debayer a FITS mosaic image (or split an already-debayered RGB image) and save each color channel as a separate FITS file;
- - `info` to print a summary of a FITS file (resolution, bit depth, channels, sky coordinates, pixel statistics, star metrics);
- - `preview` to preview FITS file in terminal. fitz will debayer (if needed) and stretch the image and then print it to the terminal using the best quality mode available. See [Preview section](#preview) for more details.
- - `copy-header` to copy FITS header keywords from a source file onto a target file, filling in only what the target doesn't already have;
- - `summary` to scan directories and report their images grouped by observing session, frame type and filter, with frame counts and integration times. See [Summary section](#summary).
+Commands:
+ - [`compress`](#compress) - compress FITS files
+ - [`decompress`](#decompress) - decompress compressed FITS files
+ - [`debayer`](#debayer) - debayer a colour mosaic image
+ - [`stretch`](#stretch) - auto-stretch an image
+ - [`split`](#split) - save each colour channel as a separate FITS file
+ - [`info`](#info) - print a summary of an image, with optional pixel statistics and star metrics
+ - [`preview`](#preview) - show an image in the terminal
+ - [`copy-header`](#copy-header) - copy missing header keywords from one file onto another
+ - [`summary`](#summary) - report the images in a folder by session, frame type and filter
 
- Use `--help` parameter with any command to see more options.
+Run `fitz COMMAND --help` to see all options of a command.
+
+Every command reads compressed FITS files directly — there is no need to decompress them first. The Bayer pattern of a colour image is always taken from the file's `BAYERPAT` header.
 
 ### compress
+
+Compresses FITS files. By default the compressed file replaces the original; use `-k` to keep the original.
 
 ```
 Usage: fitz compress [OPTIONS] [FILES]...
@@ -58,12 +60,11 @@ Options:
   -y, --yes                    Assume yes to overwrite question
   -a, --algorithm <ALGORITHM>  Compression algorithm [default: rice1] [possible values: rice1, gzip1, gzip2]
   -o, --output <OUTPUT>        Write output to this file (only valid with a single input file)
-  -v, --verbose                Print each file being processed
-  -j, --jobs <JOBS>            Number of files to process in parallel (default: number of CPU cores)
-  -h, --help                   Print help
 ```
 
 ### decompress
+
+Decompresses compressed FITS files. By default the decompressed file replaces the original; use `-k` to keep the original. All header information is preserved.
 
 ```
 Usage: fitz decompress [OPTIONS] [FILES]...
@@ -75,18 +76,13 @@ Options:
   -k, --keep             Keep original file after decompression
   -y, --yes              Assume yes to overwrite question
   -o, --output <OUTPUT>  Write output to this file (only valid with a single input file)
-  -v, --verbose          Print each file being processed
-  -j, --jobs <JOBS>      Number of files to process in parallel (default: number of CPU cores)
-  -h, --help             Print help
 ```
-
-Decompression restores the original image header, keeping its metadata (including `BAYERPAT`) and stripping only the compressed-container table/`Z*` keywords, so a `compress` → `decompress` round-trip preserves the header.
 
 ### debayer
 
-Debayers a FITS mosaic image and saves it as a FITS (3-channel), TIFF, PNG or JPEG file. The Bayer pattern is always read from the file's `BAYERPAT` header — there is no `--pattern`/`--force-demosaic` override for this command. If the input is not a raw mosaic (it's already a 3-plane RGB image, or a 1-channel image with no `BAYERPAT` header), `debayer` refuses with an error rather than writing a copy.
+Debayers a colour mosaic image and saves it as a colour FITS, TIFF, PNG or JPEG file. Images that are already in colour, or monochrome images, are rejected with an error.
 
-When `-o`/`--output` is not given, the output file is named `{input-stem}_debayer.{ext}` next to the input, where `ext` depends on `--output-format`.
+Unless `-o` is given, the result is saved next to the input as `{name}_debayer.{ext}`.
 
 ```
 Usage: fitz debayer [OPTIONS] [FILES]...
@@ -96,31 +92,28 @@ Arguments:
 
 Options:
   -y, --yes                     Assume yes to overwrite question
-      --bpp <BPP>               Bits per pixel in the output image (TIFF and FITS only) [default: 16] (8, 16 or 32)
-      --compress                Compress the output image (currently only affects FITS output's tile compression; TIFF and PNG output ignore it)
-      --quality <QUALITY>       JPEG export quality 0..100 [default: 90] (only used with --output-format jpeg)
+      --bpp <BPP>               Bits per pixel in the output image: 8, 16 or 32 (FITS and TIFF only) [default: 16]
+      --compress                Compress the output image (FITS only)
+      --quality <QUALITY>       JPEG quality 0..100 [default: 90]
   -f, --output-format <FORMAT>  Output file format [default: fits] [possible values: fits, tiff, jpeg, png]
   -o, --output <OUTPUT>         Write output to this file, or to this folder if processing multiple files
-  -v, --verbose                 Print each file being processed
-  -j, --jobs <JOBS>             Number of files to process in parallel (default: number of CPU cores)
-  -h, --help                    Print help
 ```
 
-`--bpp` selects the sample width of FITS (8/16/32-bit unsigned) and TIFF (8/16/32-bit) output; it has no effect on PNG (always 16-bit) or JPEG (always 8-bit) output.
+PNG output is always 16-bit and JPEG output is always 8-bit.
 
 ### stretch
 
-Applies an automatic screen-transfer-function (STF/MTF) stretch to a FITS image and saves the result as a FITS, TIFF, PNG or JPEG file.
+Applies an automatic stretch to an image, making faint detail visible, and saves the result as a FITS, TIFF, PNG or JPEG file.
 
-**`stretch` does not debayer the input.** It stretches whatever it's given, in place: a raw CFA mosaic is stretched (and saved back out) as a mosaic, an already-debayered RGB cube is stretched as RGB, and a monochrome frame is stretched as monochrome. Run `debayer` first if you want a stretched RGB image from raw sensor data. `--pattern`/`--force-demosaic` are still accepted for backward compatibility but currently have no effect on `stretch` (a warning is printed); the Bayer pattern is always read from the `BAYERPAT` header.
+`stretch` does **not** debayer: a colour mosaic stays a mosaic, a colour image stays colour and a monochrome image stays monochrome. Run `debayer` first if you want a stretched colour image from raw sensor data.
 
-The stretch derives its shadows clip and midtones balance from each image's own statistics (median and median absolute deviation), pulling the background up to a consistent target brightness. By default each color channel (of an RGB or CFA image) is stretched independently, which also neutralizes the background color cast. Pass `--linked-channel` to apply one shared stretch to all channels instead, preserving the original color balance.
+By default each colour channel is stretched separately, which also removes the background colour cast. Use `--linked-channel` to stretch all channels together and keep the original colour balance.
 
-The target background brightness defaults to `0.25` (of the full `[0, 1]` range); pass `--brightness` with a higher value (strictly between 0 and 1) if the stretched image still looks too dark, or a lower value to darken it.
+If the result is too dark, increase `--brightness`; to make it darker, decrease it.
 
-FITS output is written as 32-bit float, normalized to `[0, 1]`; TIFF is written as 16-bit, and PNG as 16-bit; JPEG is written as 8-bit at quality 90.
+FITS output is 32-bit floating point, TIFF and PNG are 16-bit, JPEG is 8-bit.
 
-When `-o`/`--output` is not given, the output file is named `{input-stem}_stretch.{ext}` next to the input, where `ext` depends on `--output-format`.
+Unless `-o` is given, the result is saved next to the input as `{name}_stretch.{ext}`.
 
 ```
 Usage: fitz stretch [OPTIONS] [FILES]...
@@ -130,24 +123,19 @@ Arguments:
 
 Options:
   -y, --yes                      Assume yes to overwrite question
-      --linked-channel           Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
-      --pattern <PATTERN>        Bayer pattern of the sensor; currently has no effect on stretch [possible values: RGGB, GBRG, BGGR, GRBG]
-      --force-demosaic           Currently has no effect on stretch
-      --brightness <BRIGHTNESS>  Target background brightness the auto-stretch pulls the image towards (strictly between 0 and 1); higher values produce a brighter image [default: 0.25]
+      --linked-channel           Apply one shared stretch to all channels instead of stretching each channel independently
+      --brightness <BRIGHTNESS>  Target background brightness, between 0 and 1; higher values produce a brighter image [default: 0.25]
   -f, --output-format <FORMAT>   Output file format [default: fits] [possible values: fits, tiff, jpeg, png]
   -o, --output <OUTPUT>          Write output to this file, or to this folder if processing multiple files
-  -v, --verbose                  Print each file being processed
-  -j, --jobs <JOBS>              Number of files to process in parallel (default: number of CPU cores)
-  -h, --help                     Print help
 ```
 
 ### split
 
-Debayers a FITS mosaic image and saves each color channel as a separate FITS file. An already-debayered 3-plane RGB image is split directly, without debayering. A 2D image with no Bayer pattern header is neither, so it has nothing to split and `split` errors on it.
+Saves the red, green and blue channels of an image as three separate FITS files. A colour mosaic is debayered first; an image that is already in colour is split directly. Monochrome images cannot be split.
 
-`--pattern`/`--force-demosaic` are still accepted for backward compatibility but currently have no effect on `split` (a warning is printed); the Bayer pattern is always read from the `BAYERPAT` header.
+With `--cfa`, the channels are taken straight from the raw mosaic without debayering. Each output is then half the width and height of the original.
 
-`--r-prefix`/`--r-dir` (and the `g`/`b` equivalents) are mutually exclusive. If none of the six prefix/dir options are given, all three channels are saved next to the input file using the default `R-`/`G-`/`B-` prefixes. If any are given, only the explicitly configured channels are saved. In directory mode the original filename is kept unchanged (use distinct directories per channel to avoid one channel overwriting another), and the directory is created automatically if it doesn't already exist.
+By default all three channels are saved next to the input file as `R-{name}`, `G-{name}` and `B-{name}`. If you give any of the prefix or directory options, only the channels you configured are saved. For each channel use either a prefix or a directory, not both. When saving into a directory the original file name is kept, so use a different directory for each channel. Directories are created if they don't exist.
 
 ```
 Usage: fitz split [OPTIONS] [FILES]...
@@ -156,74 +144,44 @@ Arguments:
   [FILES]...  FITS files to split into channels
 
 Options:
-  -y, --yes                  Assume yes to overwrite question
-  -p, --output-pixel-format <FORMAT>
-                             Per-channel pixel format of the resulting FITS files [default: i16] [possible values: i8, i16, i32, f32, f64]
-      --pattern <PATTERN>    Bayer pattern of the sensor; currently has no effect on split [possible values: RGGB, GBRG, BGGR, GRBG]
-      --force-demosaic       Currently has no effect on split
-      --cfa                  Extract R, G and B straight from a raw (non-debayered) mosaic instead of debayering first: each output is half the input's width and height, and green is the average of the two green sensor sites. Errors if the input is already debayered
-      --r-prefix <R_PREFIX>  Prefix for the red channel file: {prefix}-{original-file-name}
-      --r-dir <R_DIR>        Directory to save the red channel file into (original filename kept)
-      --g-prefix <G_PREFIX>  Prefix for the green channel file: {prefix}-{original-file-name}
-      --g-dir <G_DIR>        Directory to save the green channel file into (original filename kept)
-      --b-prefix <B_PREFIX>  Prefix for the blue channel file: {prefix}-{original-file-name}
-      --b-dir <B_DIR>        Directory to save the blue channel file into (original filename kept)
-  -v, --verbose              Print each file being processed
-  -j, --jobs <JOBS>          Number of files to process in parallel (default: number of CPU cores)
-  -h, --help                 Print help
+  -y, --yes                           Assume yes to overwrite question
+  -p, --output-pixel-format <FORMAT>  Pixel format of the resulting FITS files [default: i16] [possible values: i8, i16, i32, f32, f64]
+      --cfa                           Extract R, G and B straight from a raw mosaic instead of debayering first
+      --r-prefix <R_PREFIX>           Prefix for the red channel file: {prefix}-{original-file-name}
+      --r-dir <R_DIR>                 Directory to save the red channel file into (original filename kept)
+      --g-prefix <G_PREFIX>           Prefix for the green channel file: {prefix}-{original-file-name}
+      --g-dir <G_DIR>                 Directory to save the green channel file into (original filename kept)
+      --b-prefix <B_PREFIX>           Prefix for the blue channel file: {prefix}-{original-file-name}
+      --b-dir <B_DIR>                 Directory to save the blue channel file into (original filename kept)
 ```
 
 ### info
 
-Prints a human-readable summary of each FITS file without writing anything. Reported fields:
+Prints a summary of each image without changing anything: resolution, bit depth, channels, Bayer pattern, object, RA/DEC, rotation, exposure, gain/offset, binning, filter, camera, telescope (with focal length and focal ratio) and observation date. Fields missing from the file are not shown.
 
- - **Resolution** — image width × height.
- - **Bit depth** — the pixel storage format read from the decoded pixel buffer itself (`16-bit unsigned integer` or `32-bit float`) — correct even for a tile-compressed input, unlike the header's own `BITPIX`, which for a compressed HDU describes its binary table rather than the image.
- - **Channels** — channel count and layout: `3 (debayered RGB)`, `1 (mosaic)` for a raw CFA frame, or `1 (monochrome (debayered))` for an already-debayered mono frame with no `BAYERPAT` header.
- - **Bayer** — the Bayer/CFA pattern, shown for raw mosaics.
- - **Object** — the target name (`OBJECT`).
- - **RA / DEC** — image-center sky coordinates, when present. 
- - **Rotation** — object/camera rotation angle in degrees.
- - **Exposure** — exposure time in seconds.
- - **Gain / Offset** — camera gain and offset.
- - **Binning** — sensor binning.
- - **Filter** — the filter name.
- - **Instrument** — the camera/sensor name.
- - **Telescope** — the telescope name followed, when available, by its focal length and focal ratio.
- - **Date-obs** — the observation timestamp.
+`--pixels` adds a table of statistics for each colour channel, followed by a histogram:
 
-Each of the above is only shown when the corresponding header keyword is present (and non-blank). By default only these header-derived fields are reported.
+ - **Min / Max / Mean / Median**
+ - **Mode** — the most common pixel value, usually the sky background level
+ - **Avg Dev** — the average deviation from the mean
+ - **MAD** — the median absolute deviation, a noise estimate that ignores stars and hot pixels
+ - **σ** — the standard deviation of all pixels. A σ much larger than MAD means the frame contains a lot of signal (or problems such as satellite trails)
+ - **Bit-depth (est)** — the camera's actual bit depth (8, 10, 12, 14 or 16), estimated from the pixel values
+ - **Zeros** — the number of pixels with a value of zero (clipped shadows)
+ - **Saturated** — the number of pixels at full scale (blown highlights)
 
-Pass `--pixels` to additionally read the pixel data (transparently decompressing a tile-compressed input first) and print a table of per-channel statistics — one column for a raw mosaic or monochrome frame, three (`R`/`G`/`B`) for an already-debayered RGB cube:
+Use `--log` together with `--pixels` to draw the histogram with a logarithmic scale, which makes the shape of a histogram with a tall peak easier to see.
 
- - **Min / Max** — the physical pixel value extremes.
- - **Mean** — the arithmetic mean.
- - **Median** — the (approximate) median.
- - **Mode** — the most common pixel value, which for a typical sky frame is the background level. Ties resolve to the lowest such value, so a bimodal frame (e.g. amp glow) reports the sky peak rather than the glow.
- - **Avg Dev** — the mean absolute deviation from the mean.
- - **MAD** — the median absolute deviation from the median (scaled by 1.4826, so it estimates the standard deviation for Gaussian noise) — a selection rather than a sum, so a handful of bright outliers cannot move it.
- - **σ** — the standard deviation of every pixel, so stars, hot pixels and satellite trails all inflate it. Reported together with `MAD` because the gap between them is itself the interesting number: on a clean frame the two are close; a `σ` well above `MAD` means signal (or trouble) rather than redundancy.
- - **Bit-depth (est)** — the sample bit depth (8, 10, 12, 14 or 16) guessed from the channel's own max pixel value, independent of the file's nominal `Bit depth`.
- - **Zeros** — the count of pixels whose value is exactly zero (crunched shadows).
- - **Saturated** — the count of pixels at the channel's estimated full scale (blown highlights) — the ceiling implied by `Bit-depth (est)`, not a fixed 65535/255 or a `DATAMAX` header keyword.
- - **Histogram** — one combined histogram (luma-weighted for an RGB cube, so it isn't three overlapping charts) is drawn last, after the table. Pass `--log` for a logarithmic vertical axis, which keeps a tall low-value spike (common in astronomical frames) from flattening the rest of the distribution. `--log` only affects the histogram, so it is only useful together with `--pixels`.
+`--stars` detects the stars in the image and reports:
 
-Pass `--stars` to detect the frame's stars and report:
+ - **count** — the number of stars found. Noticeably fewer stars than in neighbouring frames usually means clouds or haze
+ - **hfr** — the half-flux radius. The main focus metric: smaller is sharper
+ - **fwhm** — the full width at half maximum, which reflects focus and seeing
+ - **eccentricity** — how elongated the stars are, from 0 (round) to nearly 1 (a streak). Rising eccentricity points to tracking or guiding problems. The scale is steep near zero: stars only 10% wider in one direction already read about 0.42, so a mid-range value means mild elongation, not a bad frame
 
- - **`count`** — how many stars were detected. Fewer stars than the frames around it usually means cloud or haze.
- - **`hfr`** — the half-flux radius, the flux-weighted mean radius of a star. The focus metric: the smaller, the sharper.
- - **`fwhm`** — the full width at half maximum, from the stars' second moments. Tracks focus and seeing alongside `hfr`.
- - **`eccentricity`** — how elongated the stars are, from 0 (round) to nearly 1 (a streak). Rising eccentricity means tracking or guiding trouble. Note that it is a steep scale near the round end: stars only 10% wider one way than the other already read 0.42, so a mid-range number is a mild elongation, not a bad frame.
+Hot pixels, nebulosity, saturated stars and stars touching the edge of the frame are ignored. `--stars` and `--pixels` can be used separately or together.
 
-`count`, `hfr` and `fwhm` are medians across the accepted stars, so one satellite trail cannot move the number. Eccentricity is aggregated differently — the stars' elongation *directions* are averaged along with their magnitudes — because a per-star eccentricity can only ever be pushed upwards by noise, so a plain median of them reports faint frames as elongated when they are not. The trade-off is that elongation which fans out symmetrically across the frame, such as pure field rotation about the centre, partly cancels; elongation that points the same way everywhere, which is what trailing and drift produce, is reported in full.
-
-Blobs that are too small (hot pixels), too large (nebulosity), clipped at the sensor's ceiling, or touching the frame border are rejected before measuring — a saturated or truncated star has no usable shape.
-
-`--stars` is independent of `--pixels` in both directions: neither implies the other (star detection derives its threshold from its own detection plane, never from the frame's pixel statistics). For an already-debayered RGB cube detection runs on the green channel.
-
-On a colour (CFA) frame, star detection runs directly on the raw mosaic pixels at full sensor resolution — no debayering or green-channel extraction. A star sampled through a Bayer filter isn't a smooth point-spread function (a raw pixel only sees one of red, green or blue), but that checkerboard modulation washes out of the flux-weighted centroid and moments, so `hfr`/`fwhm` still track focus reliably and read comparably to an already-debayered RGB cube's (detection runs on its separated green channel, also at full resolution) and to other tools that measure raw OSC frames the same way, such as NINA.
-
-Pass `--headers` to skip the formatted summary entirely and instead dump the raw FITS header cards, one per line, exactly as found in the file.
+`--headers` prints the raw FITS header instead of the summary.
 
 ```
 Usage: fitz info [OPTIONS] [FILES]...
@@ -232,67 +190,54 @@ Arguments:
   [FILES]...  FITS files to inspect
 
 Options:
-      --pixels       Read the pixel data (decompressing first if needed) and report pixel statistics
-      --stars        Detect the frame's stars and report their count and median HFR, FWHM and eccentricity. Independent of --pixels in both directions
-      --log          Use a logarithmic vertical axis for the pixel histogram. Only useful together with --pixels, which is what produces the histogram
+      --pixels       Report pixel statistics and a histogram
+      --stars        Detect stars and report their count, HFR, FWHM and eccentricity
+      --log          Use a logarithmic vertical axis for the histogram (with --pixels)
       --headers      Print the raw FITS header cards instead of the formatted summary
-  -v, --verbose      Print each file being processed
-  -j, --jobs <JOBS>  Number of files to process in parallel (default: number of CPU cores)
-  -h, --help         Print help
 ```
 
 ### preview
 
-Renders a FITS image directly in the terminal instead of writing a file. The image is loaded, debayered if needed, auto-stretched, downscaled to fit the terminal, and printed as colored text — a quick way to eyeball a frame over SSH or without opening a viewer.
+Shows an image directly in the terminal — a quick way to look at a frame over SSH or without opening a viewer. The image is debayered if needed, auto-stretched and scaled to fit the terminal window. `--linked-channel` and `--brightness` work the same way as for [`stretch`](#stretch).
 
-The image is stretched before printing; `--linked-channel` and `--brightness` behave the same as for the `stretch` command. Unlike `stretch`, `preview` always debayers a raw mosaic first (unless `--no-debayer` is given) before stretching it. `--pattern`/`--force-demosaic` are still accepted for backward compatibility but currently have no effect (a warning is printed); the Bayer pattern is always read from the `BAYERPAT` header.
+`preview` accepts exactly one file.
 
-Unlike the other commands, `preview` accepts exactly one file.
+Your terminal needs to support at least 216 colours. Fitz picks the best mode the terminal supports:
+ - **graphics mode** — the image is shown as a picture, in terminals that support the Kitty graphics protocol
+ - **true-color mode** — in terminals with 24-bit colour
+ - **fallback mode** — 216 colours; low quality, but enough for a quick look
 
-`preview` requires terminal to support at least 216-color mode or better. If terminal is unable to render more than 16 colors, the preview will not work.
-
-If terminal supports Kitty Terminal graphics protocol, the preview will be shown as a picture, otherwise for terminals that support true-color mode the preview will use it. If true-color mode is not supported, then the preview will fall back to 216-color mode. The quality is not good, but might be enough to have a quick look at the image.
-
-Automatic terminal graphics detection is supported on Linux and macOS. On other platforms, use `--graphics` to force the Terminal graphics protocol when your terminal supports it.
+Automatic detection works on Linux and macOS. On other systems, use `--graphics` if your terminal supports the Kitty graphics protocol.
 
 |          Fallback mode           |       True-color mode       |         Graphics mode          |
 | :------------------------------: | :-------------------------: | :----------------------------: |
 | ![](../docs/ascii-preview-216c.png) | ![](../docs/ascii-preview.png) | ![](../docs/graphics-preview.png) |
 
-Two flags override the default behaviour:
-
- - `--graphics` forces the Kitty terminal graphics protocol even if detection is skipped or inconclusive (useful when your terminal supports it but doesn't answer the capability query).
- - `--truecolor` forces true-color ANSI half-block rendering instead of the terminal graphics protocol.
-
-These two flags are mutually exclusive.
-
-`--no-debayer` skips debayering: a raw, not-yet-debayered mosaic is shown as a stretched grayscale image using its raw sensor values instead of being color-interpolated. If the image is already debayered (or already monochrome), there's nothing to skip, so the flag is ignored and a warning is printed instead.
+`--no-debayer` shows a raw colour mosaic as a grayscale image instead of debayering it.
 
 ```
 Usage: fitz preview [OPTIONS] <FILE>
 
 Arguments:
-  <FILE>  FITS file to preview (only a single file is accepted)
+  <FILE>  FITS file to preview
 
 Options:
-      --linked-channel     Apply one shared stretch to all channels instead of stretching each channel independently (which also neutralizes the background)
-      --pattern <PATTERN>  Bayer pattern of the sensor; currently has no effect on preview [possible values: RGGB, GBRG, BGGR, GRBG]
-      --force-demosaic     Currently has no effect on preview
-      --brightness <BRIGHTNESS>
-                           Target background brightness the auto-stretch pulls the image towards (strictly between 0 and 1); higher values produce a brighter image [default: 0.25]
-      --graphics           Force kitty graphics protocol rendering, skipping auto-detection
-      --truecolor          Force true-color ANSI half-block rendering, skipping auto-detection
-      --fallback           Force compatibility fallback ASCII rendering using only 216 colours
-      --no-debayer         Skip debayering, showing a raw mosaic as a stretched grayscale image instead; ignored (with a warning) if already debayered
-  -v, --verbose            Print each file being processed
-  -j, --jobs <JOBS>        Number of files to process in parallel (default: number of CPU cores)
-  -h, --help               Print help
+      --linked-channel           Apply one shared stretch to all channels instead of stretching each channel independently
+      --brightness <BRIGHTNESS>  Target background brightness, between 0 and 1; higher values produce a brighter image [default: 0.25]
+      --graphics                 Force graphics mode (Kitty graphics protocol)
+      --truecolor                Force true-color mode
+      --fallback                 Force 216-colour fallback mode
+      --no-debayer               Show a raw mosaic as a grayscale image instead of debayering it
+      --invert                   Invert the image
 ```
+
+`--graphics`, `--truecolor` and `--fallback` cannot be combined.
 
 ### copy-header
 
-Copies FITS header keywords from `SOURCE` onto `TARGET`, filling in only the keywords `TARGET` doesn't already carry. `TARGET`'s own resolution, bit depth, channel count, pixel scaling, and any other keyword it already has are left untouched — only missing metadata (object name, sky coordinates, filter, gain, HISTORY/COMMENT cards, …) is added. If `TARGET` is already a debayered 3-plane image, `BAYERPAT` (and the related CFA offset keywords) from `SOURCE` is skipped even if missing, so `TARGET` doesn't start looking like undebayered raw sensor data again.
-By default `TARGET` is modified in place; pass `-o`/`--output` to write the result to a different file instead, leaving `TARGET` untouched.
+Copies FITS header keywords from `SOURCE` onto `TARGET`, adding only the keywords `TARGET` doesn't already have — for example the object name, coordinates, filter or gain. Nothing already in `TARGET` is changed. If `TARGET` is already a colour (debayered) image, the Bayer pattern is not copied.
+
+`TARGET` is modified in place unless `-o` is given.
 
 ```
 Usage: fitz copy-header [OPTIONS] <SOURCE> <TARGET>
@@ -304,23 +249,21 @@ Arguments:
 Options:
   -y, --yes              Assume yes to overwrite question
   -o, --output <OUTPUT>  Write the result to this file instead of overwriting the target in place
-  -v, --verbose          Print each file being processed
-  -j, --jobs <JOBS>      Number of files to process in parallel (default: number of CPU cores)
-  -h, --help             Print help
 ```
 
 ### summary
 
-Scans one or more directories recursively (a directory's path is printed above its report when several are given) and groups every FITS and camera RAW image in them by **observing session**, **frame type** and **filter**, reporting the number of frames and the total exposure (integration) time of each group.
+Scans one or more folders, including all subfolders, and reports the FITS and camera RAW images in them, grouped by observing session, frame type and filter, with the number of frames and the total exposure time of each group.
 
- - **Frame type** comes from the `IMAGETYP` header when it names one: `LIGHT`, `DARK`, `BIAS`, `FLAT`, `DARKFLAT` and the common variants capture software writes (`Light Frame`, `Object`, `Dark Frame`, `Offset`, `Flat Field`, `Dark Flat`, a `Master` prefix, …), in any case. Otherwise it comes from the folder names: starting at the image's own folder and moving up one level at a time (up to and including the scanned directory itself), the first folder whose name is a known type decides it: `lights`, `darks`, `biases`, `flats` or `darkflats`, singular or plural, in any case, with or without spaces, dashes or underscores (`Lights`, `DARK`, `bias`, `Dark Flats`, …). An image with neither is treated as a light. Camera RAW files carry no `IMAGETYP`, so their type always comes from the folders.
- - **Filter** is read from the `FILTER` header. Frames without one, including all camera RAW frames, are listed as `(no filter)`.
- - **Session** is one observing night. It is taken from the frame's timestamp (`DATE-LOC`, otherwise `DATE-OBS`; for RAW files the EXIF capture time), cut at local noon so a night that crosses midnight stays together. A FITS `DATE-OBS` is UTC, so when the header also has the site longitude (`SITELONG`, degrees east), the time is first moved to local solar time (15° per hour). Frames with no readable timestamp are collected in an `unknown date` session.
- - Integration time is the sum of `EXPTIME`. Each session is reported with its **light** integration; below it, one line counts the frames of every type in the session, and the light frames are broken down by filter, in the order L, R, G, B, Ha, SII, OIII, then any other filters alphabetically and frames without a filter last. Calibration frames (darks, biases, flats, dark flats) are counted but not broken down. The `Total:` line sums the light frames and their integration time over all sessions.
+ - **Session** — one observing night. Frames taken after midnight belong to the same night as the evening before. Frames without a date are listed under `unknown date`.
+ - **Frame type** — light, dark, bias, flat or dark flat. It is taken from the `IMAGETYP` header. If the header doesn't have it, fitz looks at the names of the folders the image is in: a folder called `Lights`, `Darks`, `Biases`, `Flats` or `Dark Flats` (singular or plural, any capitalisation) sets the type. Otherwise the image is counted as a light frame.
+ - **Filter** — taken from the `FILTER` header. Frames without a filter, including all camera RAW files, are listed as `(no filter)`.
 
-Files with a `.tif` extension are not scanned. An image that cannot be read is reported on stderr (`fitz: <path>: <error>`) and left out of the report, and the exit code is non-zero.
+Each session shows its light-frame integration time, a count of frames of every type, and the light frames broken down by filter. Calibration frames are counted but not broken down. The last line totals the light frames over all sessions.
 
-_Note_ that a FITS frame with a UTC `DATE-OBS` but neither `DATE-LOC` nor `SITELONG` is cut at UTC noon, so one night can be split into two sessions when the observing site is far from UTC, for example 20:00-05:00 local time at UTC-8. Capture software such as NINA writes `DATE-LOC`, and RAW files use the camera's local clock (their GPS longitude is not applied), so this mostly affects files from other sources.
+`.tif` files are skipped. Files that cannot be read are reported as errors and left out of the summary.
+
+_Note_ that if a FITS file has no local time or site longitude in its header, a night far from UTC may be split into two sessions. NINA and most capture software write the local time, so this rarely happens.
 
 ```
 Session 2026-10-08 - 5h 49m 00s light integration
@@ -346,9 +289,4 @@ Usage: fitz summary [OPTIONS] <DIRS>...
 
 Arguments:
   <DIRS>...  Directories to scan recursively for FITS and camera RAW images
-
-Options:
-  -v, --verbose      Print each file being processed
-  -j, --jobs <JOBS>  Number of files to process in parallel (default: number of CPU cores)
-  -h, --help         Print help
 ```

@@ -1,75 +1,66 @@
 # FitSmith
 
-FitSmith is a desktop FITS file viewer.
-
-It allows preview of multiple FITS files with debayering and screen stretch, if necessary.
+FitSmith is a desktop viewer for FITS (astronomical image) files. Open a single file or whole folders of them, and FitSmith will debayer and stretch each image for display as needed.
 
 ![](../docs/main.png)
 
 ## Features
 
- - View FITS file. duh.
- - Blink through the working set of the FITS files.
- - Session summary (Tools ▸ Session Summary…): group the checked files (or the whole working set) into observing nights, frame types (lights, darks, flats, …) and filters, with frame counts and integration times — light frames only unless "Show calibration frames" is checked; a copy button puts the same text report `fitz summary` prints on the clipboard
- - Add Folder can include the folder's subfolders
- - The file list names each file by its path relative to the folder the whole working set shares (just the file name when they are all in one folder, `night1/Lights/a.fit` when they span several), and a compressed file is marked with an icon
- - Each file in the list shows its frame type as an icon — light (star), dark (moon), bias (zero), flat (square) or dark flat (half-filled disc) — with a tooltip naming the type. The type comes from the `IMAGETYP` header, else from a `Lights`/`Darks`/`Biases`/`Flats`/`DarkFlats` folder above the file (up to the folder the working set shares), else the frame is assumed a light — the same rule `fitz summary` and the Session Summary use
- - Selection menu: Select All (Ctrl+A), Deselect All (Ctrl+D), and select just the Lights, Darks, Biases, Flats or Dark Flats (each entry shows how many the working set holds); View ▸ Invert Selection (Ctrl+Shift+I) flips every checkbox
- - Batch export FITS to JPG, PNG or TIFF
- - Batch compression or decompression of FITS files
- - View headers
- - View statistics: Mean, median, standard deviation, MAD, contrast, etc.
- - Estimate real bit depth of the file
- - View star metrics (HFR, FWHM, Eccentricity)
+ - View FITS and camera RAW images, with optional debayering and auto-stretch
+ - Blink through the open files
+ - Open a whole folder at once, optionally including its subfolders
+ - The file list shows each file's frame type (light, dark, bias, flat or dark flat) as an icon, and marks compressed files
+ - Select files quickly: select all, none, invert the selection, or select only the lights, darks, biases, flats or dark flats
+ - Session summary (Tools ▸ Session Summary…): group the files into observing nights, frame types and filters, with frame counts and integration times. The summary can be copied to the clipboard as text
+ - Export FITS files to JPEG, PNG or TIFF in batch
+ - Compress or decompress FITS files in batch
+ - View the FITS header
+ - View image statistics: mean, median, standard deviation, MAD, contrast, etc.
+ - Estimate the real bit depth of an image
+ - View star metrics: HFR, FWHM and eccentricity
  - Aberration inspector
- - Detect bad frames: flag frames that are outliers against the session's baseline — noise, focus issues or tracking failure 
+ - Detect bad frames: find frames that stand out from the rest of the session because of noise, focus problems or tracking failures
  - Charts:
-   - draw a chart of a statistics metrics for the whole working set - see how star count or noise levels changed during the session
-   - show the mean value of the chart metrics and ±1, 2 and 3σ to quickly see which images are outliers
+   - plot a statistic for all open files to see how, for example, star count or noise changed during the session
+   - show the average and the ±1, 2 and 3σ bands to quickly spot outliers
 
-For example here is the mean pixel value chart clearly showing when the wildfire smoke arrived and affected seeing and total brightness
+For example, this chart of the mean pixel value clearly shows when wildfire smoke arrived and affected the seeing and sky brightness:
 ![](../docs/analytics-mean-adu.png)
 
 ## Installing
 
-FitSmith is distributed as a native installer per OS (`.dmg` on macOS, `.deb`/`.rpm` on Linux,
-`.zip` with portable .exec on Windows). You can check the releases on the [GitHub](https://github.com/uaraven/fitz/releases) 
-or build the package yourself — see [Building FitSmith](building.md) for instructions.
+Download the package for your system from the [GitHub releases](https://github.com/uaraven/fitz/releases) page: `.dmg` for macOS, `.deb` or `.rpm` for Linux, or a `.zip` with a portable `.exe` for Windows.
 
-Packages are unsigned — no Apple Developer ID or Windows code-signing certificate is used — so first launch shows a warning.
+The packages are not signed, so your system will show a warning the first time you start FitSmith.
 
 ### macOS
 
-To install, open the DMG and copy to the Applications folder to run the application
+Open the DMG and copy FitSmith to the Applications folder.
 
-**Note**: macOS will block the application from running because it is not notarized. You **will** 
-need to allow it in System Preferences -> Security & Privacy -> General or using the terminal command:
+macOS will block the application the first time, because it is not notarized. Allow it in System Settings ▸ Privacy & Security, or run:
 
-```
+```shell
 sudo xattr -rd com.apple.quarantine /Applications/FitSmith.app
 ```
 
 ### Linux
 
-Install using package installer of your distro.
+Install the package with your distribution's package manager:
 
-```shell                                   
-sudo apt install fitsmith-<version>.deb
+```shell
+sudo apt install ./fitsmith-<version>.deb
 
-sud dnf install fitsmith-<version>.rpm
+sudo dnf install ./fitsmith-<version>.rpm
 ```
-                              
+
 ### Windows
 
-At this moment Windows version of FitSmith is distributed as a portable .exe file. Download, unzip and run. 
+Download and unzip the archive, then run `fitsmith.exe`.
 
-### Build from sources
+### Building from source
 
-You can also run FitSmith straight from source without packaging it — see
-[Building FitSmith](building.md#building-and-running).
+See [Building FitSmith](building.md) if you want to build FitSmith yourself.
 
-## Licensing
+## License
 
-FitSmith's user interface is built with [Slint](https://slint.dev/) under the GNU General
-Public License, version 3 (GPLv3), so FitSmith binaries are distributed under those terms. See
-[Building FitSmith](building.md#slint-and-licensing) for details.
+FitSmith is built with [Slint](https://slint.dev/) and is distributed under the GNU General Public License, version 3 (GPLv3).
