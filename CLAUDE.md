@@ -69,7 +69,8 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
   `image_to_fits`, `export_as_tiff`, the header-only `load_header` -> `ImageMeta` fast path, and
   `find_image_hdu_index`.
 - **`files.rs`** — pure path predicates for openable images (`is_fits_path`, `is_raw_image`,
-  `is_openable_image`, the `FITS_EXTENSIONS`/`RAW_EXTENSIONS` lists) and `find_images`, the
+  `is_openable_image`, the `FITS_EXTENSIONS`/`RAW_EXTENSIONS` lists), `common_dir` (the
+  deepest folder a set of paths shares) and `find_images`, the
   recursive folder walk shared by the session scan and fitsmith's "include subfolders" open;
   fitsmith re-exports the predicates.
 - **`loader.rs`** / **`raw_file.rs`** — `load_image_from_file` (FITS or camera RAW via LibRaw) and
@@ -79,8 +80,10 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
 - **`session.rs`** — `summarize_dir(root) -> Summary`: scans every image under a folder
   (`scan_images`; `.tif` skipped) and groups it into a `Summary` → `Session` → `TypeGroup` →
   `FilterGroup` → `Frame` tree, each level carrying its frame count and integration time
-  (session/summary integration is light frames only). Frame type comes from the nearest
-  known ancestor folder name (`frame_type_for`, default Light), filter from `FILTER`, and a
+  (session/summary integration is light frames only). Frame type comes from the `IMAGETYP`
+  header (`FrameType::from_header`), else the nearest known ancestor folder name
+  (`folder_frame_type`), else Light — `resolve_frame_type`, which also reports the
+  `FrameTypeSource`, filter from `FILTER`, and a
   session is an observing night (`night_of`: `DATE-LOC` else `DATE-OBS` — a FITS one
   shifted by `SITELONG` to local solar time — cut at noon; frames with no readable time
   share an unknown-date session). Also `format_duration`/
@@ -164,8 +167,8 @@ side, split by concern:
   `export.rs` (export batch), `metrics.rs` (the `fitsmith`-local `Metric`/`FileMetrics`/
   `Series` batch/time-series types built on `Image::stats()`/`detect_stars()` — no `fitz`
   CLI use case, so it isn't in `libfitz`), `analytics.rs` (the chart batches and their
-  per-file `AnalyticsCache`), `inspect.rs` (aberration inspector). `sessions.rs` (Tools ▸ Session Summary…: `libfitz::session::summarize_files` over the checked
-  files, or all, on a worker thread, flattened into a read-only session → type → filter tree; a copy-icon button puts the
+  per-file `AnalyticsCache`), `inspect.rs` (aberration inspector). `sessions.rs` (Tools ▸ Session Summary…: `libfitz::session::summarize_files_cancellable` over the checked
+  files, or all, with folder types looked up to the working set's common folder, on a worker thread, flattened into a read-only session → type → filter tree; a copy-icon button puts the
   `fitz summary`-style report on the clipboard via `arboard`). Batches run on worker
   threads, marshal results back via `upgrade_in_event_loop`, are generation-guarded against
   staleness, and are cancellable between files.

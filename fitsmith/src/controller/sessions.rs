@@ -1,7 +1,7 @@
 //! Tools ▸ Session Summary…: group the working set's files (the checked ones,
 //! or all of them when none are checked — see [`super::operation_targets`])
-//! with [`libfitz::session::summarize_files`] and show their sessions, frame
-//! types and filters as a read-only tree with frame counts and integration
+//! with [`libfitz::session::summarize_files_cancellable`] and show their
+//! sessions, frame types and filters as a read-only tree with frame counts and integration
 //! times — the light frames only, or (with "Show calibration frames") every
 //! frame type — and copy that report — in the layout `fitz summary` prints — to the
 //! clipboard.
@@ -23,6 +23,7 @@ use slint::ComponentHandle;
 
 use super::{STATE, operation_targets};
 use crate::{AppWindow, SessionRow};
+use libfitz::files::common_dir;
 
 /// Flatten `summary` depth-first into display lines: each session (depth 0),
 /// then its frame types (1), then each type's filters (2). With `calibration`
@@ -90,7 +91,13 @@ pub fn open_sessions_dialog(app: &AppWindow) {
     if targets.is_empty() {
         return;
     }
-    let total = STATE.with(|s| s.borrow().paths.len());
+    // Folder names are looked up to the whole working set's common folder, as
+    // the file list's frame-type icons are, so a checked subset is typed the
+    // same way the list shows it.
+    let (total, root) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.paths.len(), common_dir(&st.paths))
+    });
     let (generation, cancel) = STATE.with(|s| {
         let mut st = s.borrow_mut();
         // A read still running for an earlier opening is of no use any more.
@@ -116,7 +123,7 @@ pub fn open_sessions_dialog(app: &AppWindow) {
 
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let summary = summarize_files_cancellable(&targets, &cancel);
+        let summary = summarize_files_cancellable(&targets, &root, &cancel);
         let _ = weak.upgrade_in_event_loop(move |app| apply_summary(&app, generation, summary));
     });
 }
