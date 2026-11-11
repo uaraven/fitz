@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use libfitz::crop::CropRect;
 use libfitz::files::{is_fits_path, is_openable_image};
 use libfitz::loader::is_fits_file;
@@ -113,13 +113,16 @@ pub fn run_crop(app: &AppWindow) {
         return;
     };
     let overwrite = app.get_crop_overwrite();
-    if !overwrite && !suffix_is_valid(app.get_crop_suffix().trim()) {
-        app.set_status_text("The suffix can't contain path separators".into());
-        return;
-    }
     let targets = operation_targets(is_openable_image);
     if targets.is_empty() {
         app.set_status_text("No images to crop".into());
+        return;
+    }
+    // The suffix names every copy: all of them normally, only the camera RAW
+    // ones (which are never overwritten) when overwriting.
+    let uses_suffix = !overwrite || targets.iter().any(|p| !is_fits_path(p));
+    if uses_suffix && !suffix_is_valid(app.get_crop_suffix().trim()) {
+        app.set_status_text("The suffix can't contain path separators".into());
         return;
     }
     if overwrite {
@@ -266,6 +269,12 @@ fn process_one(
     let target = if overwrite && fits {
         input.to_path_buf()
     } else {
+        // Checked by `run_crop` too; this keeps the file name from ever
+        // reaching outside the source folder, whoever calls.
+        ensure!(
+            suffix_is_valid(suffix),
+            "the suffix can't contain path separators"
+        );
         cropped_output_path(input, suffix, fits)
     };
     let temp = target.with_file_name(format!(".{}.cropping", display_name(&target)));
@@ -441,6 +450,30 @@ mod tests {
         let (known, new) = split_written(&set, written);
         assert_eq!(known, vec![p("/d/a.fits"), p("/d/b_cropped.fits")]);
         assert_eq!(new, vec![p("/d/c_cropped.fits")]);
+    }
+
+    #[test]
+    fn a_suffix_that_leaves_the_folder_is_refused_even_when_overwriting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("frames");
+        std::fs::create_dir(&folder).unwrap();
+        let input = folder.join("comet.ARW");
+        std::fs::copy(test_data("comet.ARW"), &input).unwrap();
+
+        // A RAW file takes the suffix even in overwrite mode.
+        let err = process_one(&input, rect(0, 0, 600, 400), "/../escaped", true).unwrap_err();
+        assert!(err.to_string().contains("path separators"), "{err}");
+        let entries = std::fs::read_dir(tmp.path()).unwrap().count()
+            + std::fs::read_dir(&folder).unwrap().count();
+        assert_eq!(
+            entries, 2,
+            "nothing written anywhere: just `frames` and the RAW"
+        );
+
+        // An overwritten FITS never uses the suffix, so it isn't judged.
+        let fits = folder.join("frame.fit");
+        std::fs::copy(test_data("uncompressed.fit"), &fits).unwrap();
+        assert!(process_one(&fits, rect(0, 0, 100, 100), "/../x", true).is_ok());
     }
 
     #[test]

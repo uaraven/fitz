@@ -38,15 +38,16 @@ export component CropToolbar inherits Rectangle {
             text: "Overwrite originals";
             checked <=> root.overwrite;
         }
+        // Names the copies. Overwriting replaces FITS files in place but still
+        // writes camera RAW files out as new `.fits` copies, so it stays editable.
         Text {
             text: "Suffix";
-            color: root.overwrite ? AppPalette.muted : AppPalette.panel-title;
+            color: AppPalette.panel-title;
             vertical-alignment: center;
         }
         LineEdit {
             text <=> root.suffix;
             placeholder-text: "_cropped";
-            enabled: !root.overwrite;
             width: 140px;
         }
         Rectangle {
