@@ -128,6 +128,10 @@ mod tests {
     use crate::session::{Frame, TypeGroup};
     use std::path::PathBuf;
 
+    // The fixtures go through the real `TypeGroup`/`Session`/`Summary`
+    // constructors, so the totals the report prints are summed by the same
+    // code as in a real scan. Only a filter group is built by hand: its counts
+    // are given directly rather than from synthetic frames.
     fn group(filter: Option<&str>, count: usize, integration: f64) -> FilterGroup {
         FilterGroup {
             filter: filter.map(str::to_string),
@@ -138,12 +142,7 @@ mod tests {
     }
 
     fn type_group(frame_type: FrameType, filters: Vec<FilterGroup>) -> TypeGroup {
-        TypeGroup {
-            frame_type,
-            count: filters.iter().map(|g| g.count).sum(),
-            integration: filters.iter().map(|g| g.integration).sum(),
-            filters,
-        }
+        TypeGroup::new(frame_type, filters)
     }
 
     fn night_session(day: &str, types: Vec<TypeGroup>) -> Session {
@@ -154,25 +153,11 @@ mod tests {
     }
 
     fn session(night: Option<i64>, types: Vec<TypeGroup>) -> Session {
-        let light = types.iter().find(|t| t.frame_type == FrameType::Light);
-        Session {
-            night,
-            count: types.iter().map(|t| t.count).sum(),
-            integration: light.map_or(0.0, |t| t.integration),
-            start: None,
-            end: None,
-            types,
-        }
+        Session::new(night, types)
     }
 
     fn summary_of(sessions: Vec<Session>) -> Summary {
-        Summary {
-            root: PathBuf::from("/data/M31"),
-            count: sessions.iter().map(|s| s.count).sum(),
-            integration: sessions.iter().map(|s| s.integration).sum(),
-            sessions,
-            errors: Vec::new(),
-        }
+        Summary::new(PathBuf::from("/data/M31"), sessions, Vec::new())
     }
 
     #[test]

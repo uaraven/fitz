@@ -315,12 +315,12 @@ Scans one or more directories recursively (a directory's path is printed above i
 
  - **Frame type** comes from the folder names. Starting at the image's own folder and moving up one level at a time (up to and including the scanned directory itself), the first folder whose name is a known type decides it: `lights`, `darks`, `biases`, `flats` or `darkflats`, singular or plural, in any case (`Lights`, `DARK`, `bias`, …). An image with no such folder above it is treated as a light.
  - **Filter** is read from the `FILTER` header. Frames without one, including all camera RAW frames, are listed as `(no filter)`.
- - **Session** is one observing night. It is taken from the frame's timestamp (`DATE-LOC`, otherwise `DATE-OBS`; for RAW files the EXIF capture time), cut at noon so a night that crosses midnight stays together. Frames with no readable timestamp are collected in an `unknown date` session.
+ - **Session** is one observing night. It is taken from the frame's timestamp (`DATE-LOC`, otherwise `DATE-OBS`; for RAW files the EXIF capture time), cut at local noon so a night that crosses midnight stays together. A FITS `DATE-OBS` is UTC, so when the header also has the site longitude (`SITELONG`, degrees east), the time is first moved to local solar time (15° per hour). Frames with no readable timestamp are collected in an `unknown date` session.
  - Integration time is the sum of `EXPTIME`. Each session is reported with its **light** integration; below it, one line counts the frames of every type in the session, and the light frames are broken down by filter, in the order L, R, G, B, Ha, SII, OIII, then any other filters alphabetically and frames without a filter last. Calibration frames (darks, biases, flats, dark flats) are counted but not broken down. The `Total:` line sums the light frames and their integration time over all sessions.
 
 Files with a `.tif` extension are not scanned. An image that cannot be read is reported on stderr (`fitz: <path>: <error>`) and left out of the report, and the exit code is non-zero.
 
-_Note_ that the night boundary assumes local time. A frame that only has a UTC `DATE-OBS` (no `DATE-LOC`) can have one night split into two sessions when the observing site is far from UTC, for example 20:00-05:00 local time at UTC-8. Capture software such as NINA writes `DATE-LOC`, and RAW files use the camera's local clock, so this mostly affects files from other sources.
+_Note_ that a FITS frame with a UTC `DATE-OBS` but neither `DATE-LOC` nor `SITELONG` is cut at UTC noon, so one night can be split into two sessions when the observing site is far from UTC, for example 20:00-05:00 local time at UTC-8. Capture software such as NINA writes `DATE-LOC`, and RAW files use the camera's local clock (their GPS longitude is not applied), so this mostly affects files from other sources.
 
 ```
 Session 2026-10-08 - 5h 49m 00s light integration

@@ -34,7 +34,8 @@ pub fn load_image_from_file(source: &Path) -> Result<Image> {
 }
 
 /// Reads just the header of a supported image — FITS or camera RAW — without
-/// decoding its pixels. A RAW file's EXIF is translated to FITS-style keywords
+/// decoding its pixels (a FITS file's pixel data is skipped unread; a RAW file
+/// is read whole, since LibRaw parses from memory). A RAW file's EXIF is translated to FITS-style keywords
 /// (`DATE-OBS`, `EXPTIME`, …), so callers see one header shape for both
 /// formats. The header-only counterpart of [`load_image_from_file`].
 pub fn load_header_from_file(source: &Path) -> Result<Header> {

@@ -81,8 +81,9 @@ either `U16` (0..=65535) or `F32` (normalized `[0, 1]`). Commands are methods on
   `FilterGroup` → `Frame` tree, each level carrying its frame count and integration time
   (session/summary integration is light frames only). Frame type comes from the nearest
   known ancestor folder name (`frame_type_for`, default Light), filter from `FILTER`, and a
-  session is an observing night (`night_of`: `DATE-LOC` else `DATE-OBS`, cut at noon; frames
-  with no readable time share an unknown-date session). Also `format_duration`/
+  session is an observing night (`night_of`: `DATE-LOC` else `DATE-OBS` — a FITS one
+  shifted by `SITELONG` to local solar time — cut at noon; frames with no readable time
+  share an unknown-date session). Also `format_duration`/
   `format_timestamp` for both frontends. Unreadable files land in `Summary::errors`.
 - **`session_report.rs`** — `format_summary(&Summary) -> String`, the plain-text report `fitz summary`
   prints and FitSmith's Session Summary copy button puts on the clipboard.

@@ -11,6 +11,8 @@ pub const EXPTIME: &str = "EXPTIME";
 pub const DATE_OBS: &str = "DATE-OBS";
 /// Local-time counterpart of [`DATE_OBS`], written by some capture software.
 pub const DATE_LOC: &str = "DATE-LOC";
+/// Observing site longitude in degrees, east positive.
+pub const SITELONG: &str = "SITELONG";
 
 /// CFA-mosaic keywords that become meaningless once an image is debayered into
 /// an RGB image. Dropped by the image commands (debayer/stretch/split) when
