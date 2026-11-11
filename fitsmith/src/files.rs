@@ -166,19 +166,41 @@ pub fn cropped_output_path(input: &Path, suffix: &str, fits: bool) -> PathBuf {
         "" => DEFAULT_CROP_SUFFIX,
         s => s,
     };
-    let name = display_name(input);
-    let (body, fz) = if is_compressed(input) {
-        name.split_at(name.len() - ".fz".len())
+    let compressed = is_compressed(input);
+    // `frame.fits.fz` → `frame.fits`, so the stem and extension are the FITS ones.
+    let body = if compressed {
+        input.with_extension("")
     } else {
-        (name.as_str(), "")
+        input.to_path_buf()
     };
-    let cropped = match body.rsplit_once('.') {
-        Some((stem, ext)) if fits => format!("{stem}{suffix}.{ext}{fz}"),
-        Some((stem, _)) => format!("{stem}{suffix}.fits"),
-        None if fits => format!("{body}{suffix}{fz}"),
-        None => format!("{body}{suffix}.fits"),
-    };
-    input.with_file_name(cropped)
+    let mut name = body
+        .file_stem()
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| body.as_os_str().to_owned());
+    name.push(suffix);
+    if !fits {
+        name.push(".fits");
+    } else {
+        if let Some(ext) = body.extension() {
+            name.push(".");
+            name.push(ext);
+        }
+        if compressed && let Some(fz) = input.extension() {
+            name.push(".");
+            name.push(fz);
+        }
+    }
+    input.with_file_name(name)
+}
+
+/// The hidden sibling a crop is written to before being renamed over `target`
+/// (`frame_cropped.fits` → `.frame_cropped.fits.cropping`), so a failed write
+/// never leaves a half-written `target`.
+pub fn cropping_temp_path(target: &Path) -> PathBuf {
+    let mut name = std::ffi::OsString::from(".");
+    name.push(target.file_name().unwrap_or(target.as_os_str()));
+    name.push(".cropping");
+    target.with_file_name(name)
 }
 
 /// Expand command-line arguments into a flat list of input files: directories
@@ -226,6 +248,33 @@ mod tests {
         assert_eq!(
             p("IMG_1.ARW", "_cropped", false),
             Path::new("/d/IMG_1_cropped.fits")
+        );
+        // The extension's case, and a name without one, are kept as they are.
+        assert_eq!(p("A.FITS.FZ", "_c", true), Path::new("/d/A_c.FITS.FZ"));
+        assert_eq!(p("frame", "_c", true), Path::new("/d/frame_c"));
+    }
+
+    #[test]
+    fn crop_temp_path_is_a_hidden_sibling() {
+        assert_eq!(
+            cropping_temp_path(Path::new("/d/frame_cropped.fits")),
+            Path::new("/d/.frame_cropped.fits.cropping")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crop_paths_keep_file_names_that_are_not_utf8() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let input = Path::new("/d").join(OsStr::from_bytes(b"fr\xe4me.fits.fz"));
+
+        let out = cropped_output_path(&input, "_c", true);
+        assert_eq!(out.file_name().unwrap().as_bytes(), b"fr\xe4me_c.fits.fz");
+        let temp = cropping_temp_path(&out);
+        assert_eq!(
+            temp.file_name().unwrap().as_bytes(),
+            b".fr\xe4me_c.fits.fz.cropping"
         );
     }
 

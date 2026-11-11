@@ -18,7 +18,7 @@ use slint::{ComponentHandle, Weak};
 
 use crate::AppWindow;
 use crate::crop_edit::aspect_for_index;
-use crate::files::{cropped_output_path, display_name};
+use crate::files::{cropped_output_path, cropping_temp_path, display_name};
 
 use super::{
     STATE, batch_is_current, begin_file_batch, operation_targets, reload_current, set_row_status,
@@ -277,7 +277,7 @@ fn process_one(
         );
         cropped_output_path(input, suffix, fits)
     };
-    let temp = target.with_file_name(format!(".{}.cropping", display_name(&target)));
+    let temp = cropping_temp_path(&target);
     let used = match libfitz::crop::crop_file(input, &temp, rect) {
         Ok(used) => used,
         Err(e) => {
