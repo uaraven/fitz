@@ -116,11 +116,11 @@ fn write_channel_fits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_data;
     use libfitz::data::ImageType;
+    use libfitz::loader::load_image_from_file;
     use std::fs;
     use tempfile::TempDir;
-    use libfitz::loader::load_image_from_file;
-    use crate::test_support::test_data;
 
     /// Copies a bundled fixture into `dir` so the default beside-the-input
     /// output paths land in a scratch directory instead of `test-data/`.

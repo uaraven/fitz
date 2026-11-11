@@ -67,7 +67,7 @@ impl FileMeta {
         let headers = img.header.iter().map(header_card).collect();
         let info = libfitz::summary::info_summary(img);
         let stats = img.stats();
-        let contrast = img.contrast()*100.0;
+        let contrast = img.contrast() * 100.0;
         let star_list = img.star_list(&StarDetectOptions::default()).ok();
         let stars = star_list.as_ref().map(|s| libfitz::stars::aggregate(s));
         FileMeta {

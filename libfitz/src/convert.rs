@@ -1,5 +1,3 @@
-
-
 const U16_MAX_F32: f32 = u16::MAX as f32;
 
 /// Normalize `[0, 1]` float sample to 0..65535

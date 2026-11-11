@@ -26,12 +26,12 @@ pub mod stats;
 pub mod summary;
 mod xtrans;
 
+pub mod contrast;
+mod invert;
+pub mod loader;
+pub mod raw_file;
 #[cfg(test)]
 pub(crate) mod test_support;
-mod invert;
-pub mod contrast;
-pub mod raw_file;
-pub mod loader;
 
 /// `Some(trimmed)` unless `s` is empty once trimmed — a header/EXIF string
 /// field is blank rather than absent as often as it's simply missing.

@@ -5,10 +5,10 @@ use std::io::Write as _;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use rayon::prelude::*;
 use libfitz::data::ImageType;
 use libfitz::loader::load_image_from_file;
 use libfitz::resize::resize_to_fit;
+use rayon::prelude::*;
 
 use crate::io_prompt::print_step;
 use crate::kitty;
@@ -106,7 +106,8 @@ pub(crate) fn preview_file(input: &Path, opts: &PreviewOptions) -> Result<()> {
 /// values, skipping color interpolation entirely; an already-debayered image
 /// has nothing to skip, so the flag is ignored with a warning.
 fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, usize, Vec<u16>)> {
-    let image = load_image_from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
+    let image =
+        load_image_from_file(input).with_context(|| format!("cannot read {}", input.display()))?;
 
     let is_mosaic = matches!(image.image_type, ImageType::CFA(_) | ImageType::XTrans(_));
 
@@ -135,7 +136,11 @@ fn load_preview_pixels(input: &Path, opts: &PreviewOptions) -> Result<(usize, us
     let linked = opts.core.linked || is_mosaic && opts.no_debayer;
     let stretched = source.stretch(linked, opts.core.brightness);
 
-    let stretched = if opts.invert { stretched.invert()? } else { stretched };
+    let stretched = if opts.invert {
+        stretched.invert()?
+    } else {
+        stretched
+    };
 
     let (width, height, image_type) = (stretched.width, stretched.height, stretched.image_type);
     // `Image::stretch` returns normalized `[0, 1]` f32 samples; narrow to the

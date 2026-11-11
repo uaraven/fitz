@@ -4,7 +4,7 @@
 //!
 //! Pure image math with no FITS or GUI dependency — it operates on the
 //! interleaved RGB8 buffer the preview pipeline already produces
-//! ([`crate::preview::PreviewImage`]), so a GUI frontend crops the resident
+//! ([`crate::preview::render_preview`]), so a GUI frontend crops the resident
 //! preview with no re-read, and the geometry (the off-by-one-prone part) is
 //! unit-testable with synthetic dimensions.
 
@@ -151,7 +151,13 @@ mod tests {
         let reds: Vec<u8> = tile.rgb8.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
         assert_eq!(reds, [5, 6, 9, 10]);
         // The constant channels survive the copy.
-        assert!(tile.rgb8.as_chunks::<3>().0.iter().all(|p| p[1..] == [100, 200]));
+        assert!(
+            tile.rgb8
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|p| p[1..] == [100, 200])
+        );
     }
 
     #[test]

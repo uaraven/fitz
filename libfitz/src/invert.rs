@@ -1,11 +1,15 @@
-use rayon::prelude::*;
 use crate::data::{Image, PixelBuffer};
+use rayon::prelude::*;
 
 impl Image {
     pub fn invert(&self) -> anyhow::Result<Image> {
         let new_buf = match &self.pixels {
-            PixelBuffer::U16(pixels) => PixelBuffer::U16( pixels.par_iter().map(|px| Self::invert_u16(*px)).collect()),
-            PixelBuffer::F32(pixels) => PixelBuffer::F32( pixels.par_iter().map(|px| Self::invert_f32(*px)).collect()),
+            PixelBuffer::U16(pixels) => {
+                PixelBuffer::U16(pixels.par_iter().map(|px| Self::invert_u16(*px)).collect())
+            }
+            PixelBuffer::F32(pixels) => {
+                PixelBuffer::F32(pixels.par_iter().map(|px| Self::invert_f32(*px)).collect())
+            }
         };
         self.with_pixels(new_buf)
     }

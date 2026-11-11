@@ -143,9 +143,9 @@ fn mtf(m: Sample, x: Sample) -> Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::ImageType;
     use crate::test_support::test_data;
     use fitskit::Header;
-    use crate::data::ImageType;
 
     #[test]
     fn mtf_hits_its_anchor_points() {

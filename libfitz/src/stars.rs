@@ -90,7 +90,6 @@ impl Image {
                             .map(|rgb| 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
                             .collect();
                         PixelBuffer::F32(pxl)
-
                     }
                 };
                 Image::new(

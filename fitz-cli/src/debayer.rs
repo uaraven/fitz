@@ -105,11 +105,9 @@ mod tests {
                 .header
                 .set("BAYERPAT", HeaderValue::String(p.to_string()), None);
         }
-        fits.primary_mut().header.set(
-            "OBJECT",
-            HeaderValue::String("M31".to_string()),
-            None,
-        );
+        fits.primary_mut()
+            .header
+            .set("OBJECT", HeaderValue::String("M31".to_string()), None);
         fits.to_file(path).unwrap();
     }
 
@@ -129,8 +127,14 @@ mod tests {
 
     #[test]
     fn parse_output_format_parses_known_formats_case_insensitively() {
-        assert!(matches!(parse_output_format("fits"), Ok(OutputFormat::Fits)));
-        assert!(matches!(parse_output_format("FITS"), Ok(OutputFormat::Fits)));
+        assert!(matches!(
+            parse_output_format("fits"),
+            Ok(OutputFormat::Fits)
+        ));
+        assert!(matches!(
+            parse_output_format("FITS"),
+            Ok(OutputFormat::Fits)
+        ));
         assert!(matches!(
             parse_output_format(" Tiff "),
             Ok(OutputFormat::Tiff)
