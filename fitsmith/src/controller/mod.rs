@@ -301,18 +301,30 @@ fn view_toggles(app: &AppWindow) -> (bool, bool, bool) {
 fn make_row(path: &Path, exposure: f32) -> FileRow {
     FileRow {
         name: display_name(path).into(),
-        status: if is_compressed(path) {
-            "compressed"
-        } else {
-            ""
-        }
-        .into(),
+        status: plain_status(path).into(),
         path: path.to_string_lossy().into_owned().into(),
         error: "".into(),
         checked: false,
         exposure,
         ..Default::default()
     }
+}
+
+/// A row's badge when nothing is wrong with its file: "compressed" for a `.fz`,
+/// none otherwise.
+fn plain_status(path: &Path) -> &'static str {
+    if is_compressed(path) {
+        "compressed"
+    } else {
+        ""
+    }
+}
+
+/// Take a row back to its plain badge and drop its error tooltip, once the
+/// error no longer describes the file (it is about to be re-read, or has just
+/// been rewritten).
+fn clear_row_status(path: &Path) {
+    set_row_status(path, plain_status(path), "");
 }
 
 /// Update a file row's status badge (e.g. mark a failed load "error") and its
@@ -904,6 +916,27 @@ mod tests {
             path: name.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_plain_row_is_badged_compressed_only_for_fz() {
+        assert_eq!(plain_status(Path::new("a.fits.fz")), "compressed");
+        assert_eq!(plain_status(Path::new("a.fits")), "");
+        assert_eq!(make_row(Path::new("a.fits.fz"), 0.0).status, "compressed");
+        assert_eq!(make_row(Path::new("a.fits"), 0.0).status, "");
+    }
+
+    #[test]
+    fn clearing_a_row_status_restores_its_plain_badge_and_drops_the_error() {
+        let path = PathBuf::from("/d/a.fits.fz");
+        STATE.with(|s| s.borrow().files_model.push(make_row(&path, 0.0)));
+        set_row_status(&path, "error", "boom");
+        clear_row_status(&path);
+        STATE.with(|s| {
+            let row = s.borrow().files_model.row_data(0).unwrap();
+            assert_eq!(row.status, "compressed");
+            assert_eq!(row.error, "");
+        });
     }
 
     #[test]

@@ -358,15 +358,7 @@ fn refresh_rewritten(app: &AppWindow, path: &Path) {
         super::forget_path(&mut st, path);
         st.analytics_cache.remove(path);
     });
-    set_row_status(
-        path,
-        if crate::files::is_compressed(path) {
-            "compressed"
-        } else {
-            ""
-        },
-        "",
-    );
+    super::clear_row_status(path);
     spawn_header_load(app.as_weak(), vec![path.to_path_buf()]);
 }
 

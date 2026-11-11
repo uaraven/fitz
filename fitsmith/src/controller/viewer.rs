@@ -211,16 +211,8 @@ pub fn reload_current(app: &AppWindow) {
         return; // nothing selected — the menu item is disabled then anyway
     };
     // A stale "error" badge (or a stale error tooltip) no longer describes the
-    // file about to be re-read; restore the plain / "compressed" badge.
-    set_row_status(
-        &path,
-        if crate::files::is_compressed(&path) {
-            "compressed"
-        } else {
-            ""
-        },
-        "",
-    );
+    // file about to be re-read.
+    super::clear_row_status(&path);
     update_memory(app);
     // The row's exposure readout and frame type come from the header too —
     // refresh them.
