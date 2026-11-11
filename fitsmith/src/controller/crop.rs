@@ -21,7 +21,7 @@ use crate::crop_edit::aspect_for_index;
 use crate::files::{cropped_output_path, cropping_temp_path, display_name};
 
 use super::{
-    STATE, batch_is_current, begin_file_batch, operation_targets, reload_current, set_row_status,
+    STATE, batch_is_current, begin_file_batch, operation_targets, select_file, set_row_status,
     spawn_header_load, update_memory,
 };
 
@@ -125,15 +125,21 @@ pub fn run_crop(app: &AppWindow) {
         app.set_status_text("The suffix can't contain path separators".into());
         return;
     }
-    if overwrite {
-        // Camera RAW files are never overwritten (a FITS can't replace one), so
-        // only the FITS targets count towards what the warning names.
-        let fits = targets.iter().filter(|p| is_fits_path(p)).count();
-        app.set_crop_confirm_count(fits as i32);
+    // Nothing is replaced unless a FITS file is, so only then is it worth asking.
+    let replaced = if overwrite { fits_count(&targets) } else { 0 };
+    if replaced > 0 {
+        app.set_crop_confirm_count(replaced as i32);
         app.set_show_crop_confirm(true);
     } else {
         start_crop(app, targets);
     }
+}
+
+/// How many of `targets` an overwriting crop would replace. Camera RAW files
+/// are never overwritten (a FITS can't stand in for one), so only the FITS
+/// targets count.
+fn fits_count(targets: &[PathBuf]) -> usize {
+    targets.iter().filter(|p| is_fits_path(p)).count()
 }
 
 /// The overwrite confirmation was accepted.
@@ -219,7 +225,7 @@ fn spawn_crop(
         let _ = weak.upgrade_in_event_loop(move |app| {
             // The files are on disk whatever happened to the batch since, so
             // the working set follows them even if a later batch owns the UI.
-            let shown_rewritten = register_outputs(&app, written);
+            let stale_index = register_outputs(&app, written);
             // A later batch owns the UI now; leave its overlay and status alone.
             if !batch_is_current(generation) {
                 return;
@@ -243,9 +249,10 @@ fn spawn_crop(
             if !canceled || overwritten > 0 {
                 app.set_crop_mode(false);
             }
-            if shown_rewritten {
-                // The frame on screen was replaced by a smaller one: re-read it.
-                reload_current(&app);
+            if let Some(index) = stale_index {
+                // The frame on screen was replaced by a smaller one; its caches
+                // are already dropped, so selecting it again re-reads it.
+                select_file(&app, index as i32);
             }
             update_memory(&app);
         });
@@ -314,9 +321,9 @@ fn split_written(set: &[PathBuf], written: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<P
 /// Bring the working set in line with the files a crop batch wrote: a file
 /// already in it was rewritten, so its cached previews, metadata and analytics
 /// are dropped (its row and checkbox stay); a new file is appended to the list.
-/// The selection is left alone. Returns whether the selected file was among
-/// those rewritten, i.e. whether the frame on screen is stale.
-fn register_outputs(app: &AppWindow, written: Vec<PathBuf>) -> bool {
+/// The selection is left alone. Returns the selected row's index when that file
+/// was among those rewritten, i.e. when the frame on screen is stale.
+fn register_outputs(app: &AppWindow, written: Vec<PathBuf>) -> Option<usize> {
     let (known, new) = STATE.with(|s| split_written(&s.borrow().paths, written));
     for path in &known {
         refresh_rewritten(app, path);
@@ -329,10 +336,17 @@ fn register_outputs(app: &AppWindow, written: Vec<PathBuf>) -> bool {
     }
     STATE.with(|s| {
         let st = s.borrow();
-        st.selected
-            .and_then(|i| st.paths.get(i))
-            .is_some_and(|shown| known.contains(shown))
+        stale_selection(&st.paths, st.selected, &known)
     })
+}
+
+/// The index of the selected file if it is one of `rewritten`.
+fn stale_selection(
+    paths: &[PathBuf],
+    selected: Option<usize>,
+    rewritten: &[PathBuf],
+) -> Option<usize> {
+    selected.filter(|&i| paths.get(i).is_some_and(|p| rewritten.contains(p)))
 }
 
 /// A working-set file was rewritten in place: forget everything cached from its
@@ -474,6 +488,27 @@ mod tests {
         let fits = folder.join("frame.fit");
         std::fs::copy(test_data("uncompressed.fit"), &fits).unwrap();
         assert!(process_one(&fits, rect(0, 0, 100, 100), "/../x", true).is_ok());
+    }
+
+    #[test]
+    fn only_the_selected_file_being_rewritten_makes_the_view_stale() {
+        let p = |s: &str| PathBuf::from(s);
+        let paths = vec![p("/d/a.fits"), p("/d/b.fits")];
+        let rewritten = vec![p("/d/b.fits")];
+        assert_eq!(stale_selection(&paths, Some(1), &rewritten), Some(1));
+        assert_eq!(stale_selection(&paths, Some(0), &rewritten), None);
+        assert_eq!(stale_selection(&paths, None, &rewritten), None);
+        assert_eq!(stale_selection(&paths, Some(9), &rewritten), None);
+    }
+
+    #[test]
+    fn only_fits_targets_count_towards_the_overwrite_warning() {
+        let targets: Vec<PathBuf> = ["a.fits", "b.fit.fz", "IMG_1.ARW", "c.cr2"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(fits_count(&targets), 2);
+        assert_eq!(fits_count(&targets[2..]), 0);
     }
 
     #[test]
