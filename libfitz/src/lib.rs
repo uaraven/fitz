@@ -15,6 +15,7 @@ pub mod resize;
 pub mod split_channel;
 pub mod stars;
 pub mod stretch;
+pub mod composer;
 
 mod convert;
 pub mod data;
