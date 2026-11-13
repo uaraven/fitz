@@ -23,6 +23,10 @@ FitSmith is a desktop viewer for FITS (astronomical image) files. Open a single 
    - Bayer mosaics are cut on even pixels so the colour pattern stays valid
    - camera RAW files are converted to FITS on cropping, and are never overwritten
    - a file too small to hold the rectangle is reported as an error instead of being cropped
+ - RGB compositor (Tools ▸ RGB Compositor…): check 3 or 4 monochrome images and mix them into a colour preview
+   - the first three images feed the red, green and blue channels, each with 0–1 sliders for how much it contributes to each channel
+   - an optional fourth image is blended in as luminance
+   - drag an image onto another to swap them; the preview is shown at 1/4 size
  - View the FITS header
  - View image statistics: mean, median, standard deviation, MAD, contrast, etc.
  - Estimate the real bit depth of an image

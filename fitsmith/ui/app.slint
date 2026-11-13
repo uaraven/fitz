@@ -1,6 +1,6 @@
 import { VerticalBox, TabWidget } from "std-widgets.slint";
 import { AppPalette } from "palette.slint";
-import { FileRow, FrameKind, FrameCounts, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine, BadFrameRow, SessionRow } from "types.slint";
+import { FileRow, FrameKind, FrameCounts, HeaderRow, StatItem, StatRow, ChartPoint, ChartTick, StatLine, BadFrameRow, SessionRow, ComposerRow } from "types.slint";
 import { ImageView } from "image_view.slint";
 import { FileList } from "file_list.slint";
 import { StatsPanel } from "stats_panel.slint";
@@ -13,6 +13,7 @@ import { ProgressOverlay } from "dialog.slint";
 import { AnalyticsDialog } from "analytics.slint";
 import { BadFramesDialog } from "bad_frames.slint";
 import { AberrationDialog } from "aberration.slint";
+import { ComposerDialog } from "composer.slint";
 import { ConfirmDialog } from "confirm.slint";
 import { DeleteFilesDialog } from "delete_files.slint";
 import { SessionsDialog } from "sessions.slint";
@@ -249,6 +250,16 @@ export component AppWindow inherits Window {
     in property <[image]> aberration-tiles;
     in property <length> aberration-tile-size;
 
+    // Tools ▸ RGB Compositor…: combine the 3 or 4 checked images into a colour
+    // preview. Rust loads the images, owns the slider values (reported through
+    // `composer-gain-changed`) and fills `composer-model` / `composer-preview`.
+    in-out property <bool> show-composer: false;
+    in property <[ComposerRow]> composer-model;
+    in property <image> composer-preview;
+    in property <string> composer-notice;
+    in-out property <length> composer-card-width: 900px;
+    in-out property <length> composer-card-height: 680px;
+
     callback open();
     callback open-directory();
     callback open-sessions-dialog();
@@ -337,6 +348,11 @@ export component AppWindow inherits Window {
     // detection) and shows the dialog; params-changed re-evaluates in memory;
     // select turns the flagged frames into the file list's checkbox selection
     // and closes; close drops the dialog's measured frames.
+    callback open-composer-dialog();
+    // (slot, channel 0=R 1=G 2=B 3=L, value) and (slot, slot).
+    callback composer-gain-changed(int, int, float);
+    callback composer-swap(int, int);
+    callback close-composer();
     callback open-bad-frames-dialog();
     callback bad-frames-params-changed();
     callback select-bad-frames();
@@ -605,6 +621,15 @@ export component AppWindow inherits Window {
                 enabled: root.files.length > 0;
                 activated => {
                     root.open-bad-frames-dialog();
+                }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "RGB Compositor…";
+                // Three images feed R/G/B; an optional fourth is the luminance.
+                enabled: root.checked-file-count == 3 || root.checked-file-count == 4;
+                activated => {
+                    root.open-composer-dialog();
                 }
             }
             MenuSeparator { }
@@ -1078,6 +1103,30 @@ export component AppWindow inherits Window {
         cancel => {
             root.show-sessions = false;
             root.close-sessions();
+        }
+    }
+
+    // The RGB Compositor: image slots with their sliders beside a live
+    // preview. Close (and a scrim click) hides it and lets Rust drop the images.
+    if root.show-composer: ComposerDialog {
+        width: 100%;
+        height: 100%;
+        rows: root.composer-model;
+        preview: root.composer-preview;
+        notice: root.composer-notice;
+        card-width <=> root.composer-card-width;
+        card-height <=> root.composer-card-height;
+        gain-changed(slot, channel, value) => {
+            root.composer-gain-changed(slot, channel, value);
+        }
+        swap(a, b) => {
+            root.composer-swap(a, b);
+        }
+        close => {
+            root.close-composer();
+        }
+        cancel => {
+            root.close-composer();
         }
     }
 

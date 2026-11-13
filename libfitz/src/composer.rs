@@ -15,7 +15,7 @@ pub struct ChannelInput {
     pub lum: f32,
 }
 
-fn new_channel_input(image: Image) -> Result<ChannelInput> {
+pub fn new_channel_input(image: Image) -> Result<ChannelInput> {
     match image.image_type {
         ImageType::Grayscale => Ok(ChannelInput{
             image,
