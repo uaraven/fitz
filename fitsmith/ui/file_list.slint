@@ -2,9 +2,9 @@ import { VScrollArea } from "scrolling.slint";
 import { FileRow, FrameKind } from "types.slint";
 import { AppPalette } from "palette.slint";
 
-// The tooltip surface shared by the file list's hover tips: its children are
+// The tooltip surface shared by the file list's (and the compositor's) hover tips: its children are
 // stacked in a padded column.
-component TipBox inherits Rectangle {
+export component TipBox inherits Rectangle {
     background: AppPalette.tooltip-bg;
     border-width: 1px;
     border-color: AppPalette.tooltip-border;
@@ -17,7 +17,7 @@ component TipBox inherits Rectangle {
 }
 
 // One line (or wrapped paragraph) of tooltip text.
-component TipText inherits Text {
+export component TipText inherits Text {
     wrap: word-wrap;
     font-size: 12px;
     color: AppPalette.tooltip-fg;
@@ -25,7 +25,7 @@ component TipText inherits Text {
 
 // A hover area that asks for its tooltip after a short dwell and dismisses it
 // as soon as the cursor leaves.
-component TipArea inherits TouchArea {
+export component TipArea inherits TouchArea {
     callback show-tip();
     callback hide-tip();
     property <bool> pending: false;

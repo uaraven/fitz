@@ -2,6 +2,7 @@ import { Button, Slider } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 import { AppPalette } from "palette.slint";
 import { ComposerRow } from "types.slint";
+import { TipArea, TipBox, TipText } from "file_list.slint";
 
 // One labelled 0..1 slider (100 steps) with its value read out beside it. The
 // slider starts at `initial`, then owns its value and reports every change.
@@ -40,6 +41,12 @@ component GainSlider inherits HorizontalLayout {
     }
 }
 
+// One piece of an image name on a slot's handle.
+component NamePart inherits Text {
+    color: AppPalette.title;
+    vertical-alignment: center;
+}
+
 // One input slot: its image name on a draggable handle over the sliders that
 // say how much the image feeds each output channel. The slot (not the image)
 // owns the sliders, so dropping another image here keeps these amounts.
@@ -67,6 +74,7 @@ component ComposerSlot inherits Rectangle {
 
         Rectangle {
             height: 24px;
+            clip: true;
             background: handle.has-hover || handle.pressed ? AppPalette.handle-active : AppPalette.header-bg;
             border-radius: 4px;
             HorizontalLayout {
@@ -78,18 +86,38 @@ component ComposerSlot inherits Rectangle {
                     color: AppPalette.muted;
                     vertical-alignment: center;
                 }
-                Text {
-                    text: root.luminance ? "L  " + root.slot.name : root.slot.name;
-                    color: AppPalette.title;
-                    overflow: elide;
-                    vertical-alignment: center;
+                // The name's start and end are fixed and its middle takes
+                // whatever room is left, elided only when it doesn't fit.
+                HorizontalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 0px;
+                    NamePart {
+                        text: (root.luminance ? "L  " : "") + root.slot.name-head;
+                    }
+                    NamePart {
+                        text: root.slot.name-mid;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    NamePart {
+                        text: root.slot.name-tail;
+                    }
                 }
             }
-            handle := TouchArea {
+            // Hovering the handle shows the image's full file name, which the
+            // handle itself may have had to elide.
+            handle := TipArea {
                 mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.grab;
+                show-tip => {
+                    name-tip.show();
+                }
+                hide-tip => {
+                    name-tip.close();
+                }
                 pointer-event(event) => {
                     if event.button == PointerEventButton.left {
                         if event.kind == PointerEventKind.down {
+                            name-tip.close();
                             root.drag-started();
                         } else if event.kind == PointerEventKind.up {
                             root.drag-ended();
@@ -98,6 +126,18 @@ component ComposerSlot inherits Rectangle {
                 }
                 moved => {
                     root.drag-moved(self.mouse-y - self.pressed-y);
+                }
+            }
+            // A PopupWindow renders in a top-level overlay, so neither the slot
+            // nor the slots drawn after it can cover or clip it.
+            name-tip := PopupWindow {
+                x: 0;
+                y: 26px;
+                TipBox {
+                    TipText {
+                        text: root.slot.full-name;
+                        wrap: no-wrap;
+                    }
                 }
             }
         }
@@ -138,16 +178,21 @@ component ComposerSlot inherits Rectangle {
 
 // The Tools ▸ RGB Compositor… modal: the 3 or 4 checked images on the left —
 // the first three feed R/G/B through their sliders, an optional fourth is the
-// luminance — and a live preview of the composition on the right. Drag one
-// image's handle onto another to swap them. Purely presentational: Rust loads
+// luminance — and a live preview of the composition on the right, with a
+// draggable splitter between the two. Drag one image's handle onto another to
+// swap them; hover it for the image's full file name. Save… writes the
+// composition at full size and closes the dialog. Purely presentational: Rust loads
 // the images, holds the slider values and renders `preview`.
 export component ComposerDialog inherits DialogCard {
     in property <[ComposerRow]> rows;
     in property <image> preview;
     // Shown over the preview while it loads, or instead of it on failure.
     in property <string> notice;
+    // A save from an earlier opening is still running.
+    in property <bool> saving;
     callback gain-changed(int, int, float);
     callback swap(int, int);
+    callback save();
     callback close();
 
     resizable: true;
@@ -161,6 +206,9 @@ export component ComposerDialog inherits DialogCard {
     // The slot being dragged and the one it is currently over (-1: no drag).
     property <int> drag-from: -1;
     property <int> drag-to: -1;
+    // Width of the sources pane, set by dragging the splitter; the split clamps
+    // it to what fits.
+    property <length> sources-width: 280px;
 
     VerticalLayout {
         padding: 24px;
@@ -173,13 +221,23 @@ export component ComposerDialog inherits DialogCard {
             color: AppPalette.title;
         }
 
-        HorizontalLayout {
+        split := Rectangle {
             vertical-stretch: 1;
-            spacing: 16px;
+            // The grab strip between the panes, and the narrowest either pane
+            // may be dragged to. The sources pane is clamped on use, so
+            // shrinking the dialog squeezes it rather than hiding the preview.
+            property <length> handle-w: 12px;
+            property <length> min-sources: 240px;
+            property <length> min-preview: 200px;
+            property <length> max-sources: max(self.min-sources, self.width - self.handle-w - self.min-preview);
+            property <length> sources-w: clamp(root.sources-width, self.min-sources, self.max-sources);
 
             // Left pane: one slot per image.
             VerticalLayout {
-                width: 280px;
+                x: 0;
+                y: 0;
+                width: split.sources-w;
+                height: parent.height;
                 alignment: start;
                 Rectangle {
                     height: root.rows.length * (root.slot-height + root.slot-gap);
@@ -213,9 +271,40 @@ export component ComposerDialog inherits DialogCard {
                 }
             }
 
+            // Splitter: drag to trade width between the sources and the preview.
+            Rectangle {
+                x: split.sources-w;
+                y: 0;
+                width: split.handle-w;
+                height: parent.height;
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    width: 4px;
+                    border-radius: 2px;
+                    background: splitter-touch.pressed || splitter-touch.has-hover
+                        ? AppPalette.handle-active
+                        : AppPalette.handle;
+                }
+                splitter-touch := TouchArea {
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        // The self-correcting drag the main window's splitter
+                        // uses: pressed-x is fixed for the drag while the
+                        // handle follows the cursor, so each event adds only
+                        // the cursor's offset from the grab point.
+                        root.sources-width = clamp(
+                            split.sources-w + (self.mouse-x - self.pressed-x),
+                            split.min-sources, split.max-sources);
+                    }
+                }
+            }
+
             // Right pane: the composed preview.
             Rectangle {
-                horizontal-stretch: 1;
+                x: split.sources-w + split.handle-w;
+                y: 0;
+                width: parent.width - split.sources-w - split.handle-w;
+                height: parent.height;
                 background: AppPalette.canvas;
                 border-radius: 6px;
                 clip: true;
@@ -239,6 +328,17 @@ export component ComposerDialog inherits DialogCard {
 
         HorizontalLayout {
             alignment: end;
+            spacing: 8px;
+            // Closes the dialog once a file name is chosen. Only enabled once a
+            // preview has been composed: the file is made from the same inputs
+            // and sliders.
+            Button {
+                text: "Save…";
+                enabled: root.notice == "" && !root.saving;
+                clicked => {
+                    root.save();
+                }
+            }
             Button {
                 text: "Close";
                 clicked => {

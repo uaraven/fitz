@@ -116,7 +116,15 @@ export struct SessionRow {
 // the fourth slot — into luminance). The sliders own their value once touched
 // and report changes back to Rust, so these are only the initial positions.
 export struct ComposerRow {
-    name: string,
+    // The file name cut into its first characters, a middle and its last
+    // characters. The slot shows all three end to end, eliding only the middle
+    // (Slint can only elide the end of a text), so the name's start and end
+    // stay readable however narrow the slot gets. `full-name` is the whole
+    // name, for the tooltip.
+    name-head: string,
+    name-mid: string,
+    name-tail: string,
+    full-name: string,
     red: float,
     green: float,
     blue: float,
