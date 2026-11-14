@@ -18,6 +18,7 @@
 //! - [`batch`] — the worker-thread skeleton the batches below share (progress overlay,
 //!   cancel between files, per-file error badges);
 //! - [`convert`] — the compress / decompress batch operations;
+//! - [`composer`] — Tools ▸ RGB Compositor…: mix 3–4 checked images into a colour preview;
 //! - [`crop`] — Tools ▸ Crop: the crop rectangle on the preview and the batch that applies it;
 //! - [`export`] — the export dialog and its batch;
 //! - [`analytics`] — the analytics batch and its time-series chart;
@@ -29,6 +30,7 @@
 mod analytics;
 mod bad_frames;
 mod batch;
+mod composer;
 mod convert;
 mod crop;
 mod delete_files;
@@ -42,6 +44,7 @@ mod viewer;
 
 pub use analytics::*;
 pub use bad_frames::*;
+pub use composer::*;
 pub use convert::*;
 pub use crop::*;
 pub use delete_files::*;
@@ -172,6 +175,8 @@ struct AppState {
     /// The crop rectangle drawn on the preview, in image pixels. Lives here —
     /// not per file — so it survives selecting another frame.
     crop: crate::crop_edit::CropEditor,
+    /// The RGB Compositor dialog's slots, loaded inputs and sliders.
+    composer: composer::ComposerState,
 }
 
 impl AppState {
@@ -211,6 +216,7 @@ impl AppState {
             batch_cancel: Arc::new(AtomicBool::new(false)),
             batch_generation: 0,
             crop: crate::crop_edit::CropEditor::default(),
+            composer: composer::ComposerState::default(),
         }
     }
 }
@@ -219,12 +225,18 @@ thread_local! {
     static STATE: RefCell<AppState> = RefCell::new(AppState::new());
 }
 
+/// Run `f` on the RGB Compositor's state.
+fn set_composer_state<R>(f: impl FnOnce(&mut composer::ComposerState) -> R) -> R {
+    STATE.with(|s| f(&mut s.borrow_mut().composer))
+}
+
 /// Bind the file-list model to the window once, at startup.
 pub fn init(app: &AppWindow) {
     STATE.with(|s| {
         app.set_files(ModelRc::from(s.borrow().files_model.clone()));
         app.set_sessions_model(ModelRc::from(s.borrow().sessions_model.clone()));
     });
+    init_composer(app);
     update_memory(app);
 }
 

@@ -1,0 +1,250 @@
+import { Button, Slider } from "std-widgets.slint";
+import { DialogCard } from "dialog.slint";
+import { AppPalette } from "palette.slint";
+import { ComposerRow } from "types.slint";
+
+// One labelled 0..1 slider (100 steps) with its value read out beside it. The
+// slider starts at `initial`, then owns its value and reports every change.
+component GainSlider inherits HorizontalLayout {
+    in property <string> label;
+    in property <color> tint: AppPalette.body;
+    in property <float> initial;
+    callback changed(float);
+
+    spacing: 8px;
+    height: 22px;
+    Text {
+        text: root.label;
+        color: root.tint;
+        font-weight: 700;
+        width: 12px;
+        vertical-alignment: center;
+    }
+    slider := Slider {
+        horizontal-stretch: 1;
+        minimum: 0.0;
+        maximum: 1.0;
+        step: 0.01;
+        init => {
+            self.value = root.initial;
+        }
+        changed(value) => {
+            root.changed(value);
+        }
+    }
+    Text {
+        text: round(slider.value * 100) / 100;
+        color: AppPalette.muted;
+        width: 30px;
+        vertical-alignment: center;
+    }
+}
+
+// One input slot: its image name on a draggable handle over the sliders that
+// say how much the image feeds each output channel. The slot (not the image)
+// owns the sliders, so dropping another image here keeps these amounts.
+component ComposerSlot inherits Rectangle {
+    in property <ComposerRow> slot;
+    // Slot 3 is the luminance image; the first three are R/G/B inputs.
+    in property <bool> luminance;
+    // This slot is the one being dragged / the one it would swap with.
+    in property <bool> dragging;
+    in property <bool> drop-target;
+    callback drag-started();
+    callback drag-moved(length);
+    callback drag-ended();
+    callback gain-changed(int, float);
+
+    background: AppPalette.panel-bg;
+    border-radius: 6px;
+    border-width: 2px;
+    border-color: root.drop-target ? AppPalette.accent : AppPalette.panel-border;
+    opacity: root.dragging ? 0.55 : 1.0;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+
+        Rectangle {
+            height: 24px;
+            background: handle.has-hover || handle.pressed ? AppPalette.handle-active : AppPalette.header-bg;
+            border-radius: 4px;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 8px;
+                Text {
+                    text: "⠿";
+                    color: AppPalette.muted;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.luminance ? "L  " + root.slot.name : root.slot.name;
+                    color: AppPalette.title;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+            handle := TouchArea {
+                mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.grab;
+                pointer-event(event) => {
+                    if event.button == PointerEventButton.left {
+                        if event.kind == PointerEventKind.down {
+                            root.drag-started();
+                        } else if event.kind == PointerEventKind.up {
+                            root.drag-ended();
+                        }
+                    }
+                }
+                moved => {
+                    root.drag-moved(self.mouse-y - self.pressed-y);
+                }
+            }
+        }
+
+        if !root.luminance: GainSlider {
+            label: "R";
+            tint: #e06060;
+            initial: root.slot.red;
+            changed(value) => {
+                root.gain-changed(0, value);
+            }
+        }
+        if !root.luminance: GainSlider {
+            label: "G";
+            tint: #50b050;
+            initial: root.slot.green;
+            changed(value) => {
+                root.gain-changed(1, value);
+            }
+        }
+        if !root.luminance: GainSlider {
+            label: "B";
+            tint: #6090e0;
+            initial: root.slot.blue;
+            changed(value) => {
+                root.gain-changed(2, value);
+            }
+        }
+        if root.luminance: GainSlider {
+            label: "L";
+            initial: root.slot.lum;
+            changed(value) => {
+                root.gain-changed(3, value);
+            }
+        }
+    }
+}
+
+// The Tools ▸ RGB Compositor… modal: the 3 or 4 checked images on the left —
+// the first three feed R/G/B through their sliders, an optional fourth is the
+// luminance — and a live preview of the composition on the right. Drag one
+// image's handle onto another to swap them. Purely presentational: Rust loads
+// the images, holds the slider values and renders `preview`.
+export component ComposerDialog inherits DialogCard {
+    in property <[ComposerRow]> rows;
+    in property <image> preview;
+    // Shown over the preview while it loads, or instead of it on failure.
+    in property <string> notice;
+    callback gain-changed(int, int, float);
+    callback swap(int, int);
+    callback close();
+
+    resizable: true;
+    min-card-width: 640px;
+    min-card-height: 420px;
+
+    // Every slot is as tall as one with three sliders, so slots sit at fixed
+    // offsets and a drag finds the slot under the pointer from its distance.
+    property <length> slot-height: 120px;
+    property <length> slot-gap: 8px;
+    // The slot being dragged and the one it is currently over (-1: no drag).
+    property <int> drag-from: -1;
+    property <int> drag-to: -1;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: "RGB Compositor";
+            font-size: 20px;
+            font-weight: 700;
+            color: AppPalette.title;
+        }
+
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 16px;
+
+            // Left pane: one slot per image.
+            VerticalLayout {
+                width: 280px;
+                alignment: start;
+                Rectangle {
+                    height: root.rows.length * (root.slot-height + root.slot-gap);
+                    for row[i] in root.rows: ComposerSlot {
+                        y: i * (root.slot-height + root.slot-gap);
+                        height: root.slot-height;
+                        slot: row;
+                        luminance: i == 3;
+                        dragging: root.drag-from == i;
+                        drop-target: root.drag-from >= 0 && root.drag-to == i && root.drag-to != root.drag-from;
+                        drag-started => {
+                            root.drag-from = i;
+                            root.drag-to = i;
+                        }
+                        drag-moved(dy) => {
+                            root.drag-to = clamp(
+                                i + round(dy / (root.slot-height + root.slot-gap)),
+                                0, root.rows.length - 1);
+                        }
+                        drag-ended => {
+                            if root.drag-from >= 0 && root.drag-to != root.drag-from {
+                                root.swap(root.drag-from, root.drag-to);
+                            }
+                            root.drag-from = -1;
+                            root.drag-to = -1;
+                        }
+                        gain-changed(channel, value) => {
+                            root.gain-changed(i, channel, value);
+                        }
+                    }
+                }
+            }
+
+            // Right pane: the composed preview.
+            Rectangle {
+                horizontal-stretch: 1;
+                background: AppPalette.canvas;
+                border-radius: 6px;
+                clip: true;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.preview;
+                    image-fit: contain;
+                }
+                Text {
+                    visible: root.notice != "";
+                    text: root.notice;
+                    color: AppPalette.body;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width - 24px;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            Button {
+                text: "Close";
+                clicked => {
+                    root.close();
+                }
+            }
+        }
+    }
+}
