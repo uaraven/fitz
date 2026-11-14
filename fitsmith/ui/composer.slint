@@ -1,4 +1,4 @@
-import { Button, Slider } from "std-widgets.slint";
+import { Button, ComboBox, Slider } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 import { AppPalette } from "palette.slint";
 import { ComposerRow } from "types.slint";
@@ -190,6 +190,8 @@ export component ComposerDialog inherits DialogCard {
     in property <string> notice;
     // A save from an earlier opening is still running.
     in property <bool> saving;
+    // The file type Save… asks for: 0 = .fits, 1 = .fit, 2 = .tiff.
+    in-out property <int> save-format;
     callback gain-changed(int, int, float);
     callback swap(int, int);
     callback save();
@@ -329,6 +331,11 @@ export component ComposerDialog inherits DialogCard {
         HorizontalLayout {
             alignment: end;
             spacing: 8px;
+            ComboBox {
+                model: ["FITS (.fits)", "FITS (.fit)", "TIFF (.tiff)"];
+                current-index <=> root.save-format;
+                width: 140px;
+            }
             // Closes the dialog once a file name is chosen. Only enabled once a
             // preview has been composed: the file is made from the same inputs
             // and sliders.

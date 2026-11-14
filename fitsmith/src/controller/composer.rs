@@ -228,13 +228,31 @@ fn save_full_size(
     compose_images(inputs, gains)?.export(target, format)
 }
 
-/// Ask where to save the composition (FITS or TIFF), starting beside the first
-/// image. `None` if the user cancelled.
-fn prompt_save_path(first_input: &Path) -> Option<PathBuf> {
+/// The file extensions the dialog's format ComboBox offers, in its order.
+const SAVE_EXTENSIONS: [&str; 3] = ["fits", "fit", "tiff"];
+
+/// The extension for a format ComboBox index; an out-of-range index falls back
+/// to `fits`.
+fn save_extension(index: i32) -> &'static str {
+    usize::try_from(index)
+        .ok()
+        .and_then(|i| SAVE_EXTENSIONS.get(i))
+        .unwrap_or(&SAVE_EXTENSIONS[0])
+}
+
+/// Ask where to save the composition as a `.{extension}` file, starting beside
+/// the first image. `None` if the user cancelled. The file dialog is limited to
+/// that one type because macOS's merges every filter into a single list and
+/// offers no format choice; the choice is made in the compositor instead.
+fn prompt_save_path(first_input: &Path, extension: &str) -> Option<PathBuf> {
+    let kind = if extension == "tiff" {
+        "TIFF image"
+    } else {
+        "FITS image"
+    };
     let mut dialog = rfd::FileDialog::new()
-        .add_filter("FITS image", &["fits", "fit"])
-        .add_filter("TIFF image", &["tiff", "tif"])
-        .set_file_name("composite.fits");
+        .add_filter(kind, &[extension])
+        .set_file_name(format!("composite.{extension}"));
     if let Some(dir) = first_input.parent() {
         dialog = dialog.set_directory(dir);
     }
@@ -253,7 +271,8 @@ pub fn save_composition(app: &AppWindow) {
     let Some((paths, gains)) = job else {
         return;
     };
-    let Some(chosen) = prompt_save_path(&paths[0]) else {
+    let extension = save_extension(app.get_composer_save_format());
+    let Some(chosen) = prompt_save_path(&paths[0], extension) else {
         return;
     };
     let (target, format) = save_target(chosen);
@@ -602,6 +621,20 @@ mod tests {
             let (path, format) = save_target(PathBuf::from(name));
             assert_eq!(path, PathBuf::from(name), "{name} keeps its name");
             assert_eq!(matches!(format, ExportFormat::Fits(_)), fits, "{name}");
+        }
+    }
+
+    #[test]
+    fn save_extension_follows_the_format_combo_box() {
+        assert_eq!(save_extension(0), "fits");
+        assert_eq!(save_extension(1), "fit");
+        assert_eq!(save_extension(2), "tiff");
+        assert_eq!(save_extension(-1), "fits");
+        assert_eq!(save_extension(9), "fits");
+        // Each offered extension maps to the format its name suggests.
+        for (ext, fits) in [("fits", true), ("fit", true), ("tiff", false)] {
+            let (_, format) = save_target(PathBuf::from(format!("x.{ext}")));
+            assert_eq!(matches!(format, ExportFormat::Fits(_)), fits, "{ext}");
         }
     }
 
