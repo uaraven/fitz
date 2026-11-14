@@ -1,20 +1,45 @@
+//! Combines three (optionally four) mono images into one RGB colour image.
+//!
+//! Each input is a [`ChannelInput`] with gains saying how much of it goes into the output red,
+//! green and blue. An optional fourth, luminance image replaces the lightness of the result in
+//! CIE Lab space. Build a [`RgbComposer`] with [`new_rgb_composer`] and call
+//! [`RgbComposer::compose`].
+
 use crate::data::{Image, ImageType, PixelBuffer};
 use anyhow::{bail, Result};
 use fitskit::HeaderValue;
-use crate::keywords::EXPTIME;
+use crate::keywords::{EXPTIME, FILTER};
+use rayon::prelude::*;
 
+/// One mono image taking part in an RGB composition, together with the gains that route it into
+/// the output. Create with [`new_channel_input`] (all gains start at zero) and set the gains
+/// directly.
+///
+/// For the three colour inputs, `red`/`green`/`blue` say how much of *this* image goes into each
+/// output channel; `lum` is ignored. For the fourth (luminance) input only `lum` is used.
 pub struct ChannelInput {
+    /// The mono source frame. Grayscale only; may hold 16-bit or float samples.
     pub image: Image,
 
-    // contribution of the image to different channels, as absolute gains
-    // each value have range 0..1, they DON'T have to sum up to 1.0
-    // (0.5 halves the image's contribution; contributions summing past 1.0 clip at white)
+    /// Contribution of the image to each output colour channel, as absolute gains. They don't
+    /// have to sum to 1.0: 0.5 halves the image's contribution, and contributions summing past
+    /// 1.0 clip at white.
     pub red: f32,
+    /// See [`ChannelInput::red`]: the gain into the output green channel.
     pub green: f32,
+    /// See [`ChannelInput::red`]: the gain into the output blue channel.
     pub blue: f32,
+    /// Blend factor of this image's lightness into the composite, used by the luminance
+    /// (fourth) channel only. Clamped to `0.0..=1.0`: 0 keeps the colour data's own lightness,
+    /// 1 replaces it.
     pub lum: f32,
 }
 
+/// Wraps a mono image as a composition input with all gains set to zero.
+///
+/// # Errors
+/// Fails unless `image` is [`ImageType::Grayscale`] — CFA mosaics must be debayered and RGB
+/// images split into channels first.
 pub fn new_channel_input(image: Image) -> Result<ChannelInput> {
     match image.image_type {
         ImageType::Grayscale => Ok(ChannelInput{
@@ -53,9 +78,10 @@ fn lab_f(t: f32) -> f32 {
     }
 }
 
-// Converts 16bit 3-colour RGB value to CIE Lab
-// Result is an array of 3 values: L, a, and b
-// `L` is scaled 0..1, `a` and `b` are roughly ±1.
+/// Converts a 16-bit sRGB pixel to CIE L*a*b* under the D65 white point.
+///
+/// Returns `[L, a, b]` with every component divided by 100, so `L` is in `0.0..=1.0` and `a`
+/// and `b` are roughly ±1. Greys have zero chroma. The inverse is [`lab_to_rgb`].
 pub fn rgb_to_lab(px: [u16;3]) -> [f32; 3] {
     let r = linearize(normalize(px[0]));
     let g = linearize(normalize(px[1]));
@@ -88,8 +114,10 @@ fn lab_f_inv(t: f32) -> f32 {
     }
 }
 
-/// Inverse of [`rgb_to_lab`] (using the exact inverse of its RGB→XYZ matrix): scaled L*a*b* (see [`rgb_to_lab`]) to 16-bit sRGB. Out-of-gamut colours are
-/// clamped per channel.
+/// Inverse of [`rgb_to_lab`]: converts scaled L*a*b* (see [`rgb_to_lab`] for the scaling) back to
+/// 16-bit sRGB, using the exact inverse of that function's RGB→XYZ matrix.
+///
+/// Out-of-gamut colours, and an `L` outside `0.0..=1.0`, are clamped per channel.
 pub fn lab_to_rgb(lab: [f32; 3]) -> [u16; 3] {
     let fy = (lab[0] + 0.16) / 1.16;
     let fx = fy + lab[1] / 5.0;
@@ -103,13 +131,25 @@ pub fn lab_to_rgb(lab: [f32; 3]) -> [u16; 3] {
     [r, g, b].map(|c| (delinearize(c).clamp(0.0, 1.0) * u16::MAX as f32).round() as u16)
 }
 
+/// A validated set of inputs ready to be composed into one RGB image. Create with
+/// [`new_rgb_composer`].
 pub struct RgbComposer<'a> {
-    /// 3 or 4 channels - first 3 is colour data,
-    /// Last channel is always luminance
+    /// 3 or 4 inputs: the first three are the colour data (in the order their gains refer to),
+    /// the optional fourth is always luminance. All share the same dimensions, which
+    /// [`new_rgb_composer`] checks.
     pub channels: Vec<&'a ChannelInput>,
+    /// When true (the default), the output's `EXPTIME` is the sum over all inputs, luminance
+    /// included, with a missing `EXPTIME` counting as zero. When false the output keeps the
+    /// first input's header value untouched.
     pub add_times: bool
 }
 
+/// Validates `channels` and returns a composer over them: the first three are colour data, an
+/// optional fourth is luminance.
+///
+/// # Errors
+/// Fails if there aren't three or four channels, if the images differ in size, or if an image's
+/// pixel buffer doesn't hold exactly `width * height` samples.
 pub fn new_rgb_composer(channels: Vec<&ChannelInput>) -> Result<RgbComposer<'_>> {
     if channels.len() < 3 || channels.len() > 4 {
         bail!("RGB composition requires three or four input channels")
@@ -120,6 +160,11 @@ pub fn new_rgb_composer(channels: Vec<&ChannelInput>) -> Result<RgbComposer<'_>>
     ) {
         bail!("Images must be of the same size")
     }
+    if !channels.iter().all(|c|
+        c.image.width.checked_mul(c.image.height) == Some(c.image.pixels.len())
+    ) {
+        bail!("Image pixel data does not match its dimensions")
+    }
 
     Ok(RgbComposer{
         channels,
@@ -127,11 +172,8 @@ pub fn new_rgb_composer(channels: Vec<&ChannelInput>) -> Result<RgbComposer<'_>>
     })
 }
 
-fn sum_exposure(images: &[&Image]) -> f32 {
-    let result: f64 = images.iter()
-        .map(|i|i.header.get_float(EXPTIME).unwrap_or(0.0))
-        .sum();
-    result as f32
+fn sum_exposure<'a>(images: impl Iterator<Item = &'a Image>) -> f64 {
+    images.map(|i| i.header.get_float(EXPTIME).unwrap_or(0.0)).sum()
 }
 
 /// Weighted sum of the three input samples, clamped to the 16-bit range. The weights are
@@ -142,51 +184,52 @@ fn combine(px: [u16;3], r: f32, g: f32, b: f32) -> u16 {
 }
 impl RgbComposer<'_> {
 
+    /// Renders the composition as an interleaved 16-bit [`ImageType::RGB`] image.
+    ///
+    /// Output red/green/blue is the gain-weighted sum of the three colour inputs, clipped to the
+    /// 16-bit range. If a luminance input with a positive `lum` is present, each pixel's Lab
+    /// lightness is blended towards the luminance sample by `lum` (clamped to `0..=1`) and the
+    /// pixel is converted back to RGB, which leaves chroma unchanged. The output header is a
+    /// copy of the first input's, without `FILTER` (the composite isn't taken through any one
+    /// filter), and with `EXPTIME` replaced by the sum when `add_times` is set.
+    /// Pixels are processed in parallel.
     pub fn compose(&self) -> Result<Image> {
         let width = self.channels[0].image.width;
         let height = self.channels[0].image.height;
-        let pix1 = self.channels[0].image.pixels.as_u16();
-        let pix2 = self.channels[1].image.pixels.as_u16();
-        let pix3 = self.channels[2].image.pixels.as_u16();
-        let pix_l = match self.channels.len() > 3 {
-            true => Some(self.channels[3].image.pixels.as_f32()),
-            false => None
-        };
-        let mut result_rgb:Vec<u16> = Vec::with_capacity(width * height*3);
-        for y in 0..height {
-            for x in 0..width {
-                let offset = y * width + x;
-                let px = [pix1[offset], pix2[offset], pix3[offset]];
-                let r = combine(px,
-                                self.channels[0].red, self.channels[1].red, self.channels[2].red
-                );
-                let g = combine(px,
-                                self.channels[0].green, self.channels[1].green, self.channels[2].green
-                );
-                let b = combine(px,
-                                self.channels[0].blue, self.channels[1].blue, self.channels[2].blue
-                );
-                let mut rgb = [r,g,b];
-                if let Some(l_pix) = &pix_l && self.channels[3].lum > 0.0 {
-                    let a = self.channels[3].lum;
-                    let l = l_pix[offset];
-                    let mut lab = rgb_to_lab(rgb);
-                    lab[0] = l * a + lab[0] * (1.0-a);
-                    rgb = lab_to_rgb(lab);
-                }
-                result_rgb.push(rgb[0]);
-                result_rgb.push( rgb[1]);
-                result_rgb.push(rgb[2]);
+        let pix1 = self.channels[0].image.pixels.as_u16ref();
+        let pix2 = self.channels[1].image.pixels.as_u16ref();
+        let pix3 = self.channels[2].image.pixels.as_u16ref();
+        // Luminance is applied only when a fourth channel exists and has a positive blend factor.
+        let lum = self.channels.get(3)
+            .map(|c| (c.image.pixels.as_f32(), c.lum.clamp(0.0, 1.0)))
+            .filter(|(_, a)| *a > 0.0);
+        // gains[output colour][input channel]
+        let [c1, c2, c3] = [self.channels[0], self.channels[1], self.channels[2]];
+        let gains = [
+            [c1.red, c2.red, c3.red],
+            [c1.green, c2.green, c3.green],
+            [c1.blue, c2.blue, c3.blue],
+        ];
+        let mut result_rgb = vec![0u16; width * height * 3];
+        result_rgb.par_chunks_exact_mut(3).enumerate().for_each(|(offset, out)| {
+            let px = [pix1[offset], pix2[offset], pix3[offset]];
+            let mut rgb = gains.map(|g| combine(px, g[0], g[1], g[2]));
+            if let Some((l_pix, a)) = &lum {
+                let mut lab = rgb_to_lab(rgb);
+                lab[0] = l_pix[offset] * a + lab[0] * (1.0 - a);
+                rgb = lab_to_rgb(lab);
             }
-        }
+            out.copy_from_slice(&rgb);
+        });
 
         let mut rgb_image = Image::new(
             ImageType::RGB, self.channels[0].image.header.clone(), width, height,
         PixelBuffer::U16(result_rgb));
+        rgb_image.header.keywords.retain(|k| k.name != FILTER);
         if self.add_times {
             rgb_image.header.set(
                 EXPTIME,
-                HeaderValue::Float(sum_exposure(&self.channels.iter().map(|c| &c.image).collect::<Vec<_>>()) as f64),
+                HeaderValue::Float(sum_exposure(self.channels.iter().map(|c| &c.image))),
                 None);
         }
 
@@ -198,7 +241,7 @@ impl RgbComposer<'_> {
 mod tests {
     use super::*;
 
-    /// `lab` returns CIE L*a*b* divided by 100 (L in 0..=1), so references below are scaled.
+    /// `rgb_to_lab` returns CIE L*a*b* divided by 100 (L in 0..=1), so references below are scaled.
     fn assert_lab(px: [u16; 3], expected: [f32; 3], tol: f32) {
         let got = rgb_to_lab(px);
         for i in 0..3 {
@@ -283,8 +326,8 @@ mod tests {
 
     #[test]
     fn lab_to_rgb_clamps_out_of_gamut() {
-        let [r, g, b] = lab_to_rgb([0.5, 3.0, -3.0]);
-        assert!(r == MAX || g == 0 || b == MAX || r == 0 || g == MAX || b == 0);
+        // Linear red and green come out negative and blue far above 1: each clamps to its limit.
+        assert_eq!(lab_to_rgb([0.5, 3.0, -3.0]), [0, 0, MAX]);
         assert_eq!(lab_to_rgb([2.0, 0.0, 0.0]), [MAX; 3]);
         assert_eq!(lab_to_rgb([-1.0, 0.0, 0.0]), [0, 0, 0]);
     }
@@ -328,6 +371,11 @@ mod tests {
         new_rgb_composer(channels.to_vec()).unwrap().compose().unwrap()
     }
 
+    /// The output's samples grouped per pixel.
+    fn pixels(img: &Image) -> &[[u16; 3]] {
+        u16s(img).as_chunks::<3>().0
+    }
+
     fn u16s(img: &Image) -> &[u16] {
         match &img.pixels {
             PixelBuffer::U16(v) => v,
@@ -365,8 +413,8 @@ mod tests {
             input(plane(3000), 0.0, 0.0, 1.0, 0.0),
         );
         let out = compose(&[&c1, &c2, &c3]);
-        for px in u16s(&out).chunks_exact(3) {
-            assert_eq!(px, [1000, 2000, 3000]);
+        for px in pixels(&out).iter() {
+            assert_eq!(*px, [1000, 2000, 3000]);
         }
     }
 
@@ -379,8 +427,8 @@ mod tests {
         let c2 = input(mono_like(&t, PixelBuffer::U16(vec![0; n])), 0.0, 1.0, 0.0, 0.0);
         let c3 = input(mono_like(&t, PixelBuffer::U16(vec![0; n])), 0.0, 0.0, 1.0, 0.0);
         let out = compose(&[&c1, &c2, &c3]);
-        for (i, px) in u16s(&out).chunks_exact(3).enumerate() {
-            assert_eq!(px, [ramp[i], 0, 0], "pixel {i}");
+        for (i, px) in pixels(&out).iter().enumerate() {
+            assert_eq!(*px, [ramp[i], 0, 0], "pixel {i}");
         }
     }
 
@@ -397,7 +445,7 @@ mod tests {
             input(b, 0.0, 0.5, third, 0.0),
         );
         let out = compose(&[&c1, &c2, &c3]);
-        for (i, px) in u16s(&out).chunks_exact(3).enumerate() {
+        for (i, px) in pixels(&out).iter().enumerate() {
             let er = 0.75 * pr[i] as f64 + 0.25 * pg[i] as f64;
             let eg = 0.5 * pb[i] as f64;
             let eb = (pr[i] as f64 + pg[i] as f64 + pb[i] as f64) / 3.0;
@@ -416,7 +464,7 @@ mod tests {
             input(b, 0.0, 0.0, 0.0, 0.0),
         );
         let out = compose(&[&c1, &c2, &c3]);
-        assert!(u16s(&out).chunks_exact(3).all(|px| px[1] == 0 && px[2] == 0));
+        assert!(pixels(&out).iter().all(|px| px[1] == 0 && px[2] == 0));
     }
 
     fn colour_inputs(lum: f32) -> (ChannelInput, ChannelInput, ChannelInput, ChannelInput) {
@@ -445,7 +493,7 @@ mod tests {
         let without = compose(&[&r, &g, &b]);
         let with = compose(&[&r, &g, &b, &l]);
         let mut checked = 0;
-        for (a, b) in u16s(&without).chunks_exact(3).zip(u16s(&with).chunks_exact(3)) {
+        for (a, b) in pixels(&without).iter().zip(pixels(&with).iter()) {
             let (la, lb) = (rgb_to_lab([a[0], a[1], a[2]]), rgb_to_lab([b[0], b[1], b[2]]));
             // Skip pixels whose new colour is clamped at the gamut edge or is black/white.
             if b.iter().any(|c| !(64..=MAX - 64).contains(c)) {
@@ -465,7 +513,7 @@ mod tests {
         let without = compose(&[&r, &g, &b]);
         let with = compose(&[&r, &g, &b, &l]);
         let mut checked = 0;
-        for (a, b) in u16s(&without).chunks_exact(3).zip(u16s(&with).chunks_exact(3)) {
+        for (a, b) in pixels(&without).iter().zip(pixels(&with).iter()) {
             if b.iter().any(|c| !(64..=MAX - 64).contains(c)) {
                 continue;
             }
@@ -558,8 +606,8 @@ mod tests {
             input(mono_like(&t, PixelBuffer::U16(vec![40000; n])), 0.0, 0.0, 2.0, 0.0),
         );
         let out = compose(&[&c1, &c2, &c3]);
-        for px in u16s(&out).chunks_exact(3) {
-            assert_eq!(px, [20000, 40000, MAX]); // halved, untouched, clipped
+        for px in pixels(&out).iter() {
+            assert_eq!(*px, [20000, 40000, MAX]); // halved, untouched, clipped
         }
     }
 
@@ -591,8 +639,8 @@ mod tests {
             input(f(1.0), 0.0, 0.0, 1.0, 0.0),
         );
         let out = compose(&[&c1, &c2, &c3]);
-        for px in u16s(&out).chunks_exact(3) {
-            assert_eq!(px, [MAX, 0, MAX]);
+        for px in pixels(&out).iter() {
+            assert_eq!(*px, [MAX, 0, MAX]);
         }
     }
 
@@ -610,8 +658,8 @@ mod tests {
             input(grey(MAX), 0.0, 0.0, 0.0, 1.0),
         );
         let out = compose(&[&c1, &c2, &c3, &l]);
-        for px in u16s(&out).chunks_exact(3) {
-            assert_eq!(px, [MAX, MAX, MAX]);
+        for px in pixels(&out).iter() {
+            assert_eq!(*px, [MAX, MAX, MAX]);
         }
     }
 
@@ -659,5 +707,69 @@ mod tests {
         );
         let out = compose(&[&c1, &c2, &c3, &c4]);
         assert_eq!(out.header.get_float(EXPTIME), Some(10.0));
+    }
+
+    #[test]
+    fn compose_keeps_fractional_exposure_at_full_precision() {
+        let [mut r, mut g, mut b] = real_planes();
+        for (img, t) in [(&mut r, 0.1), (&mut g, 0.2), (&mut b, 0.3)] {
+            img.header.set(EXPTIME, HeaderValue::Float(t), None);
+        }
+        let (c1, c2, c3) = (
+            input(r, 1.0, 0.0, 0.0, 0.0),
+            input(g, 0.0, 1.0, 0.0, 0.0),
+            input(b, 0.0, 0.0, 1.0, 0.0),
+        );
+        // Summed in f64 and stored as f64: no detour through f32 (which would give 0.6000000238...).
+        assert_eq!(compose(&[&c1, &c2, &c3]).header.get_float(EXPTIME), Some(0.1 + 0.2 + 0.3));
+    }
+
+    #[test]
+    fn compose_clamps_luminance_weight_to_unit_range() {
+        let [r, g, b] = real_planes();
+        let copy = |img: &Image| mono_like(img, img.pixels.clone());
+        let colours = || (
+            input(copy(&r), 1.0, 0.0, 0.0, 0.0),
+            input(copy(&g), 0.0, 1.0, 0.0, 0.0),
+            input(copy(&b), 0.0, 0.0, 1.0, 0.0),
+        );
+        let with_lum = |lum: f32| {
+            let (c1, c2, c3) = colours();
+            let l = mono_like(&r, PixelBuffer::F32(vec![0.5; r.width * r.height]));
+            let c4 = input(l, 0.0, 0.0, 0.0, lum);
+            u16s(&compose(&[&c1, &c2, &c3, &c4])).to_vec()
+        };
+        // Above 1 behaves like 1 (no negative weight on the colour lightness)...
+        assert_eq!(with_lum(7.0), with_lum(1.0));
+        // ...and below 0 like 0.
+        let (c1, c2, c3) = colours();
+        assert_eq!(with_lum(-3.0), u16s(&compose(&[&c1, &c2, &c3])));
+    }
+
+    #[test]
+    fn new_rgb_composer_rejects_pixel_data_that_does_not_match_dimensions() {
+        let [r, g, b] = real_planes();
+        let short = mono_like(&g, PixelBuffer::U16(vec![0; 10]));
+        let (c1, c2, c3) = (
+            input(r, 1.0, 0.0, 0.0, 0.0),
+            input(short, 0.0, 1.0, 0.0, 0.0),
+            input(b, 0.0, 0.0, 1.0, 0.0),
+        );
+        assert!(new_rgb_composer(vec![&c1, &c2, &c3]).is_err());
+    }
+
+    #[test]
+    fn compose_drops_the_filter_keyword_and_keeps_the_rest() {
+        let [mut r, g, b] = real_planes();
+        r.header.set(FILTER, HeaderValue::String("R".to_string()), None);
+        let had_other_keywords = r.header.keywords.iter().any(|k| k.name != FILTER);
+        let (c1, c2, c3) = (
+            input(r, 1.0, 0.0, 0.0, 0.0),
+            input(g, 0.0, 1.0, 0.0, 0.0),
+            input(b, 0.0, 0.0, 1.0, 0.0),
+        );
+        let out = compose(&[&c1, &c2, &c3]);
+        assert_eq!(out.header.get_string(FILTER), None);
+        assert!(had_other_keywords && out.header.keywords.iter().any(|k| k.name != FILTER));
     }
 }
