@@ -257,6 +257,12 @@ export component AppWindow inherits Window {
     in property <[ComposerRow]> composer-model;
     in property <image> composer-preview;
     in property <string> composer-notice;
+    // A full-size save is running (the dialog closes when it starts, so this
+    // only matters if it is reopened meanwhile).
+    in property <bool> composer-saving;
+    // File type Save… offers: 0 = .fits, 1 = .fit, 2 = .tiff (the dialog's
+    // ComboBox order). Kept here so it survives the dialog being reopened.
+    in-out property <int> composer-save-format: 0;
     in-out property <length> composer-card-width: 900px;
     in-out property <length> composer-card-height: 680px;
 
@@ -352,6 +358,7 @@ export component AppWindow inherits Window {
     // (slot, channel 0=R 1=G 2=B 3=L, value) and (slot, slot).
     callback composer-gain-changed(int, int, float);
     callback composer-swap(int, int);
+    callback composer-save();
     callback close-composer();
     callback open-bad-frames-dialog();
     callback bad-frames-params-changed();
@@ -1114,6 +1121,8 @@ export component AppWindow inherits Window {
         rows: root.composer-model;
         preview: root.composer-preview;
         notice: root.composer-notice;
+        saving: root.composer-saving;
+        save-format <=> root.composer-save-format;
         card-width <=> root.composer-card-width;
         card-height <=> root.composer-card-height;
         gain-changed(slot, channel, value) => {
@@ -1121,6 +1130,9 @@ export component AppWindow inherits Window {
         }
         swap(a, b) => {
             root.composer-swap(a, b);
+        }
+        save => {
+            root.composer-save();
         }
         close => {
             root.close-composer();

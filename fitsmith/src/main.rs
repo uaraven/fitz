@@ -185,6 +185,7 @@ fn main() -> Result<()> {
     forward!(on_composer_swap, |app, a, b| {
         controller::swap_composer_slots(&app, a, b)
     });
+    forward!(on_composer_save, |app| controller::save_composition(&app));
     forward!(on_close_composer, |app| controller::close_composer(&app));
     forward!(on_open_aberration_dialog, |app| {
         controller::open_aberration_dialog(&app)
