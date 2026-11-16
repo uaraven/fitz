@@ -1,49 +1,7 @@
 import { VScrollArea } from "scrolling.slint";
 import { FileRow, FrameKind } from "types.slint";
 import { AppPalette } from "palette.slint";
-
-// The tooltip surface shared by the file list's (and the compositor's) hover tips: its children are
-// stacked in a padded column.
-export component TipBox inherits Rectangle {
-    background: AppPalette.tooltip-bg;
-    border-width: 1px;
-    border-color: AppPalette.tooltip-border;
-    border-radius: 4px;
-    VerticalLayout {
-        padding: 8px;
-        spacing: 4px;
-        @children
-    }
-}
-
-// One line (or wrapped paragraph) of tooltip text.
-export component TipText inherits Text {
-    wrap: word-wrap;
-    font-size: 12px;
-    color: AppPalette.tooltip-fg;
-}
-
-// A hover area that asks for its tooltip after a short dwell and dismisses it
-// as soon as the cursor leaves.
-export component TipArea inherits TouchArea {
-    callback show-tip();
-    callback hide-tip();
-    property <bool> pending: false;
-    changed has-hover => {
-        self.pending = self.has-hover;
-        if (!self.has-hover) {
-            root.hide-tip();
-        }
-    }
-    Timer {
-        interval: 600ms;
-        running: root.pending;
-        triggered => {
-            root.pending = false;
-            root.show-tip();
-        }
-    }
-}
+import { TipContent } from "tooltip.slint";
 
 // The glyph for a frame kind: a star for a light, a crescent moon for a dark,
 // a zero for a bias, an empty (evenly lit) square for a flat, and a
@@ -248,9 +206,10 @@ export component FileList inherits Rectangle {
                                 // The full path and, for a row that failed to load,
                                 // the error.
                                 Tooltip {
-                                    text: rowrect.is-error
-                                        ? @markdown("\{row.path}\n\n\{row.error}")
-                                        : @markdown("\{row.path}");
+                                    TipContent {
+                                        text: row.path;
+                                        detail: rowrect.is-error ? row.error : "";
+                                    }
                                 }
                             }
                         }

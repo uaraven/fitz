@@ -2,7 +2,7 @@ import { Button, ComboBox, Slider } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 import { AppPalette } from "palette.slint";
 import { ComposerRow } from "types.slint";
-import { TipArea, TipBox, TipText } from "file_list.slint";
+import { TipContent } from "tooltip.slint";
 
 // One labelled 0..1 slider (100 steps) with its value read out beside it. The
 // slider starts at `initial`, then owns its value and reports every change.
@@ -106,18 +106,11 @@ component ComposerSlot inherits Rectangle {
             }
             // Hovering the handle shows the image's full file name, which the
             // handle itself may have had to elide.
-            handle := TipArea {
+            handle := TouchArea {
                 mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.grab;
-                show-tip => {
-                    name-tip.show();
-                }
-                hide-tip => {
-                    name-tip.close();
-                }
                 pointer-event(event) => {
                     if event.button == PointerEventButton.left {
                         if event.kind == PointerEventKind.down {
-                            name-tip.close();
                             root.drag-started();
                         } else if event.kind == PointerEventKind.up {
                             root.drag-ended();
@@ -127,16 +120,9 @@ component ComposerSlot inherits Rectangle {
                 moved => {
                     root.drag-moved(self.mouse-y - self.pressed-y);
                 }
-            }
-            // A PopupWindow renders in a top-level overlay, so neither the slot
-            // nor the slots drawn after it can cover or clip it.
-            name-tip := PopupWindow {
-                x: 0;
-                y: 26px;
-                TipBox {
-                    TipText {
+                Tooltip {
+                    TipContent {
                         text: root.slot.full-name;
-                        wrap: no-wrap;
                     }
                 }
             }
