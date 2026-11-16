@@ -219,12 +219,7 @@ export component FileList inherits Rectangle {
                                     fill: rowrect.selected ? AppPalette.on-accent : AppPalette.muted;
                                 }
                                 Tooltip {
-                                    TipBox {
-                                        TipText {
-                                            text: row.kind-tip;
-                                            wrap: no-wrap;
-                                        }
-                                    }
+                                    text: @markdown("\{row.kind-tip}");
                                 }
                             }
                         }
@@ -253,17 +248,9 @@ export component FileList inherits Rectangle {
                                 // The full path and, for a row that failed to load,
                                 // the error.
                                 Tooltip {
-                                    TipBox {
-                                        // Snug around a short path, wrapping a long one; an
-                                        // error message gets room to wrap legibly.
-                                        width: min(420px, max(path-text.preferred-width + 16px, rowrect.is-error ? 280px : 0px));
-                                        path-text := TipText {
-                                            text: row.path;
-                                        }
-                                        if rowrect.is-error: TipText {
-                                            text: row.error;
-                                        }
-                                    }
+                                    text: rowrect.is-error
+                                        ? @markdown("\{row.path}\n\n\{row.error}")
+                                        : @markdown("\{row.path}");
                                 }
                             }
                         }
@@ -284,12 +271,7 @@ export component FileList inherits Rectangle {
                                     fill: rowrect.selected ? AppPalette.on-accent : AppPalette.muted;
                                 }
                                 Tooltip {
-                                    TipBox {
-                                        TipText {
-                                            text: "Compressed FITS file";
-                                            wrap: no-wrap;
-                                        }
-                                    }
+                                    text: @markdown("Compressed FITS file");
                                 }
                             }
                         }
