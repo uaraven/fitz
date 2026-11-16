@@ -167,7 +167,7 @@ export component FileList inherits Rectangle {
                         : (touch.has-hover ? root.row-hover : transparent));
                 // The row's own hover/click area. The row's content sits inside
                 // it so the row stays hover-highlighted while the cursor is over
-                // the name or the badge, whose own areas show their tooltips.
+                // the name or the badge, which carry their own tooltips.
                 touch := TouchArea {
                     clicked => {
                         fs.focus();
@@ -218,21 +218,7 @@ export component FileList inherits Rectangle {
                                     kind: row.kind;
                                     fill: rowrect.selected ? AppPalette.on-accent : AppPalette.muted;
                                 }
-                                TipArea {
-                                    clicked => {
-                                        fs.focus();
-                                        root.select(idx);
-                                    }
-                                    show-tip => {
-                                        kind-tip.show();
-                                    }
-                                    hide-tip => {
-                                        kind-tip.close();
-                                    }
-                                }
-                                kind-tip := PopupWindow {
-                                    x: 0;
-                                    y: (root.row-height + 16px) / 2 - 2px;
+                                Tooltip {
                                     TipBox {
                                         TipText {
                                             text: row.kind-tip;
@@ -246,30 +232,38 @@ export component FileList inherits Rectangle {
                         // elided when the list is too narrow for it. Hovering the
                         // name itself (not the empty space after it) shows the
                         // full path.
-                        name-text := Text {
-                            text: row.name;
-                            // White on the selected row's blue background in
-                            // either theme; dark text on the pale-red error
-                            // background used by light themes; the theme's row
-                            // color otherwise.
-                            color: rowrect.selected
-                                ? white
-                                : (rowrect.is-error ? root.err-text : AppPalette.panel-value);
-                            vertical-alignment: center;
+                        Rectangle {
                             horizontal-stretch: 1;
-                            overflow: elide;
-                            TipArea {
+                            name-text := Text {
                                 x: 0;
-                                width: min(name-text.width, name-text.preferred-width);
-                                clicked => {
-                                    fs.focus();
-                                    root.select(idx);
-                                }
-                                show-tip => {
-                                    path-tip.show();
-                                }
-                                hide-tip => {
-                                    path-tip.close();
+                                // Only as wide as the name, so the empty space after
+                                // it doesn't trigger the tooltip.
+                                width: min(parent.width, self.preferred-width);
+                                height: parent.height;
+                                text: row.name;
+                                // White on the selected row's blue background in
+                                // either theme; dark text on the pale-red error
+                                // background used by light themes; the theme's row
+                                // color otherwise.
+                                color: rowrect.selected
+                                    ? white
+                                    : (rowrect.is-error ? root.err-text : AppPalette.panel-value);
+                                vertical-alignment: center;
+                                overflow: elide;
+                                // The full path and, for a row that failed to load,
+                                // the error.
+                                Tooltip {
+                                    TipBox {
+                                        // Snug around a short path, wrapping a long one; an
+                                        // error message gets room to wrap legibly.
+                                        width: min(420px, max(path-text.preferred-width + 16px, rowrect.is-error ? 280px : 0px));
+                                        path-text := TipText {
+                                            text: row.path;
+                                        }
+                                        if rowrect.is-error: TipText {
+                                            text: row.error;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -289,23 +283,7 @@ export component FileList inherits Rectangle {
                                     viewbox-height: 24;
                                     fill: rowrect.selected ? AppPalette.on-accent : AppPalette.muted;
                                 }
-                                TipArea {
-                                    clicked => {
-                                        fs.focus();
-                                        root.select(idx);
-                                    }
-                                    show-tip => {
-                                        badge-tip.show();
-                                    }
-                                    hide-tip => {
-                                        badge-tip.close();
-                                    }
-                                }
-                                // Right-aligned under the glyph, which sits at the
-                                // row's right edge.
-                                badge-tip := PopupWindow {
-                                    x: 16px - self.width;
-                                    y: (root.row-height + 16px) / 2 - 2px;
+                                Tooltip {
                                     TipBox {
                                         TipText {
                                             text: "Compressed FITS file";
@@ -321,25 +299,6 @@ export component FileList inherits Rectangle {
                             font-size: 11px;
                             color: row.status == "error" ? AppPalette.danger : AppPalette.muted;
                             vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // Tooltip over the name carrying the full path and, for a row
-                // that failed to load, the error. A PopupWindow renders in a
-                // top-level overlay, so it isn't clipped by the (narrow) list.
-                path-tip := PopupWindow {
-                    x: 12px;
-                    y: root.row-height - 2px;
-                    TipBox {
-                        // Snug around a short path, wrapping a long one; an
-                        // error message gets room to wrap legibly.
-                        width: min(420px, max(path-text.preferred-width + 16px, rowrect.is-error ? 280px : 0px));
-                        path-text := TipText {
-                            text: row.path;
-                        }
-                        if rowrect.is-error: TipText {
-                            text: row.error;
                         }
                     }
                 }
