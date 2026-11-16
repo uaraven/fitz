@@ -382,6 +382,24 @@ impl Session {
     }
 }
 
+/// The light frames of one filter summed over every session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FilterTotal {
+    /// The trimmed `FILTER` value; `None` for frames without one.
+    pub filter: Option<String>,
+    /// Number of light frames.
+    pub count: usize,
+    /// Total exposure, seconds.
+    pub integration: f64,
+}
+
+impl FilterTotal {
+    /// The filter's name, or `"(no filter)"` for frames without one.
+    pub fn label(&self) -> &str {
+        self.filter.as_deref().unwrap_or(NO_FILTER)
+    }
+}
+
 /// The result of [`summarize_dir`].
 #[derive(Debug, Clone)]
 pub struct Summary {
@@ -393,6 +411,10 @@ pub struct Summary {
     pub count: usize,
     /// Total exposure of the light frames only, seconds.
     pub integration: f64,
+    /// The light frames per filter, summed over all sessions, in the same
+    /// display order as a [`TypeGroup`]'s filters. Empty unless more than one
+    /// session has light frames: a lone session's own filter rows already say it.
+    pub filter_totals: Vec<FilterTotal>,
     /// Images that could not be read, with the reason. They are left out of
     /// `sessions`; one bad file never aborts the scan.
     pub errors: Vec<(PathBuf, String)>,
@@ -408,6 +430,7 @@ impl Summary {
             root,
             count: sessions.iter().map(|s| s.count).sum(),
             integration: sessions.iter().map(|s| s.integration).sum(),
+            filter_totals: filter_totals(&sessions),
             sessions,
             errors,
         }
@@ -584,6 +607,41 @@ fn summarize_images(root: PathBuf, images: Vec<ScannedImage>, cancel: &AtomicBoo
         .collect();
 
     Summary::new(root, sessions, errors)
+}
+
+/// The light frames of every session summed per filter, ordered like a
+/// [`TypeGroup`]'s filters (see [`filter_rank`]); none unless at least two
+/// sessions have light frames.
+fn filter_totals(sessions: &[Session]) -> Vec<FilterTotal> {
+    let light_sessions = sessions
+        .iter()
+        .filter(|s| s.type_group(FrameType::Light).is_some())
+        .count();
+    if light_sessions < 2 {
+        return Vec::new();
+    }
+    let mut totals: BTreeMap<(usize, Option<String>, Option<String>), FilterTotal> =
+        BTreeMap::new();
+    let lights = sessions
+        .iter()
+        .filter_map(|s| s.type_group(FrameType::Light))
+        .flat_map(|t| &t.filters);
+    for group in lights {
+        let total = totals
+            .entry((
+                filter_rank(group.filter.as_deref()),
+                group.filter.as_deref().map(str::to_lowercase),
+                group.filter.clone(),
+            ))
+            .or_insert_with(|| FilterTotal {
+                filter: group.filter.clone(),
+                count: 0,
+                integration: 0.0,
+            });
+        total.count += group.count;
+        total.integration += group.integration;
+    }
+    totals.into_values().collect()
 }
 
 /// The filters listed ahead of all others, in this order (compared ignoring

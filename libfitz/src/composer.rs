@@ -6,9 +6,9 @@
 //! Build a [`RgbComposer`] with [`new_rgb_composer`] and call [`RgbComposer::compose`].
 
 use crate::data::{Image, ImageType, PixelBuffer};
-use anyhow::{bail, Result};
-use fitskit::HeaderValue;
 use crate::keywords::{EXPTIME, FILTER};
+use anyhow::{Result, bail};
+use fitskit::HeaderValue;
 use rayon::prelude::*;
 
 /// One mono image taking part in an RGB composition, together with the gains that route it into
@@ -41,14 +41,14 @@ pub struct ChannelInput {
 /// images split into channels first.
 pub fn new_channel_input(image: Image) -> Result<ChannelInput> {
     match image.image_type {
-        ImageType::Grayscale => Ok(ChannelInput{
+        ImageType::Grayscale => Ok(ChannelInput {
             image,
             red: 0.0,
             green: 0.0,
             blue: 0.0,
             lum: 0.0,
         }),
-        _ => bail!("Only greyscale images are supported for compositing input")
+        _ => bail!("Only greyscale images are supported for compositing input"),
     }
 }
 
@@ -81,7 +81,7 @@ fn lab_f(t: f32) -> f32 {
 ///
 /// Returns `[L, a, b]` with every component divided by 100, so `L` is in `0.0..=1.0` and `a`
 /// and `b` are roughly ±1. Greys have zero chroma. The inverse is [`lab_to_rgb`].
-pub fn rgb_to_lab(px: [u16;3]) -> [f32; 3] {
+pub fn rgb_to_lab(px: [u16; 3]) -> [f32; 3] {
     let r = linearize(normalize(px[0]));
     let g = linearize(normalize(px[1]));
     let b = linearize(normalize(px[2]));
@@ -156,18 +156,20 @@ pub fn new_rgb_composer(channels: Vec<&ChannelInput>) -> Result<RgbComposer<'_>>
     let Some(leading_channel) = channels.first() else {
         bail!("At least one input channel is required")
     };
-    if !channels.iter().skip(1).all(|c|
-        c.image.width == leading_channel.image.width && c.image.height == leading_channel.image.height
-    ) {
+    if !channels.iter().skip(1).all(|c| {
+        c.image.width == leading_channel.image.width
+            && c.image.height == leading_channel.image.height
+    }) {
         bail!("Images must be of the same size")
     }
-    if !channels.iter().all(|c|
-        c.image.width.checked_mul(c.image.height) == Some(c.image.pixels.len())
-    ) {
+    if !channels
+        .iter()
+        .all(|c| c.image.width.checked_mul(c.image.height) == Some(c.image.pixels.len()))
+    {
         bail!("Image pixel data does not match its dimensions")
     }
 
-    Ok(RgbComposer{
+    Ok(RgbComposer {
         channels,
         add_times: true,
         luminance_mix: 0.0,
@@ -175,7 +177,9 @@ pub fn new_rgb_composer(channels: Vec<&ChannelInput>) -> Result<RgbComposer<'_>>
 }
 
 fn sum_exposure<'a>(images: impl Iterator<Item = &'a Image>) -> f64 {
-    images.map(|i| i.header.get_float(EXPTIME).unwrap_or(0.0)).sum()
+    images
+        .map(|i| i.header.get_float(EXPTIME).unwrap_or(0.0))
+        .sum()
 }
 
 /// Rounds a weighted sum of 16-bit samples back into the 16-bit range. The weights are absolute
@@ -184,7 +188,6 @@ fn clamp_u16(v: f32) -> u16 {
     v.clamp(0.0, u16::MAX as f32).round() as u16
 }
 impl RgbComposer<'_> {
-
     /// Renders the composition as an interleaved 16-bit [`ImageType::RGB`] image.
     ///
     /// Output red/green/blue is the gain-weighted sum of all inputs, clipped to the 16-bit range;
@@ -199,7 +202,9 @@ impl RgbComposer<'_> {
         let width = self.channels[0].image.width;
         let height = self.channels[0].image.height;
         // Gains are [red, green, blue, lum]. An input with no gain at all costs nothing per pixel.
-        let active: Vec<_> = self.channels.iter()
+        let active: Vec<_> = self
+            .channels
+            .iter()
             .map(|c| (c.image.pixels.as_u16ref(), [c.red, c.green, c.blue, c.lum]))
             .filter(|(_, gains)| gains.iter().any(|&g| g != 0.0))
             .collect();
@@ -207,33 +212,41 @@ impl RgbComposer<'_> {
         let mix = self.luminance_mix.clamp(0.0, 1.0);
         let use_lum = mix > 0.0 && active.iter().any(|(_, gains)| gains[3] > 0.0);
         let mut result_rgb = vec![0u16; width * height * 3];
-        result_rgb.par_chunks_exact_mut(3).enumerate().for_each(|(offset, out)| {
-            let mut acc = [0f32; 4];
-            for (pixels, gains) in &active {
-                let sample = pixels[offset] as f32;
-                for (sum, gain) in acc.iter_mut().zip(gains) {
-                    *sum += sample * gain;
+        result_rgb
+            .par_chunks_exact_mut(3)
+            .enumerate()
+            .for_each(|(offset, out)| {
+                let mut acc = [0f32; 4];
+                for (pixels, gains) in &active {
+                    let sample = pixels[offset] as f32;
+                    for (sum, gain) in acc.iter_mut().zip(gains) {
+                        *sum += sample * gain;
+                    }
                 }
-            }
-            let mut rgb = [clamp_u16(acc[0]), clamp_u16(acc[1]), clamp_u16(acc[2])];
-            if use_lum {
-                let mut lab = rgb_to_lab(rgb);
-                let l = (acc[3] / u16::MAX as f32).clamp(0.0, 1.0);
-                lab[0] = l * mix + lab[0] * (1.0 - mix);
-                rgb = lab_to_rgb(lab);
-            }
-            out.copy_from_slice(&rgb);
-        });
+                let mut rgb = [clamp_u16(acc[0]), clamp_u16(acc[1]), clamp_u16(acc[2])];
+                if use_lum {
+                    let mut lab = rgb_to_lab(rgb);
+                    let l = (acc[3] / u16::MAX as f32).clamp(0.0, 1.0);
+                    lab[0] = l * mix + lab[0] * (1.0 - mix);
+                    rgb = lab_to_rgb(lab);
+                }
+                out.copy_from_slice(&rgb);
+            });
 
         let mut rgb_image = Image::new(
-            ImageType::RGB, self.channels[0].image.header.clone(), width, height,
-        PixelBuffer::U16(result_rgb));
+            ImageType::RGB,
+            self.channels[0].image.header.clone(),
+            width,
+            height,
+            PixelBuffer::U16(result_rgb),
+        );
         rgb_image.header.keywords.retain(|k| k.name != FILTER);
         if self.add_times {
             rgb_image.header.set(
                 EXPTIME,
                 HeaderValue::Float(sum_exposure(self.channels.iter().map(|c| &c.image))),
-                None);
+                None,
+            );
         }
 
         Ok(rgb_image)
@@ -324,7 +337,10 @@ mod tests {
         assert_eq!(lab_to_rgb([0.0, 0.0, 0.0]), [0, 0, 0]);
         assert_eq!(lab_to_rgb([1.0, 0.0, 0.0]), [MAX; 3]);
         let red = lab_to_rgb([0.532408, 0.800925, 0.672032]);
-        assert!(red[0] >= MAX - 40 && red[1] <= 40 && red[2] <= 40, "{red:?}");
+        assert!(
+            red[0] >= MAX - 40 && red[1] <= 40 && red[2] <= 40,
+            "{red:?}"
+        );
     }
 
     #[test]
@@ -338,7 +354,9 @@ mod tests {
     #[test]
     fn rgb_lab_round_trip() {
         let mut worst = 0i32;
-        let levels = [0u16, 1, 2, 10, 200, 1000, 4000, 20000, 32768, 50000, 65534, MAX];
+        let levels = [
+            0u16, 1, 2, 10, 200, 1000, 4000, 20000, 32768, 50000, 65534, MAX,
+        ];
         for &r in &levels {
             for &g in &levels {
                 for &b in &levels {
@@ -358,16 +376,31 @@ mod tests {
     use crate::test_support::test_data;
 
     fn input(image: Image, red: f32, green: f32, blue: f32, lum: f32) -> ChannelInput {
-        ChannelInput { image, red, green, blue, lum }
+        ChannelInput {
+            image,
+            red,
+            green,
+            blue,
+            lum,
+        }
     }
 
     /// The three planes of the bundled RGB fixture as separate mono images.
     fn real_planes() -> [Image; 3] {
-        load_fits(&test_data("rgb.fits")).unwrap().split_channels().unwrap()
+        load_fits(&test_data("rgb.fits"))
+            .unwrap()
+            .split_channels()
+            .unwrap()
     }
 
     fn mono_like(template: &Image, pixels: PixelBuffer) -> Image {
-        Image::new(ImageType::Grayscale, template.header.clone(), template.width, template.height, pixels)
+        Image::new(
+            ImageType::Grayscale,
+            template.header.clone(),
+            template.width,
+            template.height,
+            pixels,
+        )
     }
 
     fn compose(channels: &[&ChannelInput]) -> Image {
@@ -432,9 +465,27 @@ mod tests {
         let [t, _, _] = real_planes();
         let n = t.width * t.height;
         let ramp: Vec<u16> = (0..n).map(|i| (i % 60000) as u16).collect();
-        let c1 = input(mono_like(&t, PixelBuffer::U16(ramp.clone())), 1.0, 0.0, 0.0, 0.0);
-        let c2 = input(mono_like(&t, PixelBuffer::U16(vec![0; n])), 0.0, 1.0, 0.0, 0.0);
-        let c3 = input(mono_like(&t, PixelBuffer::U16(vec![0; n])), 0.0, 0.0, 1.0, 0.0);
+        let c1 = input(
+            mono_like(&t, PixelBuffer::U16(ramp.clone())),
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+        );
+        let c2 = input(
+            mono_like(&t, PixelBuffer::U16(vec![0; n])),
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+        );
+        let c3 = input(
+            mono_like(&t, PixelBuffer::U16(vec![0; n])),
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+        );
         let out = compose(&[&c1, &c2, &c3]);
         for (i, px) in pixels(&out).iter().enumerate() {
             assert_eq!(*px, [ramp[i], 0, 0], "pixel {i}");
@@ -459,7 +510,10 @@ mod tests {
             let eg = 0.5 * pb[i] as f64;
             let eb = (pr[i] as f64 + pg[i] as f64 + pb[i] as f64) / 3.0;
             for (got, want) in px.iter().zip([er, eg, eb]) {
-                assert!((*got as f64 - want).abs() <= 1.0, "pixel {i}: got {got}, want {want}");
+                assert!(
+                    (*got as f64 - want).abs() <= 1.0,
+                    "pixel {i}: got {got}, want {want}"
+                );
             }
         }
     }
@@ -505,7 +559,10 @@ mod tests {
         let with = compose_mix(&[&r, &g, &b, &l], 1.0);
         let mut checked = 0;
         for (a, b) in pixels(&without).iter().zip(pixels(&with).iter()) {
-            let (la, lb) = (rgb_to_lab([a[0], a[1], a[2]]), rgb_to_lab([b[0], b[1], b[2]]));
+            let (la, lb) = (
+                rgb_to_lab([a[0], a[1], a[2]]),
+                rgb_to_lab([b[0], b[1], b[2]]),
+            );
             // Skip pixels whose new colour is clamped at the gamut edge or is black/white.
             if b.iter().any(|c| !(64..=MAX - 64).contains(c)) {
                 continue;
@@ -560,7 +617,11 @@ mod tests {
     fn new_rgb_composer_rejects_bad_input() {
         let [r, g, b] = real_planes();
         let small = mono_like(&r, PixelBuffer::U16(vec![0; 1]));
-        let small = Image { width: 1, height: 1, ..small };
+        let small = Image {
+            width: 1,
+            height: 1,
+            ..small
+        };
         let (c1, c2, c3) = (
             input(r, 1.0, 0.0, 0.0, 0.0),
             input(g, 0.0, 1.0, 0.0, 0.0),
@@ -611,9 +672,27 @@ mod tests {
         let [t, _, _] = real_planes();
         let n = t.width * t.height;
         let (c1, c2, c3) = (
-            input(mono_like(&t, PixelBuffer::U16(vec![40000; n])), 0.5, 0.0, 0.0, 0.0),
-            input(mono_like(&t, PixelBuffer::U16(vec![40000; n])), 0.0, 1.0, 0.0, 0.0),
-            input(mono_like(&t, PixelBuffer::U16(vec![40000; n])), 0.0, 0.0, 2.0, 0.0),
+            input(
+                mono_like(&t, PixelBuffer::U16(vec![40000; n])),
+                0.5,
+                0.0,
+                0.0,
+                0.0,
+            ),
+            input(
+                mono_like(&t, PixelBuffer::U16(vec![40000; n])),
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+            ),
+            input(
+                mono_like(&t, PixelBuffer::U16(vec![40000; n])),
+                0.0,
+                0.0,
+                2.0,
+                0.0,
+            ),
         );
         let out = compose(&[&c1, &c2, &c3]);
         for px in pixels(&out).iter() {
@@ -625,15 +704,35 @@ mod tests {
     fn compose_non_square_image_keeps_pixel_positions() {
         let [t, _, _] = real_planes();
         let (c1, c2, c3) = (
-            input(small(&t, PixelBuffer::U16(vec![1, 2, 3, 4, 5, 6])), 1.0, 0.0, 0.0, 0.0),
-            input(small(&t, PixelBuffer::U16(vec![10, 20, 30, 40, 50, 60])), 0.0, 1.0, 0.0, 0.0),
-            input(small(&t, PixelBuffer::U16(vec![100, 200, 300, 400, 500, 600])), 0.0, 0.0, 1.0, 0.0),
+            input(
+                small(&t, PixelBuffer::U16(vec![1, 2, 3, 4, 5, 6])),
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            ),
+            input(
+                small(&t, PixelBuffer::U16(vec![10, 20, 30, 40, 50, 60])),
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+            ),
+            input(
+                small(&t, PixelBuffer::U16(vec![100, 200, 300, 400, 500, 600])),
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+            ),
         );
         let out = compose(&[&c1, &c2, &c3]);
         assert_eq!((out.width, out.height), (3, 2));
         assert_eq!(
             u16s(&out),
-            [1, 10, 100, 2, 20, 200, 3, 30, 300, 4, 40, 400, 5, 50, 500, 6, 60, 600]
+            [
+                1, 10, 100, 2, 20, 200, 3, 30, 300, 4, 40, 400, 5, 50, 500, 6, 60, 600
+            ]
         );
     }
 
@@ -684,13 +783,24 @@ mod tests {
             input(grey(vec![0, MAX, 0, MAX, 0, MAX]), 0.0, 0.0, 0.0, 1.0),
         );
         let out = compose_mix(&[&c1, &c2, &c3, &l], 1.0);
-        let want: Vec<u16> = [0, MAX, 0, MAX, 0, MAX].iter().flat_map(|&v| [v; 3]).collect();
+        let want: Vec<u16> = [0, MAX, 0, MAX, 0, MAX]
+            .iter()
+            .flat_map(|&v| [v; 3])
+            .collect();
         assert_eq!(u16s(&out), want.as_slice());
     }
 
     #[test]
     fn compose_missing_exposure_counts_as_zero() {
-        let bare = || Image::new(ImageType::Grayscale, fitskit::Header::new(), 1, 1, PixelBuffer::U16(vec![0]));
+        let bare = || {
+            Image::new(
+                ImageType::Grayscale,
+                fitskit::Header::new(),
+                1,
+                1,
+                PixelBuffer::U16(vec![0]),
+            )
+        };
         let mut r = bare();
         r.header.set(EXPTIME, HeaderValue::Float(5.0), None);
         let (c1, c2, c3) = (
@@ -731,7 +841,10 @@ mod tests {
             input(b, 0.0, 0.0, 1.0, 0.0),
         );
         // Summed in f64 and stored as f64: no detour through f32 (which would give 0.6000000238...).
-        assert_eq!(compose(&[&c1, &c2, &c3]).header.get_float(EXPTIME), Some(0.1 + 0.2 + 0.3));
+        assert_eq!(
+            compose(&[&c1, &c2, &c3]).header.get_float(EXPTIME),
+            Some(0.1 + 0.2 + 0.3)
+        );
     }
 
     #[test]
@@ -752,7 +865,10 @@ mod tests {
             input(g, 0.0, 1.0, 0.0, 0.0),
             input(b, 0.0, 0.0, 1.0, 0.0),
         );
-        assert_eq!(u16s(&compose_mix(&[&c1, &c2, &c3], 1.0)), u16s(&compose(&[&c1, &c2, &c3])));
+        assert_eq!(
+            u16s(&compose_mix(&[&c1, &c2, &c3], 1.0)),
+            u16s(&compose(&[&c1, &c2, &c3]))
+        );
     }
 
     #[test]
@@ -765,7 +881,11 @@ mod tests {
         let single = input(copy(&r), 1.0, 0.5, 0.0, 0.0);
         let out = compose(&[&single]);
         for (i, px) in pixels(&out).iter().enumerate() {
-            assert_eq!(*px, [pr[i], (pr[i] as f32 * 0.5).round() as u16, 0], "pixel {i}");
+            assert_eq!(
+                *px,
+                [pr[i], (pr[i] as f32 * 0.5).round() as u16, 0],
+                "pixel {i}"
+            );
         }
 
         // Five inputs (a repeat of each plane, then one more): red takes 0.25 of each, so the
@@ -783,7 +903,10 @@ mod tests {
             let eg = 0.5 * (pb[i] as f64 + pg[i] as f64);
             let eb = pr[i] as f64;
             for (got, want) in px.iter().zip([er, eg, eb]) {
-                assert!((*got as f64 - want).abs() <= 1.0, "pixel {i}: got {got}, want {want}");
+                assert!(
+                    (*got as f64 - want).abs() <= 1.0,
+                    "pixel {i}: got {got}, want {want}"
+                );
             }
         }
     }
@@ -847,7 +970,8 @@ mod tests {
     #[test]
     fn compose_drops_the_filter_keyword_and_keeps_the_rest() {
         let [mut r, g, b] = real_planes();
-        r.header.set(FILTER, HeaderValue::String("R".to_string()), None);
+        r.header
+            .set(FILTER, HeaderValue::String("R".to_string()), None);
         let had_other_keywords = r.header.keywords.iter().any(|k| k.name != FILTER);
         let (c1, c2, c3) = (
             input(r, 1.0, 0.0, 0.0, 0.0),

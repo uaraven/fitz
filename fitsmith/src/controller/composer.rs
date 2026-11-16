@@ -69,8 +69,14 @@ fn split_name(name: &str) -> (&str, &str, &str) {
     }
     let mut starts = name.char_indices().map(|(i, _)| i);
     let head_end = starts.nth(NAME_END_CHARS).unwrap_or(name.len());
-    let tail_start = starts.nth(len - 2 * NAME_END_CHARS - 1).unwrap_or(name.len());
-    (&name[..head_end], &name[head_end..tail_start], &name[tail_start..])
+    let tail_start = starts
+        .nth(len - 2 * NAME_END_CHARS - 1)
+        .unwrap_or(name.len());
+    (
+        &name[..head_end],
+        &name[head_end..tail_start],
+        &name[tail_start..],
+    )
 }
 
 /// Fill in how a slot shows its image's file name.
@@ -185,7 +191,11 @@ fn compose_preview(
     gains: &[Gains],
     luminance: f32,
 ) -> Result<image::RgbImage> {
-    let composed = compose_images(inputs.iter().map(|i| copy_of(i)).collect(), gains, luminance)?;
+    let composed = compose_images(
+        inputs.iter().map(|i| copy_of(i)).collect(),
+        gains,
+        luminance,
+    )?;
     Ok(render_preview(&composed)?.to_rgb8())
 }
 
@@ -499,12 +509,20 @@ mod tests {
         // One more character gives the middle something to hold.
         let longer = "a".repeat(2 * NAME_END_CHARS + 1);
         let (head, mid, tail) = split_name(&longer);
-        assert_eq!((head.len(), mid.len(), tail.len()), (NAME_END_CHARS, 1, NAME_END_CHARS));
+        assert_eq!(
+            (head.len(), mid.len(), tail.len()),
+            (NAME_END_CHARS, 1, NAME_END_CHARS)
+        );
     }
 
     #[test]
     fn splitting_counts_characters_not_bytes() {
-        let name = format!("{}{}{}", "α".repeat(NAME_END_CHARS), "γγ", "β".repeat(NAME_END_CHARS));
+        let name = format!(
+            "{}{}{}",
+            "α".repeat(NAME_END_CHARS),
+            "γγ",
+            "β".repeat(NAME_END_CHARS)
+        );
         let (head, mid, tail) = split_name(&name);
         assert_eq!(head, "α".repeat(NAME_END_CHARS));
         assert_eq!(mid, "γγ");
@@ -517,7 +535,10 @@ mod tests {
         let mut row = ComposerRow::default();
         set_names(&mut row, path);
         assert_eq!(row.full_name, "NGC7000_Light_300s_Ha_0042.fits");
-        assert_eq!(format!("{}{}{}", row.name_head, row.name_mid, row.name_tail), row.full_name.as_str());
+        assert_eq!(
+            format!("{}{}{}", row.name_head, row.name_mid, row.name_tail),
+            row.full_name.as_str()
+        );
     }
 
     #[test]
@@ -603,12 +624,19 @@ mod tests {
         let two = &planes[..2];
         let gains: Vec<Gains> = (0..2).map(default_gains).collect();
         let preview = compose_preview(two, &gains, 0.0).unwrap();
-        assert_eq!(preview.dimensions(), (planes[0].width as u32, planes[0].height as u32));
+        assert_eq!(
+            preview.dimensions(),
+            (planes[0].width as u32, planes[0].height as u32)
+        );
         assert!(preview.pixels().all(|p| p.0[2] == 0), "no image feeds blue");
 
         // Five images; a colour image also feeds luminance, so the mix changes the result.
         let inputs = vec![
-            planes[0].clone(), planes[1].clone(), planes[2].clone(), planes[0].clone(), planes[1].clone(),
+            planes[0].clone(),
+            planes[1].clone(),
+            planes[2].clone(),
+            planes[0].clone(),
+            planes[1].clone(),
         ];
         let mut gains: Vec<Gains> = (0..5).map(default_gains).collect();
         gains[1][3] = 0.5;
@@ -685,14 +713,20 @@ mod tests {
         let original = load_fits(&test_data("rgb.fits")).unwrap();
         assert_eq!(saved.image_type, ImageType::RGB);
         // Full size, not the preview's reduced one.
-        assert_eq!((saved.width, saved.height), (original.width, original.height));
+        assert_eq!(
+            (saved.width, saved.height),
+            (original.width, original.height)
+        );
 
         let inputs: Vec<FitsImage> = paths.iter().map(|p| load_input(p, 1).unwrap()).collect();
         let expected = compose_images(inputs, &gains, 0.75).unwrap();
         assert_eq!(saved.pixels.as_u16(), expected.pixels.as_u16());
         let without_luminance = compose_images(
-            paths.iter().map(|p| load_input(p, 1).unwrap()).collect(), &gains, 0.0,
-        ).unwrap();
+            paths.iter().map(|p| load_input(p, 1).unwrap()).collect(),
+            &gains,
+            0.0,
+        )
+        .unwrap();
         assert_ne!(saved.pixels.as_u16(), without_luminance.pixels.as_u16());
     }
 
@@ -718,7 +752,8 @@ mod tests {
         paths[1] = test_data("rgb.fits");
         let gains: Vec<Gains> = (0..3).map(default_gains).collect();
         let target = dir.path().join("out.fits");
-        let err = save_full_size(&paths, &gains, 0.0, &target, save_target(target.clone()).1).unwrap_err();
+        let err = save_full_size(&paths, &gains, 0.0, &target, save_target(target.clone()).1)
+            .unwrap_err();
         assert!(err.to_string().contains("not a monochrome"), "{err}");
         assert!(!target.exists());
     }

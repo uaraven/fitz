@@ -6,6 +6,7 @@
 
 pub use fitskit;
 
+pub mod composer;
 pub mod copy_header;
 pub mod crop;
 pub mod debayer;
@@ -15,7 +16,6 @@ pub mod resize;
 pub mod split_channel;
 pub mod stars;
 pub mod stretch;
-pub mod composer;
 
 mod convert;
 pub mod data;
