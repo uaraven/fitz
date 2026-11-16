@@ -1,16 +1,14 @@
-//! Tools ▸ RGB Compositor…: combine the 3 or 4 checked images into a colour
-//! preview with [`libfitz::composer::RgbComposer`]. The first three images feed
-//! the red, green and blue channels through per-image sliders; an optional
-//! fourth is the luminance. Dragging one image onto another swaps them.
-//!
-//! The slots, not the images, own the slider values: swapping two images keeps
-//! each slot's amounts, which is what re-routes an image to another channel.
+//! Tools ▸ RGB Compositor…: combine the checked images (two or more) into a
+//! colour preview with [`libfitz::composer::RgbComposer`]. Every image has
+//! sliders for how much of it feeds the red, green and blue channels and the
+//! luminance channel; one global slider blends the lightness of the colour
+//! result towards that luminance channel.
 //!
 //! The dialog composes only a preview: each input is loaded once, shrunk
 //! [`PREVIEW_DOWNSCALE`]-fold and auto-stretched, then kept in memory while the
-//! dialog is open so a slider move or a swap only re-runs the (cheap)
-//! composition, on a worker thread. Moves arriving while one is running are
-//! coalesced into a single follow-up run with the latest values.
+//! dialog is open so a slider move only re-runs the (cheap) composition, on a
+//! worker thread. Moves arriving while one is running are coalesced into a
+//! single follow-up run with the latest values.
 //!
 //! Save… re-loads the inputs at full size, runs them through the same stretch
 //! and composition with the current sliders, and writes the result as FITS or
@@ -43,18 +41,20 @@ const PREVIEW_DOWNSCALE: usize = 2;
 /// room is left, see [`split_name`].
 const NAME_END_CHARS: usize = 13;
 
-/// Index of the slot that is the luminance image, when a fourth was picked.
-const LUMINANCE_SLOT: usize = 3;
+/// The fewest images the compositor opens on; the menu item enforces the same.
+const MIN_INPUTS: usize = 2;
 
-/// One slot's slider values: the amount of its image that goes into red, green
-/// and blue, then (for the luminance slot) into luminance.
+/// One slot's slider values: the amount of its image that goes into red, green,
+/// blue and luminance.
 type Gains = [f32; 4];
 
-/// Initial slider values: images 0, 1, 2 feed R, G, B at full strength and the
-/// fourth is a full-strength luminance.
+/// Initial slider values: images 0, 1, 2 feed R, G, B at full strength; every
+/// other image, and every image's luminance, starts at zero.
 fn default_gains(slot: usize) -> Gains {
     let mut gains = [0.0; 4];
-    gains[slot.min(LUMINANCE_SLOT)] = 1.0;
+    if let Some(gain) = gains.iter_mut().take(3).nth(slot) {
+        *gain = 1.0;
+    }
     gains
 }
 
@@ -92,6 +92,9 @@ pub(super) struct ComposerState {
     inputs: Vec<Arc<FitsImage>>,
     /// The sliders, parallel to `paths`.
     gains: Vec<Gains>,
+    /// The global luminance slider: how far the luminance channel replaces the
+    /// colour result's lightness.
+    luminance: f32,
     /// The `[ComposerRow]` model behind the slots.
     model: Rc<VecModel<ComposerRow>>,
     /// Bumped when the dialog opens or closes, so a load or composition
@@ -158,30 +161,31 @@ fn copy_of(image: &FitsImage) -> FitsImage {
     )
 }
 
-/// Compose `images` (slot order, taken over) with the slots' `gains` into one
-/// RGB image.
-fn compose_images(images: Vec<FitsImage>, gains: &[Gains]) -> Result<FitsImage> {
+/// Compose `images` (slot order, taken over) with the slots' `gains` and the
+/// global `luminance` mix into one RGB image.
+fn compose_images(images: Vec<FitsImage>, gains: &[Gains], luminance: f32) -> Result<FitsImage> {
     let channels = images
         .into_iter()
         .zip(gains)
-        .enumerate()
-        .map(|(slot, (image, gains))| {
+        .map(|(image, gains)| {
             let mut channel = new_channel_input(image)?;
-            if slot == LUMINANCE_SLOT {
-                channel.lum = gains[3];
-            } else {
-                [channel.red, channel.green, channel.blue] = [gains[0], gains[1], gains[2]];
-            }
+            [channel.red, channel.green, channel.blue, channel.lum] = *gains;
             Ok(channel)
         })
         .collect::<Result<Vec<_>>>()?;
-    new_rgb_composer(channels.iter().collect())?.compose()
+    let mut composer = new_rgb_composer(channels.iter().collect())?;
+    composer.luminance_mix = luminance;
+    composer.compose()
 }
 
-/// Compose the prepared `inputs` (slot order) with the slots' `gains` into an
-/// RGB8 preview.
-fn compose_preview(inputs: &[Arc<FitsImage>], gains: &[Gains]) -> Result<image::RgbImage> {
-    let composed = compose_images(inputs.iter().map(|i| copy_of(i)).collect(), gains)?;
+/// Compose the prepared `inputs` (slot order) with the slots' `gains` and the
+/// global `luminance` mix into an RGB8 preview.
+fn compose_preview(
+    inputs: &[Arc<FitsImage>],
+    gains: &[Gains],
+    luminance: f32,
+) -> Result<image::RgbImage> {
+    let composed = compose_images(inputs.iter().map(|i| copy_of(i)).collect(), gains, luminance)?;
     Ok(render_preview(&composed)?.to_rgb8())
 }
 
@@ -218,6 +222,7 @@ fn save_target(path: PathBuf) -> (PathBuf, ExportFormat) {
 fn save_full_size(
     paths: &[PathBuf],
     gains: &[Gains],
+    luminance: f32,
     target: &Path,
     format: ExportFormat,
 ) -> Result<()> {
@@ -225,7 +230,7 @@ fn save_full_size(
         .par_iter()
         .map(|path| load_input(path, 1))
         .collect::<Result<Vec<_>>>()?;
-    compose_images(inputs, gains)?.export(target, format)
+    compose_images(inputs, gains, luminance)?.export(target, format)
 }
 
 /// The file extensions the dialog's format ComboBox offers, in its order.
@@ -266,9 +271,9 @@ pub fn save_composition(app: &AppWindow) {
     let job = STATE.with(|s| {
         let st = s.borrow();
         let c = &st.composer;
-        (!c.saving && !c.inputs.is_empty()).then(|| (c.paths.clone(), c.gains.clone()))
+        (!c.saving && !c.inputs.is_empty()).then(|| (c.paths.clone(), c.gains.clone(), c.luminance))
     });
-    let Some((paths, gains)) = job else {
+    let Some((paths, gains, luminance)) = job else {
         return;
     };
     let extension = save_extension(app.get_composer_save_format());
@@ -276,7 +281,7 @@ pub fn save_composition(app: &AppWindow) {
         return;
     };
     let (target, format) = save_target(chosen);
-    // The job owns its paths and gains, so the dialog can drop its own state.
+    // The job owns its paths, gains and mix, so the dialog can drop its own state.
     close_composer(app);
     set_composer_state(|c| c.saving = true);
     app.set_composer_saving(true);
@@ -284,7 +289,7 @@ pub fn save_composition(app: &AppWindow) {
 
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let result = save_full_size(&paths, &gains, &target, format);
+        let result = save_full_size(&paths, &gains, luminance, &target, format);
         let _ = weak.upgrade_in_event_loop(move |app| finish_save(&app, &target, result));
     });
 }
@@ -301,8 +306,8 @@ fn finish_save(app: &AppWindow, target: &Path, result: Result<()>) {
 }
 
 /// Open the compositor on the checked images, in list order, and load them on a
-/// worker thread. A no-op unless exactly 3 or 4 rows are checked (the menu item
-/// is disabled otherwise).
+/// worker thread. A no-op unless at least 2 rows are checked (the menu item is
+/// disabled otherwise).
 pub fn open_composer_dialog(app: &AppWindow) {
     let (generation, paths) = STATE.with(|s| {
         let mut st = s.borrow_mut();
@@ -313,12 +318,13 @@ pub fn open_composer_dialog(app: &AppWindow) {
             .filter(|(_, row)| row.checked)
             .map(|(path, _)| path.clone())
             .collect();
-        if !(3..=4).contains(&paths.len()) {
+        if paths.len() < MIN_INPUTS {
             return (None, paths);
         }
         let c = &mut st.composer;
         c.generation += 1;
         c.gains = (0..paths.len()).map(default_gains).collect();
+        c.luminance = 0.0;
         c.paths = paths.clone();
         c.inputs.clear();
         c.dirty = false;
@@ -380,14 +386,14 @@ fn start_compose(app: &AppWindow) {
             return None;
         }
         c.busy = true;
-        Some((c.generation, c.inputs.clone(), c.gains.clone()))
+        Some((c.generation, c.inputs.clone(), c.gains.clone(), c.luminance))
     });
-    let Some((generation, inputs, gains)) = job else {
+    let Some((generation, inputs, gains, luminance)) = job else {
         return;
     };
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let preview = compose_preview(&inputs, &gains);
+        let preview = compose_preview(&inputs, &gains, luminance);
         let _ = weak.upgrade_in_event_loop(move |app| apply_preview(&app, generation, preview));
     });
 }
@@ -425,29 +431,10 @@ pub fn composer_gain_changed(app: &AppWindow, slot: i32, channel: i32, value: f3
     }
 }
 
-/// Swap the images in two slots; each slot keeps its sliders.
-pub fn swap_composer_slots(app: &AppWindow, a: i32, b: i32) {
-    let (a, b) = (a as usize, b as usize);
-    let swapped = set_composer_state(|c| {
-        if a == b || a >= c.paths.len() || b >= c.paths.len() {
-            return false;
-        }
-        c.paths.swap(a, b);
-        if !c.inputs.is_empty() {
-            c.inputs.swap(a, b);
-        }
-        for slot in [a, b] {
-            // Only the names move: rewriting the sliders' initial values would
-            // mean nothing to sliders that already own theirs.
-            let mut row = c.model.row_data(slot).unwrap_or_default();
-            set_names(&mut row, &c.paths[slot]);
-            c.model.set_row_data(slot, row);
-        }
-        true
-    });
-    if swapped {
-        request_compose(app);
-    }
+/// The global luminance slider moved.
+pub fn composer_luminance_changed(app: &AppWindow, value: f32) {
+    set_composer_state(|c| c.luminance = value);
+    request_compose(app);
 }
 
 /// Close the dialog and drop its images.
@@ -459,6 +446,7 @@ pub fn close_composer(app: &AppWindow) {
         c.paths.clear();
         c.inputs.clear();
         c.gains.clear();
+        c.luminance = 0.0;
         c.dirty = false;
         c.model.set_vec(Vec::new());
     });
@@ -533,11 +521,13 @@ mod tests {
     }
 
     #[test]
-    fn default_gains_route_images_to_r_g_b_then_luminance() {
+    fn default_gains_route_the_first_three_images_to_r_g_b() {
         assert_eq!(default_gains(0), [1.0, 0.0, 0.0, 0.0]);
         assert_eq!(default_gains(1), [0.0, 1.0, 0.0, 0.0]);
         assert_eq!(default_gains(2), [0.0, 0.0, 1.0, 0.0]);
-        assert_eq!(default_gains(3), [0.0, 0.0, 0.0, 1.0]);
+        // Later images, like every luminance slider, start out feeding nothing.
+        assert_eq!(default_gains(3), [0.0; 4]);
+        assert_eq!(default_gains(10), [0.0; 4]);
     }
 
     #[test]
@@ -559,21 +549,22 @@ mod tests {
     }
 
     #[test]
-    fn composing_three_planes_gives_a_colour_preview_and_swapping_changes_it() {
+    fn composing_three_planes_gives_a_colour_preview_and_rerouting_changes_it() {
         let dir = TempDir::new().unwrap();
         let inputs = prepared(&mono_frames(&dir));
         let gains: Vec<Gains> = (0..3).map(default_gains).collect();
 
-        let preview = compose_preview(&inputs, &gains).unwrap();
+        let preview = compose_preview(&inputs, &gains, 0.0).unwrap();
         assert_eq!(
             (preview.width() as usize, preview.height() as usize),
             (inputs[0].width, inputs[0].height)
         );
 
-        // Swapping images 0 and 1 under the same gains routes them to the
-        // other channels.
-        let swapped_inputs = vec![inputs[1].clone(), inputs[0].clone(), inputs[2].clone()];
-        let swapped = compose_preview(&swapped_inputs, &gains).unwrap();
+        // Exchanging the red and green gains of images 0 and 1 routes them to
+        // the other channels.
+        let mut swapped_gains = gains.clone();
+        swapped_gains.swap(0, 1);
+        let swapped = compose_preview(&inputs, &swapped_gains, 0.0).unwrap();
         assert_ne!(preview.as_raw(), swapped.as_raw());
 
         let first = preview.pixels().next().unwrap().0;
@@ -589,14 +580,42 @@ mod tests {
         let mut inputs = prepared(&mono_frames(&dir));
         inputs.push(inputs[0].clone());
         let mut gains: Vec<Gains> = (0..4).map(default_gains).collect();
-
-        gains[3][3] = 0.0;
-        let without = compose_preview(&inputs, &gains).unwrap();
         gains[3][3] = 1.0;
-        let with = compose_preview(&inputs, &gains).unwrap();
+
+        let without = compose_preview(&inputs, &gains, 0.0).unwrap();
+        let with = compose_preview(&inputs, &gains, 1.0).unwrap();
 
         assert_eq!(without.dimensions(), with.dimensions());
         assert_ne!(without.as_raw(), with.as_raw());
+
+        // With no image feeding luminance the global slider has nothing to blend.
+        gains[3][3] = 0.0;
+        let ignored = compose_preview(&inputs, &gains, 1.0).unwrap();
+        assert_eq!(without.as_raw(), ignored.as_raw());
+    }
+
+    #[test]
+    fn any_image_can_feed_luminance_and_any_number_of_images_compose() {
+        let dir = TempDir::new().unwrap();
+        let planes = prepared(&mono_frames(&dir));
+
+        // Two images: the first is red, the second green.
+        let two = &planes[..2];
+        let gains: Vec<Gains> = (0..2).map(default_gains).collect();
+        let preview = compose_preview(two, &gains, 0.0).unwrap();
+        assert_eq!(preview.dimensions(), (planes[0].width as u32, planes[0].height as u32));
+        assert!(preview.pixels().all(|p| p.0[2] == 0), "no image feeds blue");
+
+        // Five images; a colour image also feeds luminance, so the mix changes the result.
+        let inputs = vec![
+            planes[0].clone(), planes[1].clone(), planes[2].clone(), planes[0].clone(), planes[1].clone(),
+        ];
+        let mut gains: Vec<Gains> = (0..5).map(default_gains).collect();
+        gains[1][3] = 0.5;
+        gains[4][3] = 0.5;
+        let flat = compose_preview(&inputs, &gains, 0.0).unwrap();
+        let blended = compose_preview(&inputs, &gains, 1.0).unwrap();
+        assert_ne!(flat.as_raw(), blended.as_raw());
     }
 
     #[test]
@@ -606,7 +625,7 @@ mod tests {
         inputs[2] = Arc::new(inputs[2].downscale(2));
         let gains: Vec<Gains> = (0..3).map(default_gains).collect();
 
-        let err = compose_preview(&inputs, &gains).unwrap_err();
+        let err = compose_preview(&inputs, &gains, 0.0).unwrap_err();
         assert!(err.to_string().contains("same size"), "{err}");
     }
 
@@ -657,7 +676,10 @@ mod tests {
         gains[2][0] = 0.25;
         let target = dir.path().join("out.fits");
         let (target, format) = save_target(target);
-        save_full_size(&paths, &gains, &target, format).unwrap();
+        // Part of the first image also feeds luminance, and the global slider
+        // is up, so the saved file has to carry the luminance mix too.
+        gains[0][3] = 0.5;
+        save_full_size(&paths, &gains, 0.75, &target, format).unwrap();
 
         let saved = load_fits(&target).unwrap();
         let original = load_fits(&test_data("rgb.fits")).unwrap();
@@ -666,8 +688,12 @@ mod tests {
         assert_eq!((saved.width, saved.height), (original.width, original.height));
 
         let inputs: Vec<FitsImage> = paths.iter().map(|p| load_input(p, 1).unwrap()).collect();
-        let expected = compose_images(inputs, &gains).unwrap();
+        let expected = compose_images(inputs, &gains, 0.75).unwrap();
         assert_eq!(saved.pixels.as_u16(), expected.pixels.as_u16());
+        let without_luminance = compose_images(
+            paths.iter().map(|p| load_input(p, 1).unwrap()).collect(), &gains, 0.0,
+        ).unwrap();
+        assert_ne!(saved.pixels.as_u16(), without_luminance.pixels.as_u16());
     }
 
     #[test]
@@ -676,7 +702,7 @@ mod tests {
         let paths = mono_frames(&dir);
         let gains: Vec<Gains> = (0..3).map(default_gains).collect();
         let (target, format) = save_target(dir.path().join("out.tiff"));
-        save_full_size(&paths, &gains, &target, format).unwrap();
+        save_full_size(&paths, &gains, 0.0, &target, format).unwrap();
 
         let bytes = std::fs::read(&target).unwrap();
         let original = load_fits(&test_data("rgb.fits")).unwrap();
@@ -692,7 +718,7 @@ mod tests {
         paths[1] = test_data("rgb.fits");
         let gains: Vec<Gains> = (0..3).map(default_gains).collect();
         let target = dir.path().join("out.fits");
-        let err = save_full_size(&paths, &gains, &target, save_target(target.clone()).1).unwrap_err();
+        let err = save_full_size(&paths, &gains, 0.0, &target, save_target(target.clone()).1).unwrap_err();
         assert!(err.to_string().contains("not a monochrome"), "{err}");
         assert!(!target.exists());
     }

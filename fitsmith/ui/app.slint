@@ -250,9 +250,10 @@ export component AppWindow inherits Window {
     in property <[image]> aberration-tiles;
     in property <length> aberration-tile-size;
 
-    // Tools ▸ RGB Compositor…: combine the 3 or 4 checked images into a colour
+    // Tools ▸ RGB Compositor…: combine the checked images into a colour
     // preview. Rust loads the images, owns the slider values (reported through
-    // `composer-gain-changed`) and fills `composer-model` / `composer-preview`.
+    // `composer-gain-changed` and `composer-luminance-changed`) and fills
+    // `composer-model` / `composer-preview`.
     in-out property <bool> show-composer: false;
     in property <[ComposerRow]> composer-model;
     in property <image> composer-preview;
@@ -355,9 +356,9 @@ export component AppWindow inherits Window {
     // select turns the flagged frames into the file list's checkbox selection
     // and closes; close drops the dialog's measured frames.
     callback open-composer-dialog();
-    // (slot, channel 0=R 1=G 2=B 3=L, value) and (slot, slot).
+    // (slot, channel 0=R 1=G 2=B 3=L, value) and the global luminance mix.
     callback composer-gain-changed(int, int, float);
-    callback composer-swap(int, int);
+    callback composer-luminance-changed(float);
     callback composer-save();
     callback close-composer();
     callback open-bad-frames-dialog();
@@ -633,8 +634,8 @@ export component AppWindow inherits Window {
             MenuSeparator { }
             MenuItem {
                 title: "RGB Compositor…";
-                // Three images feed R/G/B; an optional fourth is the luminance.
-                enabled: root.checked-file-count == 3 || root.checked-file-count == 4;
+                // Combining needs at least two images; there is no upper limit.
+                enabled: root.checked-file-count >= 2;
                 activated => {
                     root.open-composer-dialog();
                 }
@@ -1128,8 +1129,8 @@ export component AppWindow inherits Window {
         gain-changed(slot, channel, value) => {
             root.composer-gain-changed(slot, channel, value);
         }
-        swap(a, b) => {
-            root.composer-swap(a, b);
+        luminance-changed(value) => {
+            root.composer-luminance-changed(value);
         }
         save => {
             root.composer-save();

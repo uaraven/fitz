@@ -18,7 +18,7 @@
 //! - [`batch`] — the worker-thread skeleton the batches below share (progress overlay,
 //!   cancel between files, per-file error badges);
 //! - [`convert`] — the compress / decompress batch operations;
-//! - [`composer`] — Tools ▸ RGB Compositor…: mix 3–4 checked images into a colour preview;
+//! - [`composer`] — Tools ▸ RGB Compositor…: mix two or more checked images into a colour preview;
 //! - [`crop`] — Tools ▸ Crop: the crop rectangle on the preview and the batch that applies it;
 //! - [`export`] — the export dialog and its batch;
 //! - [`analytics`] — the analytics batch and its time-series chart;
