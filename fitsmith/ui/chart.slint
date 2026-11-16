@@ -8,16 +8,13 @@ import { AppPalette } from "palette.slint";
 // per-channel one) without repeating the markup — unlike the line itself,
 // Slint has no trouble repeating a plain component.
 //
-// Hover state bubbles up to `AnalyticsChart` via `point-hover` rather than
-// rendering the tooltip here: this component lives inside the chart's
-// Flickable, which clips its content to the scrollable viewport, so a
-// tooltip drawn as a child here would be cut off at the plot's edges. The
-// chart renders the actual tooltip as an overlay above the Flickable.
+// Each mark carries its own `Tooltip` (time over value). A tooltip is a popup
+// overlay, so the Flickable's clipped viewport doesn't cut it off at the
+// plot's edges.
 component ChannelMarks inherits Rectangle {
     in property <[ChartPoint]> points;
     in property <color> mark-color;
     in property <color> hover-color;
-    callback point-hover(ChartPoint, bool);
 
     background: transparent;
 
@@ -29,10 +26,8 @@ component ChannelMarks inherits Rectangle {
         border-radius: 4.5px;
         background: touch.has-hover ? root.hover-color : root.mark-color;
         touch := TouchArea { }
-
-        out property <bool> hovering: touch.has-hover;
-        changed hovering => {
-            root.point-hover(point, self.hovering);
+        Tooltip {
+            text: @markdown("**\{point.time-label}**\n\n\{point.value-label}");
         }
     }
 }
@@ -89,11 +84,6 @@ export component AnalyticsChart inherits Rectangle {
     property <color> mark-hover: root.dark-theme ? #ffffff : #063d6e;
     property <color> label-color: root.dark-theme ? #b0b0b0 : #555555;
     property <color> stat-line-color: root.dark-theme ? #857530A0 : #104040A0;
-
-    // The currently-hovered point (if any), reported by whichever channel's
-    // `ChannelMarks` fires `point-hover`. Backs the tooltip overlay below.
-    property <bool> tip-visible: false;
-    property <ChartPoint> tip-point;
 
     // Fixed gutters for the axis labels; the plot fills the rest.
     property <length> y-axis-w: 64px;
@@ -268,8 +258,7 @@ export component AnalyticsChart inherits Rectangle {
             stroke-line-join: round;
         }
 
-        // Point marks, one instance per channel slot. Hover tooltips are
-        // rendered by `root` below, outside the Flickable's clipped viewport.
+        // Point marks, one instance per channel slot.
         ChannelMarks {
             x: 0;
             y: 0;
@@ -278,12 +267,6 @@ export component AnalyticsChart inherits Rectangle {
             points: root.points-r;
             mark-color: root.color-r;
             hover-color: root.mark-hover;
-            point-hover(point, hovering) => {
-                root.tip-visible = hovering;
-                if hovering {
-                    root.tip-point = point;
-                }
-            }
         }
         if root.label-g != "": ChannelMarks {
             x: 0;
@@ -293,12 +276,6 @@ export component AnalyticsChart inherits Rectangle {
             points: root.points-g;
             mark-color: root.color-g;
             hover-color: root.mark-hover;
-            point-hover(point, hovering) => {
-                root.tip-visible = hovering;
-                if hovering {
-                    root.tip-point = point;
-                }
-            }
         }
         if root.label-b != "": ChannelMarks {
             x: 0;
@@ -308,12 +285,6 @@ export component AnalyticsChart inherits Rectangle {
             points: root.points-b;
             mark-color: root.color-b;
             hover-color: root.mark-hover;
-            point-hover(point, hovering) => {
-                root.tip-visible = hovering;
-                if hovering {
-                    root.tip-point = point;
-                }
-            }
         }
     }
 
@@ -322,41 +293,5 @@ export component AnalyticsChart inherits Rectangle {
         y: root.title-h + (root.area-h - self.height) / 2;
         text: "No data to plot";
         color: root.label-color;
-    }
-
-    // Hover tooltip overlay, drawn above the Flickable rather than inside it
-    // so it can extend past the plot's edges instead of being clipped by the
-    // Flickable's viewport. Position tracks the hovered point's normalized
-    // coordinates, translated into the Flickable's current scroll offset.
-    if root.tip-visible: Rectangle {
-        x: clamp(
-            flick.x + flick.content-x + root.tip-point.x * root.content-w - tip-layout.preferred-width / 2,
-            0px,
-            root.width - tip-layout.preferred-width);
-        y: root.tip-point.y * root.area-h < 56px
-            ? flick.y + root.tip-point.y * root.area-h + 8.5px
-            : flick.y + root.tip-point.y * root.area-h - tip-layout.preferred-height - 8.5px;
-        width: tip-layout.preferred-width;
-        height: tip-layout.preferred-height;
-        background: AppPalette.tooltip-bg;
-        border-width: 1px;
-        border-color: AppPalette.tooltip-border;
-        border-radius: 4px;
-        tip-layout := VerticalLayout {
-            padding: 7px;
-            spacing: 2px;
-            Text {
-                text: root.tip-point.time-label;
-                color: AppPalette.tooltip-fg;
-                font-size: 11px;
-                font-weight: 700;
-            }
-
-            Text {
-                text: root.tip-point.value-label;
-                color: AppPalette.tooltip-fg;
-                font-size: 11px;
-            }
-        }
     }
 }

@@ -1,0 +1,40 @@
+import { Palette } from "std-widgets.slint";
+
+// Content for a `Tooltip` whose text can be long (a file path, an error). The
+// built-in text tooltip never wraps, so a long path would run off the window;
+// this sizes the tip snugly around short text and wraps at `wrap-at`.
+//
+// A custom-content `Tooltip` is sized from its child's *preferred* size, which
+// for wrapping text is the unwrapped one — hence the explicit
+// `preferred-width`/`preferred-height` below. `text` breaks anywhere (a path has
+// no spaces); the optional `detail` is a second, word-wrapped paragraph (an
+// error message). The padding matches the built-in text tooltip.
+export component TipContent inherits Rectangle {
+    in property <string> text;
+    in property <string> detail;
+    in property <length> wrap-at: 360px;
+
+    preferred-width: min(root.wrap-at, max(body.preferred-width, extra.preferred-width) + 18px);
+    preferred-height: col.preferred-height;
+
+    col := VerticalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        // An empty `detail` would otherwise still claim a line and a gap.
+        spacing: root.detail == "" ? 0px : 4px;
+        body := Text {
+            text: root.text;
+            wrap: char-wrap;
+            color: Palette.foreground;
+        }
+        extra := Text {
+            text: root.detail;
+            wrap: word-wrap;
+            color: Palette.foreground;
+            min-height: root.detail == "" ? 0px : self.preferred-height;
+            max-height: root.detail == "" ? 0px : 10000px;
+        }
+    }
+}
