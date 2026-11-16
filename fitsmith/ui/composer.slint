@@ -1,6 +1,7 @@
 import { Button, ComboBox, Slider } from "std-widgets.slint";
 import { DialogCard } from "dialog.slint";
 import { AppPalette } from "palette.slint";
+import { VScrollArea } from "scrolling.slint";
 import { ComposerRow } from "types.slint";
 import { TipContent } from "tooltip.slint";
 
@@ -47,26 +48,16 @@ component NamePart inherits Text {
     vertical-alignment: center;
 }
 
-// One input slot: its image name on a draggable handle over the sliders that
-// say how much the image feeds each output channel. The slot (not the image)
-// owns the sliders, so dropping another image here keeps these amounts.
+// One input slot: its image name over the four sliders that say how much the
+// image feeds the output red, green and blue and the luminance channel.
 component ComposerSlot inherits Rectangle {
     in property <ComposerRow> slot;
-    // Slot 3 is the luminance image; the first three are R/G/B inputs.
-    in property <bool> luminance;
-    // This slot is the one being dragged / the one it would swap with.
-    in property <bool> dragging;
-    in property <bool> drop-target;
-    callback drag-started();
-    callback drag-moved(length);
-    callback drag-ended();
     callback gain-changed(int, float);
 
     background: AppPalette.panel-bg;
     border-radius: 6px;
     border-width: 2px;
-    border-color: root.drop-target ? AppPalette.accent : AppPalette.panel-border;
-    opacity: root.dragging ? 0.55 : 1.0;
+    border-color: AppPalette.panel-border;
 
     VerticalLayout {
         padding: 8px;
@@ -75,51 +66,29 @@ component ComposerSlot inherits Rectangle {
         Rectangle {
             height: 24px;
             clip: true;
-            background: handle.has-hover || handle.pressed ? AppPalette.handle-active : AppPalette.header-bg;
+            background: AppPalette.header-bg;
             border-radius: 4px;
+            // The name's start and end are fixed and its middle takes
+            // whatever room is left, elided only when it doesn't fit.
             HorizontalLayout {
                 padding-left: 8px;
                 padding-right: 8px;
-                spacing: 8px;
-                Text {
-                    text: "⠿";
-                    color: AppPalette.muted;
-                    vertical-alignment: center;
+                spacing: 0px;
+                NamePart {
+                    text: root.slot.name-head;
                 }
-                // The name's start and end are fixed and its middle takes
-                // whatever room is left, elided only when it doesn't fit.
-                HorizontalLayout {
+                NamePart {
+                    text: root.slot.name-mid;
                     horizontal-stretch: 1;
-                    spacing: 0px;
-                    NamePart {
-                        text: (root.luminance ? "L  " : "") + root.slot.name-head;
-                    }
-                    NamePart {
-                        text: root.slot.name-mid;
-                        horizontal-stretch: 1;
-                        overflow: elide;
-                    }
-                    NamePart {
-                        text: root.slot.name-tail;
-                    }
+                    overflow: elide;
+                }
+                NamePart {
+                    text: root.slot.name-tail;
                 }
             }
-            // Hovering the handle shows the image's full file name, which the
-            // handle itself may have had to elide.
-            handle := TouchArea {
-                mouse-cursor: root.dragging ? MouseCursor.grabbing : MouseCursor.grab;
-                pointer-event(event) => {
-                    if event.button == PointerEventButton.left {
-                        if event.kind == PointerEventKind.down {
-                            root.drag-started();
-                        } else if event.kind == PointerEventKind.up {
-                            root.drag-ended();
-                        }
-                    }
-                }
-                moved => {
-                    root.drag-moved(self.mouse-y - self.pressed-y);
-                }
+            // Hovering the name shows the image's full file name, which the
+            // slot itself may have had to elide.
+            TouchArea {
                 Tooltip {
                     TipContent {
                         text: root.slot.full-name;
@@ -128,7 +97,7 @@ component ComposerSlot inherits Rectangle {
             }
         }
 
-        if !root.luminance: GainSlider {
+        GainSlider {
             label: "R";
             tint: #e06060;
             initial: root.slot.red;
@@ -136,7 +105,7 @@ component ComposerSlot inherits Rectangle {
                 root.gain-changed(0, value);
             }
         }
-        if !root.luminance: GainSlider {
+        GainSlider {
             label: "G";
             tint: #50b050;
             initial: root.slot.green;
@@ -144,7 +113,7 @@ component ComposerSlot inherits Rectangle {
                 root.gain-changed(1, value);
             }
         }
-        if !root.luminance: GainSlider {
+        GainSlider {
             label: "B";
             tint: #6090e0;
             initial: root.slot.blue;
@@ -152,7 +121,7 @@ component ComposerSlot inherits Rectangle {
                 root.gain-changed(2, value);
             }
         }
-        if root.luminance: GainSlider {
+        GainSlider {
             label: "L";
             initial: root.slot.lum;
             changed(value) => {
@@ -162,13 +131,14 @@ component ComposerSlot inherits Rectangle {
     }
 }
 
-// The Tools ▸ RGB Compositor… modal: the 3 or 4 checked images on the left —
-// the first three feed R/G/B through their sliders, an optional fourth is the
-// luminance — and a live preview of the composition on the right, with a
-// draggable splitter between the two. Drag one image's handle onto another to
-// swap them; hover it for the image's full file name. Save… writes the
-// composition at full size and closes the dialog. Purely presentational: Rust loads
-// the images, holds the slider values and renders `preview`.
+// The Tools ▸ RGB Compositor… modal: the checked images on the left, each with
+// sliders for how much it feeds red, green, blue and luminance, and a live
+// preview of the composition on the right, with a draggable splitter between
+// the two. One global slider blends the lightness of the colour result towards
+// the composed luminance channel; hover an image's name for its full file
+// name. Save… writes the composition at full size and closes the dialog.
+// Purely presentational: Rust loads the images, holds the slider values and
+// renders `preview`.
 export component ComposerDialog inherits DialogCard {
     in property <[ComposerRow]> rows;
     in property <image> preview;
@@ -179,7 +149,7 @@ export component ComposerDialog inherits DialogCard {
     // The file type Save… asks for: 0 = .fits, 1 = .fit, 2 = .tiff.
     in-out property <int> save-format;
     callback gain-changed(int, int, float);
-    callback swap(int, int);
+    callback luminance-changed(float);
     callback save();
     callback close();
 
@@ -187,13 +157,10 @@ export component ComposerDialog inherits DialogCard {
     min-card-width: 640px;
     min-card-height: 420px;
 
-    // Every slot is as tall as one with three sliders, so slots sit at fixed
-    // offsets and a drag finds the slot under the pointer from its distance.
-    property <length> slot-height: 120px;
+    // Every slot is the same height, so slots sit at fixed offsets in the
+    // scrolling list.
+    property <length> slot-height: 150px;
     property <length> slot-gap: 8px;
-    // The slot being dragged and the one it is currently over (-1: no drag).
-    property <int> drag-from: -1;
-    property <int> drag-to: -1;
     // Width of the sources pane, set by dragging the splitter; the split clamps
     // it to what fits.
     property <length> sources-width: 280px;
@@ -220,41 +187,21 @@ export component ComposerDialog inherits DialogCard {
             property <length> max-sources: max(self.min-sources, self.width - self.handle-w - self.min-preview);
             property <length> sources-w: clamp(root.sources-width, self.min-sources, self.max-sources);
 
-            // Left pane: one slot per image.
-            VerticalLayout {
+            // Left pane: one slot per image, scrolling when they don't all fit.
+            sources := VScrollArea {
                 x: 0;
                 y: 0;
                 width: split.sources-w;
                 height: parent.height;
-                alignment: start;
-                Rectangle {
-                    height: root.rows.length * (root.slot-height + root.slot-gap);
-                    for row[i] in root.rows: ComposerSlot {
-                        y: i * (root.slot-height + root.slot-gap);
-                        height: root.slot-height;
-                        slot: row;
-                        luminance: i == 3;
-                        dragging: root.drag-from == i;
-                        drop-target: root.drag-from >= 0 && root.drag-to == i && root.drag-to != root.drag-from;
-                        drag-started => {
-                            root.drag-from = i;
-                            root.drag-to = i;
-                        }
-                        drag-moved(dy) => {
-                            root.drag-to = clamp(
-                                i + round(dy / (root.slot-height + root.slot-gap)),
-                                0, root.rows.length - 1);
-                        }
-                        drag-ended => {
-                            if root.drag-from >= 0 && root.drag-to != root.drag-from {
-                                root.swap(root.drag-from, root.drag-to);
-                            }
-                            root.drag-from = -1;
-                            root.drag-to = -1;
-                        }
-                        gain-changed(channel, value) => {
-                            root.gain-changed(i, channel, value);
-                        }
+                content-height: root.rows.length * (root.slot-height + root.slot-gap);
+                for row[i] in root.rows: ComposerSlot {
+                    y: i * (root.slot-height + root.slot-gap);
+                    // Leave the scrollbar's strip free.
+                    width: sources.content-width - 10px;
+                    height: root.slot-height;
+                    slot: row;
+                    gain-changed(channel, value) => {
+                        root.gain-changed(i, channel, value);
                     }
                 }
             }
@@ -315,7 +262,31 @@ export component ComposerDialog inherits DialogCard {
         }
 
         HorizontalLayout {
-            alignment: end;
+            Rectangle {
+                width: 110px;
+                            Text {
+                                text: "Luminance blend";
+                                color: AppPalette.body;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                Tooltip {
+                                    TipContent {
+                                        text: "0 keeps the colour image's lightness, 1 replaces it with the luminance channel made from the L sliders";
+                                    }
+                                }
+                            }
+                        }
+                        GainSlider {
+                            horizontal-stretch: 1;
+                            label: "";
+                            // The dialog is rebuilt on every opening, and Rust starts the
+                            // mix at 0 each time.
+                            initial: 0.0;
+                            changed(value) => {
+                                root.luminance-changed(value);
+                            }
+                        }
             spacing: 8px;
             ComboBox {
                 model: ["FITS (.fits)", "FITS (.fit)", "TIFF (.tiff)"];

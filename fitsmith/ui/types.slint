@@ -112,9 +112,9 @@ export struct SessionRow {
 }
 
 // One input slot of the RGB Compositor: the image's display name plus the
-// slider values it starts with (the amount it feeds into R, G and B, and — for
-// the fourth slot — into luminance). The sliders own their value once touched
-// and report changes back to Rust, so these are only the initial positions.
+// slider values it starts with (the amount it feeds into R, G, B and
+// luminance). The sliders own their value once touched and report changes
+// back to Rust, so these are only the initial positions.
 export struct ComposerRow {
     // The file name cut into its first characters, a middle and its last
     // characters. The slot shows all three end to end, eliding only the middle
