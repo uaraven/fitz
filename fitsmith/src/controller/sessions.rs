@@ -25,12 +25,16 @@ use super::{STATE, operation_targets};
 use crate::{AppWindow, SessionRow};
 use libfitz::files::common_dir;
 
+/// The label of the line that opens the all-sessions filter totals.
+const ALL_SESSIONS: &str = "All sessions";
+
 /// Flatten `summary` depth-first into display lines: each session (depth 0),
 /// then its frame types (1), then each type's filters (2) — one line per
 /// exposure time, longest first, counted as `"12x300s"`. With `calibration`
 /// off only the light frames are listed, and a session line counts just those.
 /// A session's time is its light integration; every other line shows its own
-/// total.
+/// total. When several sessions have lights, a closing "All sessions" tree
+/// (lights only, whatever `calibration` says) sums each filter over them.
 fn flatten(summary: &Summary, calibration: bool) -> Vec<SessionRow> {
     let line = |depth: i32, label: &str, count: String, integration: f64| SessionRow {
         depth,
@@ -70,6 +74,28 @@ fn flatten(summary: &Summary, calibration: bool) -> Vec<SessionRow> {
                     ));
                 }
             }
+        }
+    }
+    if !summary.filter_totals.is_empty() {
+        rows.push(row(
+            0,
+            ALL_SESSIONS.to_string(),
+            summary.light_count(),
+            summary.integration,
+        ));
+        rows.push(row(
+            1,
+            FrameType::Light.label().to_string(),
+            summary.light_count(),
+            summary.integration,
+        ));
+        for total in &summary.filter_totals {
+            rows.push(row(
+                2,
+                total.label().to_string(),
+                total.count,
+                total.integration,
+            ));
         }
     }
     rows
@@ -241,10 +267,21 @@ mod tests {
         row.count.split([' ', 'x']).next().unwrap().parse().unwrap()
     }
 
+    /// The flattened rows split into the per-session tree and the closing
+    /// all-sessions totals (empty when there are none).
+    fn split_totals(mut rows: Vec<SessionRow>) -> (Vec<SessionRow>, Vec<SessionRow>) {
+        let at = rows
+            .iter()
+            .position(|r| r.label == ALL_SESSIONS)
+            .unwrap_or(rows.len());
+        let totals = rows.split_off(at);
+        (rows, totals)
+    }
+
     #[test]
     fn real_frames_flatten_into_a_session_type_filter_tree() {
         let summary = lights_and_dark();
-        let rows = flatten(&summary, true);
+        let (rows, _) = split_totals(flatten(&summary, true));
 
         // Depths only ever step down by one, starting at a session.
         assert_eq!(rows[0].depth, 0);
@@ -271,7 +308,7 @@ mod tests {
     #[test]
     fn hiding_calibration_lists_only_the_light_frames() {
         let summary = lights_and_dark();
-        let rows = flatten(&summary, false);
+        let (rows, _) = split_totals(flatten(&summary, false));
 
         // No calibration type and none of its filters — the RAW dark's
         // "(no filter)" line goes with it.
@@ -298,6 +335,45 @@ mod tests {
                 .time,
             "0h 03m 00s"
         );
+    }
+
+    #[test]
+    fn lights_on_several_nights_are_summed_per_filter_at_the_end() {
+        let summary = lights_and_dark();
+        assert!(summary.sessions.len() > 1);
+
+        for calibration in [true, false] {
+            let (_, totals) = split_totals(flatten(&summary, calibration));
+
+            let depths: Vec<i32> = totals.iter().map(|r| r.depth).collect();
+            assert_eq!(depths[..2], [0, 1]);
+            assert!(depths[2..].iter().all(|&d| d == 2));
+            assert_eq!(totals[0].count, "2 frames");
+            assert_eq!(totals[0].time, "0h 08m 00s"); // 180 s + 300 s
+            assert_eq!(totals[1].label, "Lights");
+            let filters: Vec<(&str, &str)> = totals[2..]
+                .iter()
+                .map(|r| (r.label.as_str(), r.time.as_str()))
+                .collect();
+            assert_eq!(
+                filters,
+                [
+                    ("HaOIII 7nm", "0h 05m 00s"),
+                    ("Narrowband 7nm", "0h 03m 00s")
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_night_has_no_totals_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.fit");
+        std::fs::copy(test_data("uncompressed.fit"), &file).unwrap();
+
+        let rows = flatten(&summarize_files(&[file]), true);
+
+        assert!(rows.iter().all(|r| r.label != ALL_SESSIONS));
     }
 
     #[test]

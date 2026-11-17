@@ -40,6 +40,29 @@ impl Row {
     }
 }
 
+/// The light frames of every session summed per filter, laid out like one
+/// session's rows. Empty when [`Summary::filter_totals`] is.
+fn total_rows(summary: &Summary) -> Vec<Row> {
+    if summary.filter_totals.is_empty() {
+        return Vec::new();
+    }
+    std::iter::once(Row {
+        depth: 0,
+        label: FrameType::Light.label().to_string(),
+        count: summary.light_count(),
+        unit: frames_unit(summary.light_count()).to_string(),
+        integration: summary.integration,
+    })
+    .chain(summary.filter_totals.iter().map(|t| Row {
+        depth: 1,
+        label: t.label().to_string(),
+        count: t.count,
+        unit: frames_unit(t.count).to_string(),
+        integration: t.integration,
+    }))
+    .collect()
+}
+
 /// The light frames of `session` — one row for all of them, then one per filter
 /// and exposure time. Calibration frames are only counted (see
 /// [`frame_counts`]), not broken down.
@@ -83,8 +106,8 @@ pub fn totals(summary: &Summary) -> String {
 
 /// The report for one scanned directory: each session (a heading with its light
 /// integration, the frame counts by type, then the light frames by filter with
-/// columns aligned across the whole report) and a closing total over the light
-/// frames.
+/// columns aligned across the whole report), the light frames per filter summed
+/// over all sessions, and a closing total over the light frames.
 pub fn format_summary(summary: &Summary) -> String {
     let mut out = String::new();
 
@@ -93,7 +116,8 @@ pub fn format_summary(summary: &Summary) -> String {
         .iter()
         .map(|s| (s, session_rows(s)))
         .collect();
-    let rows = || sessions.iter().flat_map(|(_, rows)| rows);
+    let by_filter = total_rows(summary);
+    let rows = || sessions.iter().flat_map(|(_, rows)| rows).chain(&by_filter);
 
     // Column widths shared by every row of the report. Widths are in characters
     // (what `{:<n}` pads to), not bytes: a filter name from a header may well be
@@ -114,14 +138,7 @@ pub fn format_summary(summary: &Summary) -> String {
         .max()
         .unwrap_or(0);
 
-    for (session, rows) in &sessions {
-        let _ = writeln!(
-            out,
-            "Session {} - {} light integration",
-            session.label(),
-            format_duration(session.integration)
-        );
-        let _ = writeln!(out, "    {}", frame_counts(session));
+    let write_rows = |out: &mut String, rows: &[Row]| {
         for row in rows {
             let _ = writeln!(
                 out,
@@ -138,6 +155,25 @@ pub fn format_summary(summary: &Summary) -> String {
                 time = time_width,
             );
         }
+    };
+
+    for (session, rows) in &sessions {
+        let _ = writeln!(
+            out,
+            "Session {} - {} light integration",
+            session.label(),
+            format_duration(session.integration)
+        );
+        let _ = writeln!(out, "    {}", frame_counts(session));
+        write_rows(&mut out, rows);
+    }
+    if !by_filter.is_empty() {
+        let _ = writeln!(
+            out,
+            "All sessions - {} light integration",
+            format_duration(summary.integration)
+        );
+        write_rows(&mut out, &by_filter);
     }
 
     let _ = writeln!(out, "Total: {}", totals(summary));
@@ -231,19 +267,27 @@ mod tests {
         let expected = "\
 Session 2026-10-08 - 5h 49m 00s light integration
     86 light frames, 20 dark frames, 30 flat frames
-  Lights  86 frames  5h 49m 00s
-    R      9x120s    0h 18m 00s
-    G      9x120s    0h 18m 00s
-    B      9x120s    0h 18m 00s
-    Ha    18x300s    1h 30m 00s
-    SII   22x300s    1h 50m 00s
-    OIII  19x300s    1h 35m 00s
+  Lights   86 frames   5h 49m 00s
+    R       9x120s     0h 18m 00s
+    G       9x120s     0h 18m 00s
+    B       9x120s     0h 18m 00s
+    Ha     18x300s     1h 30m 00s
+    SII    22x300s     1h 50m 00s
+    OIII   19x300s     1h 35m 00s
 Session 2026-10-09 - 7h 40m 00s light integration
     92 light frames
-  Lights  92 frames  7h 40m 00s
-    Ha    32x300s    2h 40m 00s
-    SII   32x300s    2h 40m 00s
-    OIII  28x300s    2h 20m 00s
+  Lights   92 frames   7h 40m 00s
+    Ha     32x300s     2h 40m 00s
+    SII    32x300s     2h 40m 00s
+    OIII   28x300s     2h 20m 00s
+All sessions - 13h 29m 00s light integration
+  Lights  178 frames  13h 29m 00s
+    R       9 frames   0h 18m 00s
+    G       9 frames   0h 18m 00s
+    B       9 frames   0h 18m 00s
+    Ha     50 frames   4h 10m 00s
+    SII    54 frames   4h 30m 00s
+    OIII   47 frames   3h 55m 00s
 Total: 2 sessions, 178 light frames, total integration 13h 29m 00s
 ";
         assert_eq!(report, expected);
@@ -341,6 +385,56 @@ Session 2026-10-08 - 1h 32m 02s light integration
 Total: 1 session, 47 light frames, total integration 1h 32m 02s
 ";
         assert_eq!(report, expected);
+    }
+
+    #[test]
+    fn filter_totals_sum_each_filter_over_the_sessions_that_have_lights() {
+        let night = |day, filters| night_session(day, vec![type_group(FrameType::Light, filters)]);
+        let summary = summary_of(vec![
+            night(
+                "2026-10-08",
+                vec![group(Some("Ha"), 2, 300.0), group(None, 1, 60.0)],
+            ),
+            night(
+                "2026-10-09",
+                vec![group(Some("L"), 3, 120.0), group(Some("Ha"), 4, 300.0)],
+            ),
+            // Calibration-only nights add nothing.
+            night_session(
+                "2026-10-10",
+                vec![type_group(
+                    FrameType::Dark,
+                    vec![group(Some("Ha"), 9, 300.0)],
+                )],
+            ),
+        ]);
+
+        let totals: Vec<(&str, usize, f64)> = summary
+            .filter_totals
+            .iter()
+            .map(|t| (t.label(), t.count, t.integration))
+            .collect();
+
+        assert_eq!(
+            totals,
+            [("L", 3, 360.0), ("Ha", 6, 1800.0), ("(no filter)", 1, 60.0)]
+        );
+    }
+
+    #[test]
+    fn a_single_light_session_has_no_filter_totals() {
+        let one = night_session(
+            "2026-10-08",
+            vec![type_group(
+                FrameType::Light,
+                vec![group(Some("Ha"), 2, 300.0)],
+            )],
+        );
+        let darks = night_session(
+            "2026-10-09",
+            vec![type_group(FrameType::Dark, vec![group(None, 2, 300.0)])],
+        );
+        assert!(summary_of(vec![one, darks]).filter_totals.is_empty());
     }
 
     #[test]
