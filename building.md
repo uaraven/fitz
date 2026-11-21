@@ -39,25 +39,37 @@ To build the whole workspace (including FitSmith):
   sudo pacman -S fontconfig
   ```
 
-- **Windows** — no extra packages; build with the MSVC toolchain (install the "Desktop
-  development with C++" workload from the Visual Studio Build Tools).
+- **Windows** — build with the MSVC toolchain (install the "Desktop development with C++"
+  workload from the Visual Studio Build Tools) **and** LLVM/Clang installed to the default
+  `C:\Program Files\LLVM`. The `rsraw-sys` crate refuses to compile LibRaw with an MSVC-like
+  compiler (`cl.exe` or `clang-cl`), so [.cargo/config.toml](.cargo/config.toml) points the
+  C/C++ compiler for the `x86_64-pc-windows-msvc` target at plain `clang`/`clang++`, defines
+  `LIBRAW_NODLL` (and `libfitz` links `oldnames.lib` for LibRaw's POSIX aliases). If LLVM lives elsewhere, edit the
+  `CC_x86_64_pc_windows_msvc`/`CXX_x86_64_pc_windows_msvc` paths there. The LibRaw binding
+  generator also needs `libclang.dll`; it's found automatically in the default LLVM install,
+  otherwise set `LIBCLANG_PATH`.
 
 If FitSmith fails to build with a `pkg-config ... fontconfig was not found` error, the
 `fontconfig` dev package above is what's missing.
 
 ## Packaging
 
-FitSmith can be built into a native installer for the OS you're running on, via
-[`cargo-bundle`](https://github.com/burtonageo/cargo-bundle):
+FitSmith can be packaged for the OS you're running on. The macOS and Linux packages use
+[`cargo-bundle`](https://github.com/burtonageo/cargo-bundle); the Windows installer uses
+[NSIS](https://nsis.sourceforge.io/), an open-source installer system released under
+permissive licenses:
 
 ```shell
-./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb + .rpm
-./build/package-windows.ps1    # Windows -> .msi (needs the WiX Toolset)
+./build/package-unix.sh        # macOS -> .dmg, Linux -> .deb
+./build/package-rpm.sh         # Linux -> .rpm
+./build/package-windows.ps1    # Windows -> .exe installer (needs NSIS / makensis on PATH)
 ```
 
-There's no CI — each package has to be built on its own OS, since Slint's windowing and font
-libraries differ per platform. See [fitsmith/building.md#packaging](fitsmith/building.md#packaging)
-for prerequisites, output locations, and the unsigned-binary Gatekeeper/SmartScreen caveat.
+NSIS is the only additional Windows packaging tool; its compiler is free and open source,
+and this installer uses its zlib-licensed compressor. There's no CI — each package has to be
+built on its own OS, since Slint's windowing and font libraries differ per platform. See
+[fitsmith/building.md#packaging](fitsmith/building.md#packaging) for output locations and the
+unsigned-binary Gatekeeper/SmartScreen caveat.
 
 ## Note
 

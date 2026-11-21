@@ -1,0 +1,14 @@
+# Statically link the MSVC C runtime so the exe doesn't need the VC++ redistributable.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# rsraw-sys refuses to build LibRaw with an MSVC-like compiler (cl.exe or clang-cl), so on the
+# MSVC target compile it with plain clang from the LLVM install instead. LIBRAW_NODLL makes
+# LibRaw's headers declare a static library rather than dllimport symbols. The variables are
+# target-suffixed, so they only affect x86_64-pc-windows-msvc builds. Plain clang also skips
+# the oldnames.lib default-lib directive; libfitz/src/lib.rs links it explicitly.
+[env]
+CC_x86_64_pc_windows_msvc = "C:\\Program Files\\LLVM\\bin\\clang.exe"
+CXX_x86_64_pc_windows_msvc = "C:\\Program Files\\LLVM\\bin\\clang++.exe"
+CFLAGS_x86_64_pc_windows_msvc = "-DLIBRAW_NODLL"
+CXXFLAGS_x86_64_pc_windows_msvc = "-DLIBRAW_NODLL"
