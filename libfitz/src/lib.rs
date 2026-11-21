@@ -6,6 +6,8 @@
 
 pub use fitskit;
 
+pub mod composer;
+
 // On the MSVC target LibRaw (via rsraw-sys) is compiled with plain clang — see
 // `.cargo/config.toml` — which, unlike cl/clang-cl, doesn't embed a default-lib
 // directive for oldnames.lib, the UCRT's source of the POSIX aliases LibRaw

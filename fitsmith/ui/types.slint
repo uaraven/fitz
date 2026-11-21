@@ -110,3 +110,23 @@ export struct SessionRow {
     count: string,
     time: string,
 }
+
+// One input slot of the RGB Compositor: the image's display name plus the
+// slider values it starts with (the amount it feeds into R, G, B and
+// luminance). The sliders own their value once touched and report changes
+// back to Rust, so these are only the initial positions.
+export struct ComposerRow {
+    // The file name cut into its first characters, a middle and its last
+    // characters. The slot shows all three end to end, eliding only the middle
+    // (Slint can only elide the end of a text), so the name's start and end
+    // stay readable however narrow the slot gets. `full-name` is the whole
+    // name, for the tooltip.
+    name-head: string,
+    name-mid: string,
+    name-tail: string,
+    full-name: string,
+    red: float,
+    green: float,
+    blue: float,
+    lum: float,
+}

@@ -2,6 +2,7 @@
 //! to fit an image into a bounded canvas (a terminal preview, a GUI thumbnail
 //! or blink view, …) while preserving its aspect ratio.
 
+use crate::data::{Image, PixelBuffer};
 use rayon::prelude::*;
 
 /// Scale an interleaved 16-bit RGB image so it fits within `max_w` x `max_h`
@@ -39,13 +40,36 @@ pub fn fit_dimensions(src_w: usize, src_h: usize, max_w: usize, max_h: usize) ->
 /// exactly when down-scaling, with no gaps or overlap. Returns an empty buffer
 /// for a zero-sized target.
 pub fn resize_rgb(src: &[u16], src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> Vec<u16> {
+    resize_interleaved::<3>(src, src_w, src_h, dst_w, dst_h)
+}
+
+/// [`resize_rgb`] for a single-plane (grayscale) image.
+pub fn resize_plane(
+    src: &[u16],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Vec<u16> {
+    resize_interleaved::<1>(src, src_w, src_h, dst_w, dst_h)
+}
+
+/// The box filter behind [`resize_rgb`] / [`resize_plane`], for `N` interleaved
+/// samples per pixel.
+fn resize_interleaved<const N: usize>(
+    src: &[u16],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+) -> Vec<u16> {
     if dst_w == 0 || dst_h == 0 {
         return Vec::new();
     }
-    let mut out = vec![0u16; dst_w * dst_h * 3];
+    let mut out = vec![0u16; dst_w * dst_h * N];
     // Each destination row reads a disjoint span of source rows and writes its
     // own output row, so rows are independent and processed in parallel.
-    out.par_chunks_mut(dst_w * 3)
+    out.par_chunks_mut(dst_w * N)
         .enumerate()
         .for_each(|(dy, out_row)| {
             let sy0 = dy * src_h / dst_h;
@@ -54,25 +78,46 @@ pub fn resize_rgb(src: &[u16], src_w: usize, src_h: usize, dst_w: usize, dst_h: 
                 let sx0 = dx * src_w / dst_w;
                 let sx1 = (((dx + 1) * src_w) / dst_w).max(sx0 + 1);
 
-                let (mut r, mut g, mut b, mut count) = (0u64, 0u64, 0u64, 0u64);
+                let mut sums = [0u64; N];
+                let mut count = 0u64;
                 for sy in sy0..sy1 {
                     let row = sy * src_w;
                     for sx in sx0..sx1 {
-                        let i = (row + sx) * 3;
-                        r += src[i] as u64;
-                        g += src[i + 1] as u64;
-                        b += src[i + 2] as u64;
+                        let i = (row + sx) * N;
+                        for (sum, &v) in sums.iter_mut().zip(&src[i..i + N]) {
+                            *sum += v as u64;
+                        }
                         count += 1;
                     }
                 }
 
-                let o = dx * 3;
-                out_row[o] = (r / count) as u16;
-                out_row[o + 1] = (g / count) as u16;
-                out_row[o + 2] = (b / count) as u16;
+                for (o, sum) in out_row[dx * N..(dx + 1) * N].iter_mut().zip(sums) {
+                    *o = (sum / count) as u16;
+                }
             }
         });
     out
+}
+
+impl Image {
+    /// This image shrunk `factor`-fold in each dimension (a box average, so a
+    /// star's flux is kept), as 16-bit samples. For a grayscale or RGB image;
+    /// a mosaic's colour pattern does not survive averaging, so debayer first.
+    pub fn downscale(&self, factor: usize) -> Image {
+        let (w, h) = ((self.width / factor).max(1), (self.height / factor).max(1));
+        let samples = self.pixels.as_u16ref();
+        let scaled = match self.channels() {
+            3 => resize_rgb(&samples, self.width, self.height, w, h),
+            _ => resize_plane(&samples, self.width, self.height, w, h),
+        };
+        Image::new(
+            self.image_type,
+            self.header.clone(),
+            w,
+            h,
+            PixelBuffer::U16(scaled),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +164,37 @@ mod tests {
         let out = resize_rgb(&src, 4, 4, 2, 3);
         assert_eq!(out.len(), 2 * 3 * 3);
         assert!(out.as_chunks::<3>().0.iter().all(|c| *c == [7, 8, 9]));
+    }
+
+    #[test]
+    fn resize_plane_averages_blocks() {
+        let src: Vec<u16> = vec![
+            0, 10, 100, 100, //
+            20, 30, 100, 100,
+        ];
+        assert_eq!(resize_plane(&src, 4, 2, 2, 1), vec![15, 100]);
+    }
+
+    #[test]
+    fn downscale_a_real_frame_keeps_type_and_scales_dimensions() {
+        use crate::fits_file::load_fits;
+        let rgb = load_fits(&crate::test_support::test_data("rgb.fits")).unwrap();
+        let mono = rgb.plane(1).unwrap();
+
+        let small = mono.downscale(4);
+        assert_eq!(
+            (small.width, small.height),
+            (mono.width / 4, mono.height / 4)
+        );
+        assert_eq!(small.image_type, mono.image_type);
+        assert_eq!(small.pixels.len(), small.width * small.height);
+
+        let small_rgb = rgb.downscale(4);
+        assert_eq!(small_rgb.image_type, rgb.image_type);
+        assert_eq!(
+            small_rgb.pixels.len(),
+            small_rgb.width * small_rgb.height * 3
+        );
     }
 
     #[test]

@@ -176,6 +176,17 @@ fn main() -> Result<()> {
     forward!(on_close_bad_frames, |app| controller::close_bad_frames(
         &app
     ));
+    forward!(on_open_composer_dialog, |app| {
+        controller::open_composer_dialog(&app)
+    });
+    forward!(on_composer_gain_changed, |app, slot, channel, value| {
+        controller::composer_gain_changed(&app, slot, channel, value)
+    });
+    forward!(on_composer_luminance_changed, |app, value| {
+        controller::composer_luminance_changed(&app, value)
+    });
+    forward!(on_composer_save, |app| controller::save_composition(&app));
+    forward!(on_close_composer, |app| controller::close_composer(&app));
     forward!(on_open_aberration_dialog, |app| {
         controller::open_aberration_dialog(&app)
     });
